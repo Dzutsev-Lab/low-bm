@@ -42,9 +42,9 @@ IFS=$'\n\t'
 # ------------------------------
 # CONFIG — EDIT ME
 # ------------------------------
-RAW_DIR="/data/Trinchieri_lab/dzutseva/xin_set_1"               # input FASTQs
-OUT_ROOT="/data/Trinchieri_lab/dzutseva/xin_set1_data"          # output root
-THREADS="12"
+RAW_DIR="/Select_Trial_Data"               # input FASTQs
+OUT_ROOT="/Select_Trial_Output"          # output root
+THREADS="2"
 PRIMER_MOTIF="GGACTAC"                                          # 16nt UMI is immediately upstream of this
 UMI_LEN="16"
 
