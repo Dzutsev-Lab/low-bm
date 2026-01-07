@@ -39,11 +39,13 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+module load trimmomatic seqkit seqtk bwa samtools mothur pigz java
+
 # ------------------------------
 # CONFIG — EDIT ME
 # ------------------------------
-RAW_DIR="/Select_Trial_Data"               # input FASTQs
-OUT_ROOT="/Select_Trial_Output"          # output root
+RAW_DIR="./Select_Trial_Data"               # input FASTQs
+OUT_ROOT="./Select_Trial_Output"          # output root
 THREADS="2"
 PRIMER_MOTIF="GGACTAC"                                          # 16nt UMI is immediately upstream of this
 UMI_LEN="16"
@@ -84,7 +86,7 @@ for tool in seqkit seqtk bwa samtools mothur pigz java; do need "$tool"; done
 [[ -f "$TRIMMOMATIC_JAR" ]] || die "Trimmomatic jar not found via \$TRIMMOJAR ($TRIMMOMATIC_JAR). Load module trimmomatic."
 
 # Prepare folders
-mkdir -p "$OUT_ROOT"/{{original.fastq,clean.fastq,taxonomy,logs}}
+mkdir -p "$OUT_ROOT"/{original.fastq/,clean.fastq/,taxonomy/,logs/}
 LOG_DIR="$OUT_ROOT/logs"
 CLEAN_DIR="$OUT_ROOT/clean.fastq"
 ORIG_DIR="$OUT_ROOT/original.fastq"
@@ -94,25 +96,25 @@ TAX_DIR="$OUT_ROOT/taxonomy"
 # 0) Gather & normalize inputs
 # ------------------------------
 shopt -s nullglob
-cd "$RAW_DIR" || die "Cannot cd RAW_DIR: $RAW_DIR"
+#cd "$RAW_DIR" || die "Cannot cd RAW_DIR: $RAW_DIR"
 
 # DECOMPRESSION
 # checks for compressed files '*.gz' (discarding the output by funneling to /dev/null)
 # compgen -G exit status will be 0 if at least one is found, executing if statement block
 # Ensures pigz decompression does not error out if there are no compressed files
-if compgen -G "*.gz" > /dev/null; then
+if compgen -G "$RAW_DIR/*.gz" > /dev/null; then
   log "Decompressing .gz with pigz…"
   # pigz is parallel implementation of gzip that is faster on multi-core systems
   # '--' ensures that filenames starting with '-' are not treated as flags on execution
-  pigz -d -- *.gz
+  pigz -d -- $RAW_DIR/*.gz
 fi
 
 # SAMPLE CATALOGING
 # Constructs arrays of fastq file names and saves them to array variables R1S and R2S
 # '2>/dev/null' supresses errors if no matching file names are found
 # file names are sorted alphabetically before being saved to array variable 
-mapfile -t R1S < <(ls *_R1_001.fastq 2>/dev/null | sort)
-mapfile -t R2S < <(ls *_R2_001.fastq 2>/dev/null | sort)
+mapfile -t R1S < <(ls $RAW_DIR/*_R1_001.fastq 2>/dev/null | sort)
+mapfile -t R2S < <(ls $RAW_DIR/*_R2_001.fastq 2>/dev/null | sort)
 # Checks that length of R1S > 0 (gt = greather than), else dies
 [[ ${#R1S[@]} -gt 0 ]] || die "No R1 fastqs found in $RAW_DIR"
 # Checks that length RS1 = length RS2 (-eq = equals)
@@ -121,10 +123,12 @@ mapfile -t R2S < <(ls *_R2_001.fastq 2>/dev/null | sort)
 # Derive sample basenames by stripping file suffixes, stored in 'samples' array
 samples=()
 for r1 in "${R1S[@]}"; do
+  # strip to just file name (remove directory path)
+  fname=${r1##*/}
   # removes filename suffix
-  base=${r1%_R1_001.fastq}
+  base=${fname%_R1_001.fastq}
   # checks that correlating sample file is in R2
-  [[ -f "${base}_R2_001.fastq" ]] || die "Missing R2 for ${base}"
+  [[ -f "$RAW_DIR/${base}_R2_001.fastq" ]] || die "Missing R2 for ${base}"
   samples+=("$base")
   # archive originals
   # creates a soft link for easy access of original data files
@@ -150,8 +154,8 @@ extract_umi_and_select_r1() {
 
   # construct r1 and r2 filenames from base
   # subsitutes the string stored in base into fastq file names a
-  local r1="${base}_R1_001.fastq"
-  local r2="${base}_R2_001.fastq"
+  local r1="$RAW_DIR/${base}_R1_001.fastq"
+  local r2="$RAW_DIR/${base}_R2_001.fastq"
 
   # output file path contruction
   local umi_map="$CLEAN_DIR/UMI.${base}.tsv"        # NAME\tUMI
@@ -165,12 +169,14 @@ extract_umi_and_select_r1() {
   #     **looks like name is just be header line from read file (following '@')**
   # UMI Values = unique molecular identifiers of length $UMI_LEN in alphabet [ACGTN]
   # **Utlizing UMI to collapse reads results in a low read count, making analysis difficult**
-  awk -v motif="$PRIMER_MOTIF" -v L=$UMI_LEN \
-    'NR%4==1{hdr=$0; name=substr($0,2); next} '\
-    'NR%4==2{seq=$0; if(match(seq, "([ACGTN]{"L"})"motif, m)){print name"\t"m[1]}}' \
-    "$r2" \
-    | tee "$umi_map" \
-    | cut -f1 > "$sel_names"
+  awk -v motif="$PRIMER_MOTIF" -v L=$UMI_LEN '
+    NR%4==1 { hdr=$0; name=substr($0,2); next } 
+    NR%4==2 { seq=$0; 
+              if (match(seq, "([ACGTN]{"L"})" motif, m)) {
+                print name"\t"m[1]
+              }
+            }
+    ' "$r2" | tee "$umi_map" | cut -f1 > "$sel_names"
 
   log "[$base] Subsetting R1 to names selected based on motif and UMI identification."
 
@@ -205,13 +211,20 @@ trim_selected_r1() {
   local out_fq="$CLEAN_DIR/${base}.trimmed.R1.fastq"
 
   # Check to ensure input fastq exists
-  [[ -s "$in_fq" ]] || die "Missing FASTQ File for Trimming: $in_fq"
+  #   Changed to exists and file flag -f (was -s which checks if exists and is nonempty)
+  [[ -f "$in_fq" ]] || die "Missing FASTQ File for Trimming: $in_fq"
+
 
   log "[$base] Trimming with Trimmomatic"
   # Trimming R1 fastq's using trimmomatic (java based processing and trimming tool for Illumina tech)
-  #     Arguments for trimming given as global array variable. Currently only includes AVGQUAL:30
-  #     TODO: return to this to for understainding of Trimmomatic function
-  java -jar "$TRIMMOMATIC_JAR" SE -threads "$THREADS" "$in_fq" "$out_fq" "${TRIM_ARGS[@]}"
+  #     Flags:
+  #       SE = single end reads
+  #       -phred33 = phred+33 encoding of quality (most likely with modern Illumina systems)
+  #     Trimmomatic Filtering Arguments:
+  #       AVGQUAL:30 (given as global variable)
+  #     
+  #     TODO: Confirm that our fastq's use Phred+33 encoding
+  java -jar "$TRIMMOMATIC_JAR" SE -threads "$THREADS" -phred33 "$in_fq" "$out_fq" "${TRIM_ARGS[@]}"
 }
 
 # SWARM FILE CONSTRUCTION (optional, based on EMIT_SWARM global variable)
@@ -234,6 +247,8 @@ log "Converting trimmed FASTQ to FASTA"
 for s in "${samples[@]}"; do
   seqkit fq2fa "$CLEAN_DIR/${s}.trimmed.R1.fastq" > "$CLEAN_DIR/${s}.trimmed.R1.fasta"
 done
+
+  ######### PIPELINE CURRENTLY FUNCTION UP TO THIS POINT #########
 
 # ------------------------------
 # 4) Remove human, then remove viral; keep unmapped names each time
