@@ -46,18 +46,16 @@ module load trimmomatic seqkit seqtk bwa samtools mothur pigz java
 # ------------------------------
 RAW_DIR="./Select_Trial_Data"               # input FASTQs
 OUT_ROOT="./Select_Trial_Output"          # output root
-THREADS="2"
 PRIMER_MOTIF="GGACTAC"                                          # 16nt UMI is immediately upstream of this
 UMI_LEN="16"
 
-# BWA index prefixes (must exist: *.bwt etc.)
-HUMAN_REF="/data/dzutseva/refdata/refseq/clean.human.fa"        # or your Mus reference for mouse sets
-VIRAL_REF="/data/dzutseva/refdata/idexes/all.viral.fna"
-BACT16S_REF="/data/Trinchieri_lab/dzutseva/genomes/all.rrna.bacteria/all.rrna.bacteria"
+HUMAN_REF="./Ref_Data/Mus_musculus.GRCm38.cdna.all.fa" 
+VIRAL_REF="./Ref_Data/all.viral.fna"
+BACT16S_REF="./Ref_Data/all.rrna.bacteria"
 
 # mothur references
-MOTHUR_TEMPLATE="/data/Trinchieri_lab/jenny/ncbi20.fasta"
-MOTHUR_TAX="/data/Trinchieri_lab/jenny/ncbi20.tax"
+MOTHUR_TEMPLATE="./Ref_Data/ncbi20.fasta"
+MOTHUR_TAX="./Ref_Data/ncbi20.tax"
 
 # Trimming (match your historical settings)
 TRIMMOMATIC_JAR="$TRIMMOJAR"                                   # set by module trimmomatic
@@ -66,6 +64,8 @@ TRIM_ARGS=("AVGQUAL:30")                                        # keep semantics
 # Negative control filtering (optional)
 NEG_DB_TOP_K="10000"                                            # top N negative-control uniques to include
 NEG_AS_KEEP_LT="160"                                            # keep if AS < this (i.e., not similar to neg DB)
+
+THREADS="2"
 
 # Swarm toggle: if set to 1, writes swarm files alongside loops (does not submit)
 EMIT_SWARM="0"
@@ -77,7 +77,7 @@ EMIT_SWARM="0"
 # LOG: prints a formatted string including date/time and status update on current processes
 # Input: some record to be logged 
 #
-log() { printf "[%s] %s\n" "$(date +"%F %T")" "$*"; }
+log() { printf "[log][%s] %s\n" "$(date +"%F %T")" "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
@@ -182,12 +182,13 @@ extract_umi_and_select_r1() {
 
   # Subsets R1 to those entries for which we successfully extracted a UMI in R2
   #     **Why are we not also subsetting R2???**
-  #         Amiran
+  #         Amiran said that R2 are only usable as a means of detecting UMI and
+  #         are unusable otherwise. (Why??)
   seqtk subseq "$r1" "$sel_names" > "$sel_r1"
 }
 
 # SWARM FILE CONSTRUCTION (optional, based on EMIT_SWARm global variable)
-#   **seems to only construct swarm files to execute up through R1 subsetting based on UMIs**
+#   **construct swarm files to execute up through R1 subsetting based on UMIs**
 #   **return to this for understanding**
 if [[ "$EMIT_SWARM" == "1" ]]; then
   SW1="$OUT_ROOT/01_umi_select.swarm"
@@ -248,12 +249,29 @@ for s in "${samples[@]}"; do
   seqkit fq2fa "$CLEAN_DIR/${s}.trimmed.R1.fastq" > "$CLEAN_DIR/${s}.trimmed.R1.fasta"
 done
 
-  ######### PIPELINE CURRENTLY FUNCTION UP TO THIS POINT #########
+
 
 # ------------------------------
 # 4) Remove human, then remove viral; keep unmapped names each time
 #    Why: Use SAM flags, not "grep NC_". Reliable across references.
 # ------------------------------
+
+# REFERENCE INDEXING
+# BWA index prefixes (must exist: *.bwt etc.)
+REFS=(
+  "$HUMAN_REF"
+  "$VIRAL_REF"
+  "$BACT16S_REF"
+)
+for ref in "${REFS[@]}"; do
+  ref_name="${ref##*/}"
+
+  if [[ ! -f "${ref}.bwt" ]]; then
+    log "[$ref_name] indexing with bwa"
+    bwa index "$ref"
+  fi
+done
+
 
 map_and_keep_unmapped_names() {
   local base="$1" ref="$2" in_fa="$3" tag="$4"  # tag: hum|viral
@@ -261,6 +279,7 @@ map_and_keep_unmapped_names() {
   local unmapped_names="$CLEAN_DIR/${base}.${tag}.unmapped.names"
 
   log "[$base] bwa mem vs $tag"
+
   bwa mem -t "$THREADS" "$ref" "$in_fa" > "$sam"
 
   # Filters reads in the output SAM file to those that did not align based on bwa mem flagging
@@ -307,11 +326,11 @@ for s in "${samples[@]}"; do
   # prints $1 = QNAME (read name in alignment records), stores in awk output
   # sorts those read names output piped from awk
   # saves sorted read names
-  awk \
-  '($1 !~ /^@/) && '\
-  '($3 != "*") '\
-  '{print $1}' \
-  "$CLEAN_DIR/${s}.bact.sam" \
+  awk '
+    ($1 !~ /^@/) && ($3 != "*") {
+      print $1
+    }
+  ' "$CLEAN_DIR/${s}.bact.sam" \
   | sort -u > "$CLEAN_DIR/${s}.bact.pos.names"
 
   # Filtering all reads down to those identified via 16S alignment
@@ -319,6 +338,7 @@ for s in "${samples[@]}"; do
   seqtk subseq "$CLEAN_DIR/${s}.nonhuman.nonviral.fasta" "$CLEAN_DIR/${s}.bact.pos.names" > "$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta"
 done
 
+  ######### PIPELINE CURRENTLY FUNCTION UP TO THIS POINT #########
 # ------------------------------
 # 6) Stats (robust counts)
 # ------------------------------
@@ -326,30 +346,112 @@ log "Computing count stats"
 {
   echo -e "ID\tTotal_reads\tHuman_mapped_reads\tClean_reads"
   for s in "${samples[@]}"; do
-    total=$(($(wc -l < "$ORIG_DIR/${s}_R1_001.fastq")/4))
+    # Determining Number of reads in original fastq 
+    # (each read entry has 4 lines: @Header, Sequence, +Header, Quality), hence divide by 4
+    # TODO: ensure that raw data is not being altered after original data link was created
+    #       originally used the original data root but was having issues with linking
+    total=$(($(wc -l < "$RAW_DIR/${s}_R1_001.fastq")/4))
+
+    # Counts number of reads mapped to human genome
+    # TODO: make switchable to other reference organisms (namely mouse)
+    # TODO: look into possibility that secondary, supplementary, split reads possibly inflating this value
     hum_mapped=$(samtools view -F 4 "$CLEAN_DIR/${s}.hum.sam" | wc -l)
+
+    # Counts number of reads in cleaned nonhuman and nonviral fasta
+    #   If the fasta file is not found or there are no reads in the fasta file,
+    #   still exits with true status (clean = 0) avoiding erroring out
     clean=$(grep -c '^>' "$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta" || true)
+
+    # Pringts a tab-delimited entry for the read counts for the sample to output
     echo -e "${s}\t${total}\t${hum_mapped}\t${clean}"
   done
-} > "$OUT_ROOT/xin1.stats.tsv"
+} > "$OUT_ROOT/xin1.stats.tsv"  # redirects all stdout from this block (header + loop) into a TSV file
+
 
 # ------------------------------
 # 7) OPTIONAL: Negative control DB & filtering (keeps reads dissimilar to neg DB)
 # ------------------------------
 # Inputs: any sample name containing strings NEGATIVECONTROL|CELLSCONTROL|NEGWATER|BLANK|NEGcDNA|NEGPCR (adjust below)
 
-NEG_STRINGS='NEGATIVECONTROL|CELLSCONTROL|NEGWATER|BLANK|NEGcDNA|NEGPCR|NEG'
+NEG_TAGS=(
+  "NEGATIVECONTROL"
+  "CELLSCONTROL"
+  "NEGWATER"
+  "BLANK"
+  "NEGcDNA"
+  "NEGPCR"
+  "NEG"
+  )
 
 build_neg_db_and_filter() {
   log "Building negative-control DB (top $NEG_DB_TOP_K uniques)"
-  mapfile -t neg_fa < <(ls "$CLEAN_DIR"/clean.*NEG*.R1.nonhuman.nonviral.fasta 2>/dev/null || true)
-  [[ ${#neg_fa[@]} -gt 0 ]] || { log "No negative-control FASTA found (skipping)"; return 0; }
 
-  cat "${neg_fa[@]}" > "$CLEAN_DIR/combined.neg.fasta"
+  # enabling extended globbing patterns for ls to recoginze negative control file names
+  shopt -s extglob
+
+  local -a neg_all=()
+  local -a neg_tag=()
+
+  #collects all candidate neg files (across all tags)
+  for tag in "${NEG_TAGS[@]}"; do
+
+    # TODO: makesure that formatted string works as intended
+    # CURRENTLY RUNNING INTO SYNTAX ERROR HERE
+    neg_tag=( "$CLEAN_DIR"/clean.*_"${tag}"?([0-9])_*.R1.nonhuman.nonviral.fasta )
+    log "DEBUG: files for tag '$tag':"
+    printf '  - %q\n' "${neg_tag[@]}" >&2
+
+    #builds a per-tag composite fasta if any are found for this tag
+    if ((${#neg_tag[@]} > 0)); then
+      # deduplicating in case ls found duplicate files (consider removing)
+      mapfile -t neg_tag < <(printf "%s\n" "${neg_tag[@]}" | sort -u)
+
+      log "Found ${#neg_tag[@]} negative-control FASTA(s) for conrtol tag '$tag'"
+
+
+
+      
+      # concatenate all negative control files found with this tag
+      cat "${neg_tag[@]}" > "$CLEAN_DIR/combined.${tag}.neg.fasta"
+
+      # also add all of the files found with this tag to list of all negative control fasta's
+      neg_all+=( "${neg_tag[@]}" )
+
+    else
+      log "No FASTA matched negative-control tag: '$tag'"
+    fi
+  done
+
+  # disabling extended globbing patterns for ls
+  shopt -u extglob
+
+  # deduplicates the overall negative control file list (consider removing)
+  if ((${#neg_all[@]} > 0)); then
+    mapfile -t neg_all < <(printf "%s\n" "${neg_all[@]}" | sort -u)
+  
+  #if no negative controls are found -> skip
+  else
+    log "No negative control FASTA found (skipping negative control filtering)"
+    return 0
+  fi
+
+  # Build overal negative control composite (all tags)
+  log "Building combined negative-control fasta from ${#neg_all[@]} file(s)"
+  log "DEBUG: files for combined.neg.fasta:"
+  printf '  - %q\n' "${neg_all[@]}" >&2
+
+  cat "${neg_all[@]}" > "$CLEAN_DIR/combined.neg.fasta"
+
+  # uses Mothur to collapse duplicate reads in the combined negative control fasta
+  #   this generates a new fasta with the name convention <original_name>.unique.fasta (stored in pwd)
+  # redirects the stderr from the mothur command (mothur's log) to the log directory
   mothur "#unique.seqs(fasta=$CLEAN_DIR/combined.neg.fasta)" 2>"$LOG_DIR/mothur.neg.unique.log"
+
+  # takes the combined negative control
   cut -f1 "$CLEAN_DIR/combined.neg.count_table" | tail -n +2 \
     | paste - <(cut -f2 "$CLEAN_DIR/combined.neg.count_table" | tail -n +2) \
     | sort -k2,2nr | head -n "$NEG_DB_TOP_K" | cut -f1 > "$CLEAN_DIR/top.$NEG_DB_TOP_K.neg.names"
+  
   seqtk subseq "$CLEAN_DIR/combined.neg.unique.fasta" "$CLEAN_DIR/top.$NEG_DB_TOP_K.neg.names" > "$CLEAN_DIR/top.neg.db.fasta"
   bwa index "$CLEAN_DIR/top.neg.db.fasta"
 
@@ -363,8 +465,47 @@ build_neg_db_and_filter() {
   done
 }
 
-# Uncomment to enable negative-control filtering
-# build_neg_db_and_filter
+OLD_build_neg_db_and_filter() {
+  ###### OLD VERSION OF THIS FUNCTION ##########
+  # finds and lists negative control files that match the "$CLEAN_DIR"/CLEAN.*NEG*.R1.nonhumna,nonviral.fasta
+  # stores these final names in the new array 'neg-fa'
+  # 2>/dev/null || true ensure that this continues even if no negative control files are found
+  #   TODO: check to see if this is exclusive to literal 'NEG' instead of all possible negative strings
+  #         like those listed above in NEG_STRINGS (not seeing any collapsed fasta after mothur unique.seq)
+  mapfile -t neg_fa < <(ls "$CLEAN_DIR"/clean.*NEG*.R1.nonhuman.nonviral.fasta 2>/dev/null || true)
+
+  # checks if indeed, any negative control files were round and exits if not (len neg_fa > 0)
+  [[ ${#neg_fa[@]} -gt 0 ]] || { log "No negative-control FASTA found (skipping)"; return 0; }
+
+  # combines all negative control fasta files into a single combined fasta file
+  # TODO: built combined fasta on per negative control type and combine all negative control for full purity filters
+  cat "${neg_fa[@]}" > "$CLEAN_DIR/combined.neg.fasta"
+
+  # uses Mother to collapse duplicate reads in the combined negative control fasta
+  #   this generates a new fasta with the name convention <original_name>.unique.fasta (stored in pwd)
+  # redirects the stderr from the mothur command (mothur's log) to the log directory
+  mothur "#unique.seqs(fasta=$CLEAN_DIR/combined.neg.fasta)" 2>"$LOG_DIR/mothur.neg.unique.log"
+
+  # takes the combined negative control
+  cut -f1 "$CLEAN_DIR/combined.neg.count_table" | tail -n +2 \
+    | paste - <(cut -f2 "$CLEAN_DIR/combined.neg.count_table" | tail -n +2) \
+    | sort -k2,2nr | head -n "$NEG_DB_TOP_K" | cut -f1 > "$CLEAN_DIR/top.$NEG_DB_TOP_K.neg.names"
+  
+  seqtk subseq "$CLEAN_DIR/combined.neg.unique.fasta" "$CLEAN_DIR/top.$NEG_DB_TOP_K.neg.names" > "$CLEAN_DIR/top.neg.db.fasta"
+  bwa index "$CLEAN_DIR/top.neg.db.fasta"
+
+  for s in "${samples[@]}"; do
+    local in_fa="$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta"
+    [[ -s "$in_fa" ]] || continue
+    bwa mem -t "$THREADS" "$CLEAN_DIR/top.neg.db.fasta" "$in_fa" > "$CLEAN_DIR/${s}.neg.sam"
+    # keep names with low AS (not similar to negative DB)
+    awk -v th="$NEG_AS_KEEP_LT" 'BEGIN{FS="\t"} $0 !~ /^@/ { m=match($0, /AS:i:([0-9]+)/, a); if(m && a[1] < th) print $1 }' "$CLEAN_DIR/${s}.neg.sam" | sort -u > "$CLEAN_DIR/${s}.selected.names"
+    seqtk subseq "$in_fa" "$CLEAN_DIR/${s}.selected.names" > "$CLEAN_DIR/${s}.selected.fasta"
+  done
+}
+
+# execute negative control filtering
+build_neg_db_and_filter
 
 # ------------------------------
 # 8) Mothur classify (genus/species/class/phylum summaries)
@@ -423,7 +564,7 @@ classify_and_summarize() {
   popd >/dev/null
 }
 
-# Uncomment to classify now
-# classify_and_summarize
+#execute classification and summarization script
+#classify_and_summarize
 
 log "Done. Outputs in: $OUT_ROOT"
