@@ -37,6 +37,8 @@
 # =============================================================================
 
 set -euo pipefail
+# enabling extended globbing patterns for ls to recoginze negative control file names
+shopt -s extglob
 IFS=$'\n\t'
 
 module load trimmomatic seqkit seqtk bwa samtools mothur pigz java
@@ -132,6 +134,7 @@ for r1 in "${R1S[@]}"; do
   samples+=("$base")
   # archive originals
   # creates a soft link for easy access of original data files
+  # WHY ARE WE DOING THIS AND DO I NEED TO BE MORE AWARE OF 
   ln -sf "$RAW_DIR/${base}_R1_001.fastq" "$ORIG_DIR/"
   ln -sf "$RAW_DIR/${base}_R2_001.fastq" "$ORIG_DIR/"
 done
@@ -170,12 +173,18 @@ extract_umi_and_select_r1() {
   # UMI Values = unique molecular identifiers of length $UMI_LEN in alphabet [ACGTN]
   # **Utlizing UMI to collapse reads results in a low read count, making analysis difficult**
   awk -v motif="$PRIMER_MOTIF" -v L=$UMI_LEN '
-    NR%4==1 { hdr=$0; name=substr($0,2); next } 
-    NR%4==2 { seq=$0; 
-              if (match(seq, "([ACGTN]{"L"})" motif, m)) {
-                print name"\t"m[1]
-              }
-            }
+    NR%4==1 { 
+        hdr=$0; 
+        name=substr($0,2)
+        sub(/ .*/, "", name)
+        next 
+    }
+    NR%4==2 { 
+        seq=$0
+        if (match(seq, "([ACGTN]{" L "})" motif, m)) {
+                    print name"\t"m[1]
+        }
+    }
     ' "$r2" | tee "$umi_map" | cut -f1 > "$sel_names"
 
   log "[$base] Subsetting R1 to names selected based on motif and UMI identification."
@@ -340,7 +349,7 @@ log "Computing count stats"
 
 NEG_STRINGS='NEGATIVECONTROL|CELLSCONTROL|NEGWATER|BLANK|NEGcDNA|NEGPCR|NEG'
 
-build_neg_db_and_filter() {
+build_neg_db() {
   log "Building negative-control DB (top $NEG_DB_TOP_K uniques)"
   mapfile -t neg_fa < <(ls "$CLEAN_DIR"/clean.*NEG*.R1.nonhuman.nonviral.fasta 2>/dev/null || true)
   [[ ${#neg_fa[@]} -gt 0 ]] || { log "No negative-control FASTA found (skipping)"; return 0; }
@@ -351,16 +360,19 @@ build_neg_db_and_filter() {
     | paste - <(cut -f2 "$CLEAN_DIR/combined.neg.count_table" | tail -n +2) \
     | sort -k2,2nr | head -n "$NEG_DB_TOP_K" | cut -f1 > "$CLEAN_DIR/top.$NEG_DB_TOP_K.neg.names"
   seqtk subseq "$CLEAN_DIR/combined.neg.unique.fasta" "$CLEAN_DIR/top.$NEG_DB_TOP_K.neg.names" > "$CLEAN_DIR/top.neg.db.fasta"
+  # Indexes the top negative control reads fasta
   bwa index "$CLEAN_DIR/top.neg.db.fasta"
 
-  for s in "${samples[@]}"; do
-    in_fa="$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta"
-    [[ -s "$in_fa" ]] || continue
-    bwa mem -t "$THREADS" "$CLEAN_DIR/top.neg.db.fasta" "$in_fa" > "$CLEAN_DIR/${s}.neg.sam"
-    # keep names with low AS (not similar to negative DB)
-    awk -v th="$NEG_AS_KEEP_LT" 'BEGIN{FS="\t"} $0 !~ /^@/ { m=match($0, /AS:i:([0-9]+)/, a); if(m && a[1] < th) print $1 }' "$CLEAN_DIR/${s}.neg.sam" | sort -u > "$CLEAN_DIR/${s}.selected.names"
-    seqtk subseq "$in_fa" "$CLEAN_DIR/${s}.selected.names" > "$CLEAN_DIR/${s}.selected.fasta"
-  done
+  # filters the reads in other samples based on the top reads found in the negative controls
+  # skipping for now (will do negative control filtering downstream)
+  # for s in "${samples[@]}"; do
+  #   in_fa="$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta"
+  #   [[ -s "$in_fa" ]] || continue
+  #   bwa mem -t "$THREADS" "$CLEAN_DIR/top.neg.db.fasta" "$in_fa" > "$CLEAN_DIR/${s}.neg.sam"
+  #   # keep names with low AS (not similar to negative DB)
+  #   awk -v th="$NEG_AS_KEEP_LT" 'BEGIN{FS="\t"} $0 !~ /^@/ { m=match($0, /AS:i:([0-9]+)/, a); if(m && a[1] < th) print $1 }' "$CLEAN_DIR/${s}.neg.sam" | sort -u > "$CLEAN_DIR/${s}.selected.names"
+  #   seqtk subseq "$in_fa" "$CLEAN_DIR/${s}.selected.names" > "$CLEAN_DIR/${s}.selected.fasta"
+  # done
 }
 
 # Uncomment to enable negative-control filtering
@@ -371,31 +383,49 @@ build_neg_db_and_filter() {
 # ------------------------------
 classify_and_summarize() {
   log "mothur classify.seqs on final FASTA (or .selected.fasta if present)"
-  pushd "$TAX_DIR" >/dev/null
+
+  mkdir -p "$TAX_DIR"
+
   for s in "${samples[@]}"; do
-    src="$CLEAN_DIR/${s}.selected.fasta"
-    [[ -s "$src" ]] || src="$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta"
+    # input fasta (cleaned)
+    src="$CLEAN_DIR/clean.${s}.R1.nonhuman.nonviral.fasta"
     [[ -s "$src" ]] || { log "[$s] no FASTA to classify"; continue; }
 
-    outprefix="${s}.final"
-    mothur "#classify.seqs(fasta=$src, template=$MOTHUR_TEMPLATE, taxonomy=$MOTHUR_TAX, method=wang, cutoff=0, processors=$THREADS)" \
+    #set output file name prefix
+    outprefix="$TAX_DIR/${s}.final"
+
+    #classify reads in sample file using wang method 
+    #   cutoff set to 0 = including all possible assignments (should include confidence score for each assignment)
+    mothur "#set.dir(output=$TAX_DIR); classify.seqs(fasta=$src, template=$MOTHUR_TEMPLATE, taxonomy=$MOTHUR_TAX, method=wang, cutoff=0, processors=$THREADS)" \
       2>"$LOG_DIR/mothur.${s}.log"
 
-    tax="$(basename "$src").ncbi20.wang.taxonomy"
+    # constructs expected taxonomy file for the sample
+    tax="$TAX_DIR/$(basename "$src").ncbi20.wang.taxonomy"
     [[ -f "$tax" ]] || tax="${outprefix}.ncbi20.wang.taxonomy" # fallback if mothur renames
     [[ -f "$tax" ]] || { log "[$s] taxonomy file not found"; continue; }
 
-    # strip confidences, make rank-specific counts
+    # extracts taxonomic lineage strings from Mothur output 
+    #   strips confidence scores and sequence names, single column
     sed -E 's/\([^()]*\)//g' "$tax" | awk -F"\t" '{print $2}' > "${outprefix}.lineages"
 
     for level in genus species class phylum; do
+      # sets specific minimum count cutoffs for different levels of classification
       case $level in
         genus)   cutf='-d";" -f2,3,4,5,6' ; min=10 ;;
         species) cutf='-d";" -f2,3,4,5,6,7' ; min=5 ;;
         class)   cutf='-d";" -f2,3' ; min=50 ;;
         phylum)  cutf='-d";" -f2' ; min=50 ;;
       esac
-      eval "cut $cutf \"${outprefix}.lineages\"" | sort | uniq -c | awk -v m="$min" '$1>m{print $1, $2}' | sed -E 's/^ +//' | sort -k2 > "${outprefix}.${level}.fin.count"
+      # consolidates identical lineage strings and counts the number of occurances of each lineage
+      # filters out taxa not meeting count cut off for the level
+      # totals output to level-specific count file
+      eval "cut $cutf \"${outprefix}.lineages\"" \
+      | sort \
+      | uniq -c \
+      | awk -v m="$min" '$1>m{print $1, $2}' \
+      | sed -E 's/^ +//' \
+      | sort -k2 \
+      > "${outprefix}.${level}.fin.count"
     done
   done
 
@@ -403,24 +433,24 @@ classify_and_summarize() {
   combine_level() {
     local level="$1"
     # collect IDs
-    ls *.${level}.fin.count | head -n1 | xargs -I{} awk '{print $2}' {} > "taxa.${level}.names"
+    ls "$TAX_DIR"*.${level}.fin.count | head -n1 | xargs -I{} awk '{print $2}' {} > "taxa.${level}.names"
     echo ID | cat - "taxa.${level}.names" > "header.${level}"
     # columns
     tmpcols=()
     for s in "${samples[@]}"; do
-      f="${s}.final.${level}.fin.count"
+      f="$TAX_DIR/${s}.final.${level}.fin.count"
       [[ -s "$f" ]] || continue
-      echo "$s" > ".id.${level}.${s}"; awk '{print $1}' "$f" > ".col.${level}.${s}"
-      paste ".id.${level}.${s}" ".col.${level}.${s}" > ".named.${level}.${s}"
-      tmpcols+=(".named.${level}.${s}")
+      echo "$s" > "$TAX_DIR/.id.${level}.${s}"
+      awk '{print $1}' "$f" > "$TAX_DIR/.col.${level}.${s}"
+      paste "$TAX_DIR/.id.${level}.${s}" "$TAX_DIR/.col.${level}.${s}" > "$TAX_DIR/.named.${level}.${s}"
+      tmpcols+=("$TAX_DIR/.named.${level}.${s}")
     done
-    paste "header.${level}" "${tmpcols[@]}" > "xin1.final.${level}.count.table"
+    paste "$TAX_DIR/header.${level}" "${tmpcols[@]}" > "$TAX_DIR/xin1.final.${level}.count.table"
   }
   combine_level genus
   combine_level species
   combine_level class
   combine_level phylum
-  popd >/dev/null
 }
 
 # Uncomment to classify now

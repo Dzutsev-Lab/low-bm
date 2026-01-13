@@ -1,2 +1,7 @@
 Select_Trial_Data/
 Select_Trial_Output/
+Ref_Data/
+Exp_Data/
+OLD_TRIALS/
+Exp_Output/
+.snakemake/
