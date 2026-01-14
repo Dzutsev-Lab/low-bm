@@ -2,10 +2,11 @@
 import os, re, glob
 from pathlib import Path
 # Input and Output Directories
-RAW="Exp_Data/Single_Sample"
-OUT="Exp_Output/Single_Sample"
+RAW="Exp_Data/expt1_rnalowbiotit_300Mid_041123/OUTPUT/FASTQ"
+OUT="Exp_Output/expt1_rnalowbiotit_300Mid_041123"
 
 ORIG_DIR  = f"{OUT}/original.fastq"
+NORM_RAW_DIR = f"{OUT}/raw.norm"
 CLEAN_DIR = f"{OUT}/clean.fastq"
 TAX_DIR   = f"{OUT}/taxonomy"
 LOG_DIR   = f"{OUT}/logs"
@@ -19,7 +20,7 @@ HOST_REF="Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
 VIRAL_REF="Ref_Data/all.viral.fna"
 BACT16S_REF="Ref_Data/all.rrna.bacteria"
 # mothur references
-MOTHUR_TEMPLATE="Ref_Data/ncbi20.fasta"
+MOTHUR_REFERENCE="Ref_Data/ncbi20.fasta"
 MOTHUR_TAX="Ref_Data/ncbi20.tax"
 
 # Trimming Parameters
@@ -79,7 +80,7 @@ rule init_dirs:
         touch(f"{OUT}/.init.done")
     shell:
         r"""
-        mkdir -p "{OUT}" "{ORIG_DIR}" "{CLEAN_DIR}" "{TAX_DIR}" "{LOG_DIR}"
+        mkdir -p "{OUT}" "{ORIG_DIR}" "{NORM_RAW_DIR}" "{CLEAN_DIR}" "{TAX_DIR}" "{LOG_DIR}"
         touch "{output}"
         """
 
@@ -100,13 +101,63 @@ rule sample_names:
 #----------------------------
 # TODO: implement
 
+
+#-----------------------------------
+# Normalizing and Unzipping FASTQs
+#-----------------------------------
+#checks if the input raw fastq is already decompressed or not for feeding input to raw normalization
+def pick_raw_fastq(wc, read):
+    fastq_path = os.path.join(RAW, f"{wc.s}_R{read}_001.fastq")
+    gz_path = fastq_path + ".gz"
+    if os.path.exists(fastq_path):
+        return fastq_path
+    elif os.path.exists(gz_path):
+        return gz_path
+    else:
+        raise (ValueError(f"Missing raw FASTQ for sample {wc.s} read R{read}: {fastq_path}(.gz)"))
+
+
+rule norm_fastq:
+    input:
+        r1_raw = lambda wc: pick_raw_fastq(wc, 1),
+        r2_raw = lambda wc: pick_raw_fastq(wc, 2),
+        init = f"{OUT}/.init.done"
+    output:
+        r1_norm = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
+        r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
+    log:
+        f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
+    threads: THREADS
+    shell:
+        r"""
+        set -euo pipefail
+        exec 2> "{log}"
+
+        # check if input is compressed or not
+        # decompress to norm raw directory if it is
+        # add link to original raw fastq in norm raw directory
+        #   if it is already decompress
+        norm_fastq() {{
+            local fastq_in="$1"
+            local fastq_out="$2"
+            if [[ "$fastq_in" == *.gz ]]; then
+                pigz -dc "$fastq_in" > "$fastq_out"
+            else
+                ln -sf "$(realpath "$fastq_in")" "$fastq_out"
+            fi
+        }}
+
+        norm_fastq "{input.r1_raw}" "{output.r1_norm}"
+        norm_fastq "{input.r2_raw}" "{output.r2_norm}"
+        """
+
 #---------------------------------------------
 # UMI extraction from R2 and Select R1 Reads
 #---------------------------------------------
 rule umi_extract_select_r1:
     input:
-        r1 = f'{RAW}/{{s}}_R1_001.fastq',
-        r2 = f'{RAW}/{{s}}_R2_001.fastq',
+        r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
+        r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
         sample_names = f"{OUT}/sample.names",
         init = f"{OUT}/.init.done"
     output:
@@ -279,7 +330,7 @@ rule read_counts:
     input:
         # need all samples processed to execute rule once, 
         #   consolidating data from all samples into one stats file
-        raw_r1s = expand(f'{RAW}/{{s}}_R1_001.fastq', s=SAMPLES),
+        raw_r1s = expand(f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq', s=SAMPLES),
         host_alignment = expand(f"{CLEAN_DIR}/Alignment/host.{{s}}.sam", s=SAMPLES),
         bacterial_reads = expand(f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.fasta", s=SAMPLES)
     output:
@@ -315,17 +366,36 @@ rule read_counts:
 rule mothur_classify:
     input:
         bacterial_reads = f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.fasta",
-        mothur_template = MOTHUR_TEMPLATE,
+        mothur_ref = MOTHUR_REFERENCE,
         mothur_tax = MOTHUR_TAX
     output:
-        taxfile = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy"
-        tax_summary = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.tax.summary""
+        taxfile = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy",
+        tax_summary = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.tax.summary"
     log:
         f"{LOG_DIR}/07_mothur_class/07_mothur_class.{{s}}.log"
     threads: THREADS
     shell:
         r"""
         set -euo pipefail
-        mothur "#set.dir(output={TAX_DIR}); classify.seqs(fasta={input.bacterial_reads}, template={input.mothur_template}, taxonomy={input.mothur_tax}, mothod=wang, cutoff=0, processors={threads})" \
-            2> "{log}"
+
+        # ---- Guard: empty FASTA ----
+        if ! grep -q '^>' "{input.bacterial_reads}"; then
+            echo "[INFO] {wildcards.s}: no bacterial reads found; skipping mothur classify.seqs" > {log}
+            # creating empty but valid output to continue Snakemake
+            : > "{output.taxfile}"
+            : > "{output.tax_summary}"
+            exit 0
+        fi
+
+        # ---- Run Mothur ----
+        mothur "#set.dir(output={TAX_DIR}); 
+                set.logfile(name={log});
+                classify.seqs(
+                    fasta={input.bacterial_reads}, 
+                    reference={input.mothur_ref}, 
+                    taxonomy={input.mothur_tax}, 
+                    method=wang, 
+                    cutoff=0, 
+                    processors={threads}
+                )" >> {log} 2>&1
         """
