@@ -1,0 +1,29 @@
+threads: 10
+
+raw_dir: "Exp_Data/Single_Sample"
+out_root: "Exp_Output/Single_Sample"
+
+primer_motif: "GGACTAC"
+umi_len: 9
+
+host_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
+viral_ref: "Ref_Data/all.viral.fna"
+bact16s_ref: "Ref_Data/all.rrna.bacteria"
+
+mothur_reference: "Ref_Data/ncbi20.fasta"
+mothur_tax: "Ref_Data/ncbi20.tax"
+
+trimmomatic_jar: "$TRIMMOJAR"
+trim_args: ["AVGQUAL:30"]
+
+tax_min_counts:
+  phylum: 50
+  class: 50
+  genus: 10
+  species: 5
+
+
+
+neg_tags: ["NEGATIVECONTROL", "CELLSCONTROL", "NEGWATER", "BLANK", "NEGcDNA", "NEGPCR", "NEG"]
+neg_db_top_k: 10000
+neg_as_keep_lt: 160

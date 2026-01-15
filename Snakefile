@@ -1,31 +1,37 @@
 # TODO: shift global variable declaration to configile
 import os, re, glob
 from pathlib import Path
-# Input and Output Directories
-RAW="Exp_Data/Single_Sample"
-OUT="Exp_Output/Single_Sample"
 
-ORIG_DIR  = f"{OUT}/original.fastq"
+configfile: "config.yaml"
+
+THREADS = config["threads"]
+
+# Input and Output Directories
+RAW = config["raw_dir"]
+OUT = config["out_root"]
+
+ORIG_DIR = f"{OUT}/original.fastq"
 NORM_RAW_DIR = f"{OUT}/raw.norm"
 CLEAN_DIR = f"{OUT}/clean.fastq"
-TAX_DIR   = f"{OUT}/taxonomy"
-LOG_DIR   = f"{OUT}/logs"
+TAX_DIR = f"{OUT}/taxonomy"
+LOG_DIR = f"{OUT}/logs"
 
 # Sequencing metadata
-PRIMER_MOTIF="GGACTAC"
-UMI_LEN="16"
+PRIMER_MOTIF = config["primer_motif"]
+UMI_LEN = config["umi_len"]
 
 # Reference Data
-HOST_REF="Ref_Data/Mus_musculus.GRCm38.cdna.all.fa" 
-VIRAL_REF="Ref_Data/all.viral.fna"
-BACT16S_REF="Ref_Data/all.rrna.bacteria"
+HOST_REF = config["host_ref"]
+VIRAL_REF = config["viral_ref"]
+BACT16S_REF = config["bact16s_ref"]
 # mothur references
-MOTHUR_REFERENCE="Ref_Data/ncbi20.fasta"
-MOTHUR_TAX="Ref_Data/ncbi20.tax"
+MOTHUR_REFERENCE = config["mothur_reference"]
+MOTHUR_TAX = config["mothur_tax"]
 
 # Trimming Parameters
-TRIMMOMATIC_JAR="$TRIMMOJAR"
-TRIM_ARGS="AVGQUAL:30" 
+TRIMMOMATIC_JAR = config["trimmomatic_jar"]
+TRIM_ARGS = config["trim_args"]
+TRIM_ARGS_STR =  " ".join(TRIM_ARGS)
 
 # Negative Control Filtering Parameters
 # TODO: figure out how to format for snakemake without config file
@@ -33,10 +39,16 @@ NEG_DB_TOP_K="10000"
 NEG_AS_KEEP_LT="160"   
 
 # Taxonomy Cutoffs
-# TODO: figure out how to format for snakemake without config file
-TAX_MIN = ()
+TAX_MIN = config["tax_min_counts"]
+TAX_LEVELS = ['genus', 'species', 'class', 'phylum']
+TAX_FIELDS = {
+    "phylum":  "2",
+    "class":   "2,3",
+    "genus":   "2,3,4,5,6",
+    "species": "2,3,4,5,6,7",
+}
 
-THREADS = 2
+
 
 
 def discover_samples():
@@ -70,8 +82,7 @@ SAMPLES_STR = " ".join(SAMPLES)
 #----------------------------
 rule all:
     input:
-        taxfile = expand(f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy", s=SAMPLES),
-        read_counts = f'{OUT}/counts/all_sample.count.stats.tsv'
+        tax_count = expand(f"{TAX_DIR}/bacterial.{{s}}.counts/{{s}}.{{level}}.count", s=SAMPLES, level=TAX_LEVELS)
 
 #----------------------------
 # Construct Directories
@@ -207,6 +218,8 @@ rule trim_selected_r1:
         init = f"{OUT}/.init.done"
     output:
         trimmed_fastq = f"{CLEAN_DIR}/Trimming/trimmed.{{s}}.R1.fastq"
+    params:
+        trim_args = TRIM_ARGS_STR
     log:
         f"{LOG_DIR}/02_trim/02_trim.{{s}}.log"
     threads: THREADS
@@ -216,7 +229,7 @@ rule trim_selected_r1:
         set -euo pipefail
 
         trimmomatic_jar="$TRIMMOJAR"
-        java -jar "$trimmomatic_jar" SE -threads {threads} -phred33 "{input.selected_fastq}" "{output.trimmed_fastq}" "{TRIM_ARGS}"
+        java -jar "$trimmomatic_jar" SE -threads {threads} -phred33 "{input.selected_fastq}" "{output.trimmed_fastq}" "{params.trim_args}"
         """
 
 
@@ -355,8 +368,10 @@ rule read_counts:
 
         {{
             set -euo pipefail
+        
             echo -e "ID\tRaw_reads\tSelected_reads\tTrimmed_reads\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
             for s in {params.samples}; do
+
                 raw_r1_fq="{params.norm_raw}/${{s}}_R1_001.fastq"
                 selected_fq="{params.selected}/SelectedReads.${{s}}.R1.fastq"
                 trimmed_fq="{params.trimmed}/trimmed.${{s}}.R1.fastq"
@@ -371,6 +386,7 @@ rule read_counts:
                 host=$(samtools view -F 4 "$host_sam" | wc -l)
                 bacterial=$(grep -c '^>' "$bacterial_fa" 2>/dev/null || true)
 
+                
                 echo -e "${{s}}\t${{raw_r1}}\t${{selected}}\t${{trimmed}}\t-${{viral}}\t-${{host}}\t${{bacterial}}"
             done
         }} > "{output.read_counts}"
@@ -388,6 +404,8 @@ rule mothur_classify:
         taxfile = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy",
         tax_summary = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.tax.summary"
     log:
+        # TODO: determine why mothur still outputs additional .logfile
+        #       piping properly into desired log but also creats its own in pwd
         f"{LOG_DIR}/07_mothur_class/07_mothur_class.{{s}}.log"
     threads: THREADS
     shell:
@@ -414,4 +432,35 @@ rule mothur_classify:
                     cutoff=0, 
                     processors={threads}
                 )" >> {log} 2>&1
+        """
+
+
+#----------------------------------
+# Taxonomy Classification Counts
+#----------------------------------
+rule tax_counts:
+    input:
+        taxonomy = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy"
+    output:
+        tax_count = f"{TAX_DIR}/bacterial.{{s}}.counts/{{s}}.{{level}}.count"
+    params:
+        min_count = lambda wc: TAX_MIN[wc.level],
+        cutoff = lambda wc: TAX_FIELDS[wc.level]
+    log:
+        f"{LOG_DIR}/08_tax_count/08_tax_count.{{level}}.{{s}}.log"
+    shell:
+        r"""
+        set -euo pipefail
+        exec 2> "{log}"
+
+        # taxonomy -> (strip confidences) -> lineage col -> split by ';' -> count filtered taxa
+        sed -E 's/\([^()]*\)//g' "{input.taxonomy}" \
+        | awk -F"\t" '{{print $2}}' \
+        | cut -d ';' -f {params.cutoff} \
+        | sort \
+        | uniq -c \
+        | awk -v m="{params.min_count}" '$1>m{{print $1, $2}}' \
+        | sed -E 's/^ +//' \
+        | sort -k2 \
+        > "{output.tax_count}"
         """
