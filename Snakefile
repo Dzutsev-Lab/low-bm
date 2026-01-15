@@ -2,8 +2,8 @@
 import os, re, glob
 from pathlib import Path
 # Input and Output Directories
-RAW="Exp_Data/expt1_rnalowbiotit_300Mid_041123/OUTPUT/FASTQ"
-OUT="Exp_Output/expt1_rnalowbiotit_300Mid_041123"
+RAW="Exp_Data/Single_Sample"
+OUT="Exp_Output/Single_Sample"
 
 ORIG_DIR  = f"{OUT}/original.fastq"
 NORM_RAW_DIR = f"{OUT}/raw.norm"
@@ -70,7 +70,8 @@ SAMPLES_STR = " ".join(SAMPLES)
 #----------------------------
 rule all:
     input:
-        taxfile = expand(f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy", s=SAMPLES)
+        taxfile = expand(f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy", s=SAMPLES),
+        read_counts = f'{OUT}/counts/all_sample.count.stats.tsv'
 
 #----------------------------
 # Construct Directories
@@ -314,12 +315,13 @@ rule bacterial_alignment:
     log:
         f"{LOG_DIR}/06_bact_map/06_bact_map.{{s}}.log"
     threads: THREADS
-    # TODO: work to understand why we are extracting read names with awk here and did it with samtools with viral and host alignments
+    # Reverted filtering to use samtools view with positive selection for mapped reads (reverse of unmmaped fileter)
+    #   was previously filtered via awk statement (this is more consistent)
     shell:
         r"""
         set -euo pipefail
         bwa mem -t {threads} "{BACT16S_REF}" "{input.nonhost_nonviral_reads}" > "{output.bacterial_alignment}" 2> "{log}"
-        awk '($1 !~ /^@/) && ($3 != "*") {{print $1}}' "{output.bacterial_alignment}" | sort -u > "{output.bacterial_names}"
+        samtools view -F 4 "{output.bacterial_alignment}" | cut -f1 | sort -u > "{output.bacterial_names}"
         seqtk subseq "{input.nonhost_nonviral_reads}" "{output.bacterial_names}" > "{output.bacterial_reads}" 2> "{log}"
         """
 
@@ -335,29 +337,43 @@ rule read_counts:
         bacterial_reads = expand(f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.fasta", s=SAMPLES)
     output:
         # TODO: consider numbering out the output subdirectories to keep track of order
-        count_stats = f'{OUT}/Counts/all_sample.count.stats.tsv'
+        read_counts = f'{OUT}/counts/all_sample.count.stats.tsv'
     params:
         samples=SAMPLES_STR,
-        raw=RAW,
-        clean=CLEAN_DIR
+        norm_raw=NORM_RAW_DIR,
+        selected=f'{CLEAN_DIR}/UMISelection',
+        trimmed=f'{CLEAN_DIR}/Trimming',
+        unmapping=f'{CLEAN_DIR}/Alignment',
+        bacterial=f'{CLEAN_DIR}/Bacterial'
+    log:
+        f"{LOG_DIR}/-01_read_count/-01_read_count.log"
     shell:
-        # TODO: consider shifting this to a series of python functions for easier function
+        # TODO: take into account secondary and supplementary alignments whne counting records in sam's
         r"""
+        set -euo pipefail
+        exec 2> "{log}"
+
         {{
             set -euo pipefail
-            echo -e "ID\tTotal_reads\tHuman_mapped_reads\tClean_reads"
+            echo -e "ID\tRaw_reads\tSelected_reads\tTrimmed_reads\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
             for s in {params.samples}; do
-                r1="{params.raw}/${{s}}_R1_001.fastq"
-                sam="{params.clean}/Alignment/host.${{s}}.sam"
-                fa="{params.clean}/Bacterial/bacterial.${{s}}.fasta"
+                raw_r1_fq="{params.norm_raw}/${{s}}_R1_001.fastq"
+                selected_fq="{params.selected}/SelectedReads.${{s}}.R1.fastq"
+                trimmed_fq="{params.trimmed}/trimmed.${{s}}.R1.fastq"
+                viral_sam="{params.unmapping}/viral.${{s}}.sam"
+                host_sam="{params.unmapping}/host.${{s}}.sam"
+                bacterial_fa="{params.bacterial}/bacterial.${{s}}.fasta"
 
-                total=$(($(wc -l < "$r1")/4))
-                hum_mapped=$(samtools view -F 4 "$sam" | wc -l)
-                clean=$(grep -c '^>' "$fa" 2>/dev/null || true)
+                raw_r1=$(($(wc -l < "$raw_r1_fq")/4))
+                selected=$(($(wc -l < "$selected_fq")/4))
+                trimmed=$(($(wc -l < "$trimmed_fq")/4))
+                viral=$(samtools view -F 4 "$viral_sam" | wc -l)
+                host=$(samtools view -F 4 "$host_sam" | wc -l)
+                bacterial=$(grep -c '^>' "$bacterial_fa" 2>/dev/null || true)
 
-                echo -e "${{s}}\t${{total}}\t${{hum_mapped}}\t${{clean}}"
+                echo -e "${{s}}\t${{raw_r1}}\t${{selected}}\t${{trimmed}}\t-${{viral}}\t-${{host}}\t${{bacterial}}"
             done
-        }} > "{output.count_stats}"
+        }} > "{output.read_counts}"
         """
 
 #-------------------------
