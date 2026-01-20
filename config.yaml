@@ -1,7 +1,7 @@
 threads: 10
 
-raw_dir: "Exp_Data/Single_Sample"
-out_root: "Exp_Output/Single_Sample"
+raw_dir: "Exp_Data/expt1_rnalowbiotit_300Mid_041123/OUTPUT/FASTQ"
+out_root: "Exp_Output/expt1_rnalowbiotit_300Mid_041123"
 
 primer_motif: "GGACTAC"
 umi_len: 9

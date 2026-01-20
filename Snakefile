@@ -405,7 +405,8 @@ rule mothur_classify:
         tax_summary = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.tax.summary"
     log:
         # TODO: determine why mothur still outputs additional .logfile
-        #       piping properly into desired log but also creats its own in pwd
+        #       piping properly into desired log but also creates its own in pwd
+        #       currently just removing these after mothur run
         f"{LOG_DIR}/07_mothur_class/07_mothur_class.{{s}}.log"
     threads: THREADS
     shell:
@@ -432,6 +433,9 @@ rule mothur_classify:
                     cutoff=0, 
                     processors={threads}
                 )" >> {log} 2>&1
+        
+        # ---- Remove Redundant Mothur Logs ----
+        rm *.logfile 2>dev/null || true
         """
 
 
