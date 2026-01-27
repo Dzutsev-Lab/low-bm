@@ -1,4 +1,4 @@
-# TODO: shift global variable declaration to configile
+# TODO: adjust log file numbering
 import os, re, glob
 from pathlib import Path
 
@@ -9,24 +9,50 @@ THREADS = config["threads"]
 # Input and Output Directories
 RAW = config["raw_dir"]
 OUT = config["out_root"]
+SCRIPTS = config["script_dir"]
 
 ORIG_DIR = f"{OUT}/original.fastq"
-NORM_RAW_DIR = f"{OUT}/raw.norm"
+IP_DIR = f"{OUT}/InProcess"
+NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
+# TODO: shift rules funneling into clean_dir to more rule-specific directories
+UMI_SELECT_DIR = f"{IP_DIR}/01_UMISelection"
+TRIMMED_DIR = f"{IP_DIR}/02_Trimming"
+NEG_ALIGNMENT_DIR = f"{IP_DIR}/03_Neg_Alignment"
+NEG_ALIGN_FILT_DIR = f"{IP_DIR}/04_Neg_Alignment_Filter"
+POS_ALIGNMENT_DIR = f"{IP_DIR}/05_Pos_Alignment"
+DADA_DENOISE_DIR = f"{IP_DIR}/06_Dada_Denoising"
+ID_TAX_DIR = f"{IP_DIR}/07.1_IDTax_Taxonomy"
+
+MOTHUR_TAX_DIR = f"{IP_DIR}/07.2-8_Mothur_Taxonomy"
+
+
+TRACK_DIR = f"{OUT}/Tracking"
+READ_COUNT_DIR = f"{TRACK_DIR}/-01_Read_Counts"
+
 CLEAN_DIR = f"{OUT}/clean.fastq"
 TAX_DIR = f"{OUT}/taxonomy"
 LOG_DIR = f"{OUT}/logs"
 
 # Sequencing metadata
 PRIMER_MOTIF = config["primer_motif"]
+PRIMER_LEN = len(PRIMER_MOTIF)
 UMI_LEN = config["umi_len"]
 
 # Reference Data
 HOST_REF = config["host_ref"]
 VIRAL_REF = config["viral_ref"]
 BACT16S_REF = config["bact16s_ref"]
+
 # mothur references
 MOTHUR_REFERENCE = config["mothur_reference"]
-MOTHUR_TAX = config["mothur_tax"]
+MOTHUR_TAX_FILE = config["mothur_tax_file"]
+# mothur params
+MOTHUR_CUTOFF = config["mothur_cutoff"]
+MOTHUR_METHOD = config["mothur_method"]
+
+# Dada reference
+ID_TAX_REFERENCE = config["IDTax_reference"]
+
 
 # Trimming Parameters
 TRIMMOMATIC_JAR = config["trimmomatic_jar"]
@@ -82,7 +108,8 @@ SAMPLES_STR = " ".join(SAMPLES)
 #----------------------------
 rule all:
     input:
-        tax_count = expand(f"{TAX_DIR}/bacterial.{{s}}.counts/{{s}}.{{level}}.count", s=SAMPLES, level=TAX_LEVELS)
+        abundance_plot = f"{MOTHUR_TAX_DIR}/abundanceXconc.png",
+
 
 #----------------------------
 # Construct Directories
@@ -164,7 +191,7 @@ rule norm_fastq:
         """
 
 #---------------------------------------------
-# UMI extraction from R2 and Select R1 Reads
+# 01 UMI extraction from R2 and Select R1 Reads
 #---------------------------------------------
 rule umi_extract_select_r1:
     input:
@@ -173,9 +200,9 @@ rule umi_extract_select_r1:
         sample_names = f"{OUT}/sample.names",
         init = f"{OUT}/.init.done"
     output:
-        umi = f"{CLEAN_DIR}/UMISelection/UMIMap.{{s}}.tsv",
-        selected_names = f"{CLEAN_DIR}/UMISelection/SelectedNames.{{s}}.names",
-        selected_r1 = f"{CLEAN_DIR}/UMISelection/SelectedReads.{{s}}.R1.fastq"
+        umi = f"{UMI_SELECT_DIR}/UMIMap.{{s}}.tsv",
+        selected_names = f"{UMI_SELECT_DIR}/SelectedNames.{{s}}.names",
+        selected_r1 = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq"
     log:
         f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
     threads: THREADS
@@ -210,14 +237,14 @@ rule umi_extract_select_r1:
 
 
 #----------------------------
-# Trimming with Trimmomatic
+# 02 Trimming with Trimmomatic
 #----------------------------   
 rule trim_selected_r1:
     input:
-        selected_fastq = f"{CLEAN_DIR}/UMISelection/SelectedReads.{{s}}.R1.fastq",
+        selected_fastq = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq",
         init = f"{OUT}/.init.done"
     output:
-        trimmed_fastq = f"{CLEAN_DIR}/Trimming/trimmed.{{s}}.R1.fastq"
+        trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq"
     params:
         trim_args = TRIM_ARGS_STR
     log:
@@ -232,23 +259,7 @@ rule trim_selected_r1:
         java -jar "$trimmomatic_jar" SE -threads {threads} -phred33 "{input.selected_fastq}" "{output.trimmed_fastq}" "{params.trim_args}"
         """
 
-
-#----------------------------
-# FASTQ to FASTA
-#----------------------------   
-rule fastq_to_fasta:
-    input:
-        fastq = f"{CLEAN_DIR}/Trimming/trimmed.{{s}}.R1.fastq"
-    output:
-        fasta = f"{CLEAN_DIR}/Trimming/trimmed.{{s}}.R1.fasta"
-    log:
-        f"{LOG_DIR}/03_fq2fa/03_fq2fa.{{s}}.log"
-    # TODO: address seqkit dependency (most likely using singularity)
-    shell:
-        r"""
-        set -euo pipefail
-        seqkit fq2fa "{input.fastq}" > "{output.fasta}" 2> "{log}"
-        """
+    
 
 
 #----------------------------
@@ -268,65 +279,65 @@ rule index_ref_bwa:
         """
 
 #--------------------------------------------------------
-# Contaminant Alignment and Unmapped Selection
+# 03 Contaminant Alignment and Unmapped Selection
 #--------------------------------------------------------
 rule unmapped_bwa_mem:
     input:
-        trimmed_fasta = f"{CLEAN_DIR}/Trimming/trimmed.{{s}}.R1.fasta",
+        trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq",
         # What is the lambda doing???
         reference_fasta = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag],
         reference_bwt = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag] + ".bwt"
     output:
-        sam = f"{CLEAN_DIR}/Alignment/{{tag}}.{{s}}.sam",
-        unmapped_names = f"{CLEAN_DIR}/Unmapped/{{tag}}.unmapped.{{s}}.names"
+        sam = f"{NEG_ALIGNMENT_DIR}/{{tag}}.{{s}}.sam",
+        unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.{{tag}}.{{s}}.names"
     log:
-        f"{LOG_DIR}/04_map/04_map_{{tag}}.{{s}}.log"
+        f"{LOG_DIR}/03_alignment/03_alignment_{{tag}}.{{s}}.log"
     threads: THREADS
     # TODO: address BWA dependency (most likely using singularity)
     shell:
         r"""
         set -euo pipefail
-        bwa mem -t {threads} "{input.reference_fasta}" "{input.trimmed_fasta}" > "{output.sam}" 2> "{log}"
+        bwa mem -t {threads} "{input.reference_fasta}" "{input.trimmed_fastq}" > "{output.sam}" 2> "{log}"
         samtools view -f 4 "{output.sam}" | cut -f1 | sort -u > "{output.unmapped_names}"
         """
 
 #-------------------------------------
-# Unmapped Host and Viral Read Filter
+# 04 Unmapped Host and Viral Read Filter
 #------------------------------------- 
 rule nonhost_nonviral_reads:
     input:
-        trimmed_fasta = f"{CLEAN_DIR}/Trimming/trimmed.{{s}}.R1.fasta",
-        host_unmapped_names = f"{CLEAN_DIR}/Unmapped/host.unmapped.{{s}}.names",
-        viral_unmapped_names = f"{CLEAN_DIR}/Unmapped/viral.unmapped.{{s}}.names"
+        trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq",
+        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.{{s}}.names",
+        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.{{s}}.names"
     output:
-        nonhost_nonviral_reads = f"{CLEAN_DIR}/Unmapped/nonhost.nonviral.{{s}}.fasta"
+        nonhost_nonviral_reads = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.{{s}}.fastq"
     log:
-        f"{LOG_DIR}/05_nonhost_nonviral/05_nonhost_nonviral{{s}}.log"
+        f"{LOG_DIR}/04_nonhost_nonviral/04_nonhost_nonviral{{s}}.log"
     threads: THREADS
     # TODO: consider consolidating with unmapped_bwa_mem and make one step??
     shell:
         r"""
         set -euo pipefail
 
-        seqtk subseq "{input.trimmed_fasta}" "{input.host_unmapped_names}" \
+        seqtk subseq "{input.trimmed_fastq}" "{input.host_unmapped_names}" \
          | seqtk subseq - "{input.viral_unmapped_names}" \
          > "{output.nonhost_nonviral_reads}"
         """
 
 
 #-------------------------------------
-# Positive Bacterial Alignment
+# 05 Positive Bacterial Alignment
 #------------------------------------- 
 rule bacterial_alignment:
     input:
-        nonhost_nonviral_reads = f"{CLEAN_DIR}/Unmapped/nonhost.nonviral.{{s}}.fasta"
+        nonhost_nonviral_reads = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.{{s}}.fastq"
     output:
-        bacterial_alignment = f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.sam",
-        bacterial_names = f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.names",
-        bacterial_reads = f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.fasta"
+        bacterial_alignment = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.sam",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.names",
+        bacterial_reads = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq"
 
     log:
-        f"{LOG_DIR}/06_bact_map/06_bact_map.{{s}}.log"
+        f"{LOG_DIR}/05_bact_map/05_bact_map.{{s}}.log"
     threads: THREADS
     # Reverted filtering to use samtools view with positive selection for mapped reads (reverse of unmmaped fileter)
     #   was previously filtered via awk statement (this is more consistent)
@@ -338,30 +349,164 @@ rule bacterial_alignment:
         seqtk subseq "{input.nonhost_nonviral_reads}" "{output.bacterial_names}" > "{output.bacterial_reads}" 2> "{log}"
         """
 
-#-------------------------
-# Read Count Calculations
-#-------------------------
+
+#----------------------------
+# 06 Dada ASV Denoising
+#----------------------------   
+rule dada_denoising:
+    input: 
+        bacterial_reads = expand(f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq", s=SAMPLES)
+    output:
+        filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
+        seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        rep_asv_fasta = f"{DADA_DENOISE_DIR}/rep_ASV_seqs.fasta",
+        filter_stage_counts = f"{READ_COUNT_DIR}/dada_read_counts.tsv",
+        
+    params:
+        # Directory Params
+        bacterial_dir = POS_ALIGNMENT_DIR,
+        # Processign Params
+        chunk_size = 5,
+        # Filter and Trim Params
+        truncLen = 190,
+        primerLen = PRIMER_LEN,
+        maxN = 0,
+        maxEE = 2,
+        truncQ = 2,
+
+    log:
+        f"{LOG_DIR}/06_dada.log"
+    script:
+        f"{SCRIPTS}/DadaASVFilter.R"
+
+#--------------------------------------
+# 07.1 IDTax (DECIPHER) Taxa Classification
+#--------------------------------------
+rule IDTax_classification:
+    input:
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        tax_ref = ID_TAX_REFERENCE
+    output:
+        taxonomy_table = f"{ID_TAX_DIR}/IDTax_Taxonomy.tsv",
+    params:
+        seq_table_dir = DADA_DENOISE_DIR,
+        idtax_class_dir = ID_TAX_DIR,
+    threads: THREADS
+    log:
+        f"{LOG_DIR}/07.1_IDTax.log"
+    script:
+        f"{SCRIPTS}/IdTaxaClassification.R"
+        
+#------------------------------
+# 07.2 Mothur Taxa Classifcation 
+#------------------------------
+rule mothur_classify:
+    input:
+        rep_asv_fasta = f"{DADA_DENOISE_DIR}/rep_ASV_seqs.fasta",
+        mothur_ref = MOTHUR_REFERENCE,
+        mothur_tax_file = MOTHUR_TAX_FILE
+    output:
+        taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy",
+        tax_summary = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.tax.summary"
+    log:
+        # TODO: determine why mothur still outputs additional .logfile
+        #       piping properly into desired log but also creates its own in pwd
+        #       currently just removing these after mothur run
+        f"{LOG_DIR}/07.2_mothur_class.log"
+    threads: THREADS
+    shell:
+        r"""
+        set -euo pipefail
+
+        # ---- Run Mothur ----
+        mothur "#set.dir(output={MOTHUR_TAX_DIR}); 
+                set.logfile(name={log});
+                classify.seqs(
+                    fasta={input.rep_asv_fasta}, 
+                    reference={input.mothur_ref}, 
+                    taxonomy={input.mothur_tax_file}, 
+                    method={MOTHUR_METHOD}, 
+                    cutoff={MOTHUR_CUTOFF}, 
+                    processors={threads}
+                )" >> {log} 2>&1
+        
+        # ---- Remove Redundant Mothur Logs ----
+        rm *.logfile 2>dev/null || true
+        """
+
+#-------------------------------
+# 08 Phyloseq Taxonomy Analysis
+#-------------------------------
+rule phyloseq_analysis:
+    input:
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy"
+    output:
+        abundance_plot = f"{MOTHUR_TAX_DIR}/abundanceXconc.png",
+    log:
+        f"{LOG_DIR}/08_phyloseq.log"
+    script:
+        f"{SCRIPTS}/PhyloseqTaxAnalysis.R"
+
+
+#------------------------------------
+# 08 Taxonomy Classification Counts
+#------------------------------------
+rule tax_counts:
+    input:
+        taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy"
+    output:
+        tax_count = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.{{level}}.count"
+    params:
+        min_count = lambda wc: TAX_MIN[wc.level],
+        cutoff = lambda wc: TAX_FIELDS[wc.level]
+    log:
+        f"{LOG_DIR}/08_mothur_count/08_mothur_count.{{level}}.log"
+    shell:
+        r"""
+        set -euo pipefail
+        exec 2> "{log}"
+
+        # taxonomy -> (strip confidences) -> lineage col -> split by ';' -> count filtered taxa
+        sed -E 's/\([^()]*\)//g' "{input.taxfile}" \
+        | awk -F"\t" '{{print $2}}' \
+        | cut -d ';' -f {params.cutoff} \
+        | sort \
+        | uniq -c \
+        | awk -v m="{params.min_count}" '$1>m{{print $1, $2}}' \
+        | sed -E 's/^ +//' \
+        | sort -k2 \
+        > "{output.tax_count}"
+        """
+
+
+
+
+
+
+        
+
+#-----------------------------
+# -01 Read Count Calculations
+#-----------------------------
 rule read_counts:
     input:
-        # need all samples processed to execute rule once, 
-        #   consolidating data from all samples into one stats file
-        raw_r1s = expand(f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq', s=SAMPLES),
-        host_alignment = expand(f"{CLEAN_DIR}/Alignment/host.{{s}}.sam", s=SAMPLES),
-        bacterial_reads = expand(f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.fasta", s=SAMPLES)
+        bacterial_reads = expand(f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq", s=SAMPLES)
     output:
         # TODO: consider numbering out the output subdirectories to keep track of order
-        read_counts = f'{OUT}/counts/all_sample.count.stats.tsv'
+        read_counts = f'{READ_COUNT_DIR}/all_sample.count.stats.tsv'
     params:
-        samples=SAMPLES_STR,
-        norm_raw=NORM_RAW_DIR,
-        selected=f'{CLEAN_DIR}/UMISelection',
-        trimmed=f'{CLEAN_DIR}/Trimming',
-        unmapping=f'{CLEAN_DIR}/Alignment',
-        bacterial=f'{CLEAN_DIR}/Bacterial'
+        samples = SAMPLES_STR,
+        norm_raw = NORM_RAW_DIR,
+        selected = UMI_SELECT_DIR,
+        trimmed = TRIMMED_DIR,
+        unmapping = NEG_ALIGNMENT_DIR,
+        bacterial = POS_ALIGNMENT_DIR
     log:
         f"{LOG_DIR}/-01_read_count/-01_read_count.log"
     shell:
-        # TODO: take into account secondary and supplementary alignments whne counting records in sam's
+        # TODO: take into account secondary and supplementary alignments when counting records in sam's
         r"""
         set -euo pipefail
         exec 2> "{log}"
@@ -377,14 +522,14 @@ rule read_counts:
                 trimmed_fq="{params.trimmed}/trimmed.${{s}}.R1.fastq"
                 viral_sam="{params.unmapping}/viral.${{s}}.sam"
                 host_sam="{params.unmapping}/host.${{s}}.sam"
-                bacterial_fa="{params.bacterial}/bacterial.${{s}}.fasta"
+                bacterial_fq="{params.bacterial}/bacterial.${{s}}.fastq"
 
                 raw_r1=$(($(wc -l < "$raw_r1_fq")/4))
                 selected=$(($(wc -l < "$selected_fq")/4))
                 trimmed=$(($(wc -l < "$trimmed_fq")/4))
                 viral=$(samtools view -F 4 "$viral_sam" | wc -l)
                 host=$(samtools view -F 4 "$host_sam" | wc -l)
-                bacterial=$(grep -c '^>' "$bacterial_fa" 2>/dev/null || true)
+                bacterial=$(($(wc -l < "$bacterial_fq")/4))
 
                 
                 echo -e "${{s}}\t${{raw_r1}}\t${{selected}}\t${{trimmed}}\t-${{viral}}\t-${{host}}\t${{bacterial}}"
@@ -392,79 +537,23 @@ rule read_counts:
         }} > "{output.read_counts}"
         """
 
-#-------------------------
-# Mothur CLassifcation
-#-------------------------
-rule mothur_classify:
+
+
+
+#----------------------------
+# -02 FASTQ to FASTA
+#----------------------------   
+# TODO: check if mothur really requires FASTA over FASTQ
+rule fastq_to_fasta:
     input:
-        bacterial_reads = f"{CLEAN_DIR}/Bacterial/bacterial.{{s}}.fasta",
-        mothur_ref = MOTHUR_REFERENCE,
-        mothur_tax = MOTHUR_TAX
+        fastq = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq"
     output:
-        taxfile = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy",
-        tax_summary = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.tax.summary"
+        fasta = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fasta"
     log:
-        # TODO: determine why mothur still outputs additional .logfile
-        #       piping properly into desired log but also creates its own in pwd
-        #       currently just removing these after mothur run
-        f"{LOG_DIR}/07_mothur_class/07_mothur_class.{{s}}.log"
-    threads: THREADS
+        f"{LOG_DIR}/-02_fq2fa/-02_fq2fa.{{s}}.log"
+    # TODO: address seqkit dependency (most likely using singularity)
     shell:
         r"""
         set -euo pipefail
-
-        # ---- Guard: empty FASTA ----
-        if ! grep -q '^>' "{input.bacterial_reads}"; then
-            echo "[INFO] {wildcards.s}: no bacterial reads found; skipping mothur classify.seqs" > {log}
-            # creating empty but valid output to continue Snakemake
-            : > "{output.taxfile}"
-            : > "{output.tax_summary}"
-            exit 0
-        fi
-
-        # ---- Run Mothur ----
-        mothur "#set.dir(output={TAX_DIR}); 
-                set.logfile(name={log});
-                classify.seqs(
-                    fasta={input.bacterial_reads}, 
-                    reference={input.mothur_ref}, 
-                    taxonomy={input.mothur_tax}, 
-                    method=wang, 
-                    cutoff=0, 
-                    processors={threads}
-                )" >> {log} 2>&1
-        
-        # ---- Remove Redundant Mothur Logs ----
-        rm *.logfile 2>dev/null || true
-        """
-
-
-#----------------------------------
-# Taxonomy Classification Counts
-#----------------------------------
-rule tax_counts:
-    input:
-        taxonomy = f"{TAX_DIR}/bacterial.{{s}}.ncbi20.wang.taxonomy"
-    output:
-        tax_count = f"{TAX_DIR}/bacterial.{{s}}.counts/{{s}}.{{level}}.count"
-    params:
-        min_count = lambda wc: TAX_MIN[wc.level],
-        cutoff = lambda wc: TAX_FIELDS[wc.level]
-    log:
-        f"{LOG_DIR}/08_tax_count/08_tax_count.{{level}}.{{s}}.log"
-    shell:
-        r"""
-        set -euo pipefail
-        exec 2> "{log}"
-
-        # taxonomy -> (strip confidences) -> lineage col -> split by ';' -> count filtered taxa
-        sed -E 's/\([^()]*\)//g' "{input.taxonomy}" \
-        | awk -F"\t" '{{print $2}}' \
-        | cut -d ';' -f {params.cutoff} \
-        | sort \
-        | uniq -c \
-        | awk -v m="{params.min_count}" '$1>m{{print $1, $2}}' \
-        | sed -E 's/^ +//' \
-        | sort -k2 \
-        > "{output.tax_count}"
+        seqkit fq2fa "{input.fastq}" > "{output.fasta}" 2> "{log}"
         """

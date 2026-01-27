@@ -1,7 +1,8 @@
-threads: 10
+threads: 12
 
-raw_dir: "Exp_Data/expt1_rnalowbiotit_300Mid_041123/OUTPUT/FASTQ"
-out_root: "Exp_Output/expt1_rnalowbiotit_300Mid_041123"
+raw_dir: "Exp_Data/Subset_Samples"
+out_root: "Exp_Output/Subset_Samples"
+script_dir: "scripts"
 
 primer_motif: "GGACTAC"
 umi_len: 9
@@ -11,7 +12,12 @@ viral_ref: "Ref_Data/all.viral.fna"
 bact16s_ref: "Ref_Data/all.rrna.bacteria"
 
 mothur_reference: "Ref_Data/ncbi20.fasta"
-mothur_tax: "Ref_Data/ncbi20.tax"
+mothur_tax_file: "Ref_Data/ncbi20.tax"
+mothur_cutoff: 0
+mothur_method: "wang"
+
+IDTax_reference: "Ref_Data/silva_nr99_v138.2_toGenus_trainset.fa.gz"
+
 
 trimmomatic_jar: "$TRIMMOJAR"
 trim_args: ["AVGQUAL:30"]
