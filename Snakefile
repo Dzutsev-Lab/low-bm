@@ -10,9 +10,9 @@ OUT = config["out_root"]
 SCRIPTS = config["script_dir"]
 
 ORIG_DIR = f"{OUT}/original.fastq"
+
 IP_DIR = f"{OUT}/InProcess"
 NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
-# TODO: shift rules funneling into clean_dir to more rule-specific directories
 UMI_SELECT_DIR = f"{IP_DIR}/01_UMISelection"
 TRIMMED_DIR = f"{IP_DIR}/02_Trimming"
 NEG_ALIGNMENT_DIR = f"{IP_DIR}/03_Neg_Alignment"
@@ -20,15 +20,11 @@ NEG_ALIGN_FILT_DIR = f"{IP_DIR}/04_Neg_Alignment_Filter"
 POS_ALIGNMENT_DIR = f"{IP_DIR}/05_Pos_Alignment"
 DADA_DENOISE_DIR = f"{IP_DIR}/06_Dada_Denoising"
 ID_TAX_DIR = f"{IP_DIR}/07.1_IDTax_Taxonomy"
-
 MOTHUR_TAX_DIR = f"{IP_DIR}/07.2-09_Mothur_Taxonomy"
 
 
 TRACK_DIR = f"{OUT}/Tracking"
-READ_COUNT_DIR = f"{TRACK_DIR}/-01_Read_Counts"
-
-CLEAN_DIR = f"{OUT}/clean.fastq"
-TAX_DIR = f"{OUT}/taxonomy"
+TAX_OUTPUT_DIR = f"{OUT}/Taxonomy"
 LOG_DIR = f"{OUT}/logs"
 
 # Sequencing metadata
@@ -116,11 +112,15 @@ SAMPLES_STR = " ".join(SAMPLES)
 #----------------------------
 rule all:
     input:
-        abunXconc_plot = f"{MOTHUR_TAX_DIR}/abunXconc.png",
-        abunXsample_plot = f"{MOTHUR_TAX_DIR}/abunXsample.png",
-        abunXconcXsample_plot = f"{MOTHUR_TAX_DIR}/abunXconcXsample.png",
-        read_counts = f'{READ_COUNT_DIR}/all_sample.count.stats.tsv',
-        tax_count = expand(f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.{{level}}.count", level=TAX_LEVELS),
+        abunXconc_plot = f"{TAX_OUTPUT_DIR}/abunXconc.png",
+        abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
+        abunXconcXsample_plot = f"{TAX_OUTPUT_DIR}/abunXconcXsample.png",
+        tax_summary = f"{TAX_OUTPUT_DIR}/rep_ASV_seqs.ncbi20.wang.tax.summary",
+        tax_count = expand(f"{TAX_OUTPUT_DIR}/rep_ASV_seqs.{{level}}.count", level=TAX_LEVELS),
+
+        pipieline_read_counts = f'{TRACK_DIR}/all_sample.count.stats.tsv',
+        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+
 
 
 
@@ -374,10 +374,10 @@ rule dada_denoising:
         bacterial_reads = expand(f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq", s=SAMPLES)
     output:
         filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
-        seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
+        seq_err_plot = f"{TRACK_DIR}/dada_error_plot.png",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/rep_ASV_seqs.fasta",
-        filter_stage_counts = f"{READ_COUNT_DIR}/dada_read_counts.tsv",
+        filter_stage_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
         
     params:
         # Directory Params
@@ -423,7 +423,8 @@ rule mothur_classify:
         mothur_tax_file = MOTHUR_TAX_FILE
     output:
         taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy",
-        tax_summary = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.tax.summary"
+        tax_summary = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.tax.summary",
+        tax_summary_copy = f"{TAX_OUTPUT_DIR}/rep_ASV_seqs.ncbi20.wang.tax.summary"
     log:
         # TODO: determine why mothur still outputs additional .logfile
         #       piping properly into desired log but also creates its own in pwd
@@ -446,6 +447,9 @@ rule mothur_classify:
                     processors={threads}
                 )" >> {log} 2>&1
         
+        # ---- Copy Taxonomy Summary to Output ---
+        cp {output.tax_summary} {TAX_OUTPUT_DIR}/
+        
         # ---- Remove Redundant Mothur Logs ----
         rm *.logfile
         """
@@ -458,9 +462,9 @@ rule phyloseq_analysis:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy",
     output:
-        abunXconc_plot = f"{MOTHUR_TAX_DIR}/abunXconc.png",
-        abunXsample_plot = f"{MOTHUR_TAX_DIR}/abunXsample.png",
-        abunXconcXsample_plot = f"{MOTHUR_TAX_DIR}/abunXconcXsample.png"
+        abunXconc_plot = f"{TAX_OUTPUT_DIR}/abunXconc.png",
+        abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
+        abunXconcXsample_plot = f"{TAX_OUTPUT_DIR}/abunXconcXsample.png"
     log:
         f"{LOG_DIR}/08_phyloseq.log"
     script:
@@ -474,7 +478,7 @@ rule asv_tax_counts:
     input:
         taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy"
     output:
-        tax_count = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.{{level}}.count"
+        tax_count = f"{TAX_OUTPUT_DIR}/rep_ASV_seqs.{{level}}.count"
     params:
         min_count = lambda wc: TAX_MIN[wc.level],
         cutoff = lambda wc: TAX_FIELDS[wc.level]
@@ -516,7 +520,7 @@ rule read_counts:
         host_sam = expand(f"{NEG_ALIGNMENT_DIR}/host.{{s}}.sam", s=SAMPLES),
         bacterial_reads = expand(f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq", s=SAMPLES)
     output:
-        read_counts = f'{READ_COUNT_DIR}/all_sample.count.stats.tsv'
+        read_counts = f'{TRACK_DIR}/all_sample.count.stats.tsv'
     params:
         samples = SAMPLES_STR,
         norm_raw = NORM_RAW_DIR,

@@ -108,8 +108,10 @@ all_sample_phyloseq <- phyloseq(otu_table(seq_table, taxa_are_rows = FALSE),
                                 sample_data(sample_meta_data_df),
                                 tax_table(tax_matrix))
 str(all_sample_phyloseq)
-# glom all samples based on common genus
+# glom all samples based on common genus (sets all low assignments to NA)
 all_sample_phyloseq_genus_glom <- tax_glom(all_sample_phyloseq, taxrank = "Genus")
+
+# subset to only top 10 most prevelant genus
 all_sample_phyloseq_top10g <- prune_taxa(
   names(sort(taxa_sums(all_sample_phyloseq_genus_glom), decreasing = TRUE))[1:10],
   all_sample_phyloseq_genus_glom
