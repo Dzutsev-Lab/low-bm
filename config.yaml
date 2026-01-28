@@ -2,21 +2,22 @@ raw_dir: "Exp_Data/Subset_Samples"
 out_root: "Exp_Output/Subset_Samples"
 script_dir: "scripts"
 
-primer_motif: "GGACTAC"
-umi_len: 9
 
 host_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
 viral_ref: "Ref_Data/all.viral.fna"
 bact16s_ref: "Ref_Data/all.rrna.bacteria"
 
-mothur_reference: "Ref_Data/ncbi20.fasta"
-mothur_tax_file: "Ref_Data/ncbi20.tax"
-mothur_cutoff: 0
-mothur_method: "wang"
-
 IDTax_reference: "Ref_Data/silva_nr99_v138.2_toGenus_trainset.fa.gz"
 
+#--------------------------
+# UMI SELECTION PARAMETERS
+#--------------------------
+primer_motif: "GGACTAC"
+umi_len: 9
 
+#------------------------
+# TRIMMOMATIC PARAMETERS
+#------------------------
 trimmomatic_jar: "$TRIMMOJAR"
 trim_args: ["AVGQUAL:30"]
 
@@ -32,6 +33,19 @@ maxN: 0
 maxEE: 2
 truncQ: 2
 
+
+#------------------------
+# MOTHUR PARAMETERS
+#------------------------
+mothur_reference: "Ref_Data/ncbi20.fasta"
+mothur_tax_file: "Ref_Data/ncbi20.tax"
+mothur_cutoff: 0
+mothur_method: "wang"
+
+
+#---------------------------
+# TAXONOMY COUNT PARAMETERS
+#---------------------------
 tax_min_counts:
   phylum: 50
   class: 50
@@ -39,7 +53,9 @@ tax_min_counts:
   species: 5
 
 
-
+#-----------------------------
+# NEGATIVE CONTROL PARAMETERS
+#-----------------------------
 neg_tags: ["NEGATIVECONTROL", "CELLSCONTROL", "NEGWATER", "BLANK", "NEGcDNA", "NEGPCR", "NEG"]
 neg_db_top_k: 10000
 neg_as_keep_lt: 160

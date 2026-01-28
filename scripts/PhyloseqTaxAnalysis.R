@@ -20,15 +20,13 @@ if (!is.null(logfile) && nzchar(logfile)) {
 }
 
 
-#--------------------------
-# Taxonomy File Parsing
-#--------------------------
+#-----------------------------
+# Taxonomy Table Construction
+#-----------------------------
 
 #read in taxonomy file
 tax_file <- snakemake@input$taxfile
-
-# split tax file by line
-tax_lines <- readLines(tax_file)
+tax_lines <- readLines(tax_file) # split records by line
 tax_lines <- tax_lines[nzchar(tax_lines)] # removes empty lines
 
 
@@ -38,10 +36,8 @@ colnames(tax_df) <- c("ASVid", "taxonomy_record")
 tax_df <- as.data.frame(tax_df, stringsAsFactors = FALSE)
 str(tax_df)
 
-
+# split taxonomical levels
 split_tax_df <- strsplit(sub(";+$", "", tax_df$taxonomy_record), ";") # removes trailing and ";" and splits record field per level at ";"
-print('Taxonomy Entries Separated by level')
-
 
 maxranks <- 9 #hardset maximum number of rank assignment (down to sub-strain)
 
@@ -69,19 +65,28 @@ colnames(tax_matrix) <- c("Domain","Phylum","Class","Order","Family","Genus","Sp
 tax_matrix <- as.matrix(tax_matrix) #convert to matrix for ease of use with phyloseq
 str(tax_matrix)
 
-#--------------------------
-# Read in Sequence Table
-#--------------------------
+#-----------------------------
+# Sequence Table Construction
+#-----------------------------
+
+#read in all ASV sequence table
 seq_table <- read.delim(snakemake@input$seq_table, header = TRUE, row.names = 1)
+'Sequence Table'
 str(seq_table)
 
+# read in positive bacterial ASV IDs
+bacterial_IDs <- readLines(snakemake@input$bacterial_names) # split IDs by line
+bacterial_IDs <- bacterial_IDs[nzchar(bacterial_IDs)] # removes empty lines
+'Bacterial ASV IDs'
+str(bacterial_IDs)
 
-theme_set(theme_bw()) #what is this doing????
+# select columns from sequence table to positive bacterial ASVs
+seq_table <- seq_table[, bacterial_IDs]
 
 
-#-----------------------------------------------
-# Bacterial Concentration Metadata Extraction
-#-----------------------------------------------
+#--------------------------------
+# Sample Data Table Construction
+#--------------------------------
 sample_names <- rownames(seq_table)
 cleaned_sample_names <- sapply(strsplit(sample_names, "\\."), `[`, 2)
 rownames(seq_table) <- cleaned_sample_names
@@ -101,9 +106,9 @@ sample_meta_data_df <- data.frame(
 )
 
 
-#------------------------------
-# Phyloseq Object Construction
-#------------------------------
+#--------------------------------
+# Phyloseq Objects Construction
+#--------------------------------
 all_sample_phyloseq <- phyloseq(otu_table(seq_table, taxa_are_rows = FALSE),
                                 sample_data(sample_meta_data_df),
                                 tax_table(tax_matrix))
@@ -120,6 +125,8 @@ all_sample_phyloseq_top10g <- prune_taxa(
 #------------------------------
 # General Abundance Plots
 #------------------------------
+theme_set(theme_bw())
+
 abunXconc_plot <- plot_bar(all_sample_phyloseq_top10g, x="Concentration", fill = "Genus")
 abunXconc_plot + 
   theme(

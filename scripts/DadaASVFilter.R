@@ -21,11 +21,6 @@ library(ggplot2)
 library(DECIPHER)
 
 # ------ params from snakemake ----
-# DIRECTORIES
-in_dir <- snakemake@params$bacterial_dir
-denoise_out_dir <- snakemake@params$denoised_dir
-filterAndTrim_out_dir <- file.path(denoise_out_dir, "filteredAndTrimmed")
-count_out_dir <- snakemake@params$count_dir
 
 # filterAndTrim PARAMETERS
 chunk_size <- snakemake@params$chunk_size
@@ -35,9 +30,6 @@ maxN <- snakemake@params$maxN
 maxEE <- snakemake@params$maxEE
 truncQ <- snakemake@params$truncQ
 
-# TAXONOMY REFERENCE
-taxRef <- snakemake@params$taxRef
-
 
 
 #----------------------------
@@ -45,7 +37,7 @@ taxRef <- snakemake@params$taxRef
 #----------------------------  
 #internal to R script, snakemake should be standing sentinal
 # ---- discover fastqs ----
-fq.files <- sort(snakemake@input$bacterial_reads)
+fq.files <- sort(snakemake@input$selected_reads)
 
 # ---- extract sample names ----
 sample.names <- sapply(strsplit(basename(fq.files), "\\."), `[`, 2)
@@ -106,7 +98,6 @@ denoised.reads <- dada(nonzero.fq.files, err=error.model, multithread=TRUE)
 seqtab.denoise <- makeSequenceTable(denoised.reads)
 
 # ---- Remove Chimeras ----
-# TODO: ensure that sequence table is beig exported as tsv properly
 seqtab.nochim <- removeBimeraDenovo(seqtab.denoise, method = "consensus", multithread = TRUE)
 
 
