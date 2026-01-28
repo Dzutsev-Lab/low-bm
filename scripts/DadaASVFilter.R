@@ -108,11 +108,7 @@ seqtab.denoise <- makeSequenceTable(denoised.reads)
 # ---- Remove Chimeras ----
 # TODO: ensure that sequence table is beig exported as tsv properly
 seqtab.nochim <- removeBimeraDenovo(seqtab.denoise, method = "consensus", multithread = TRUE)
-write.table(seqtab.nochim, 
-            file = snakemake@output$seq_table, 
-            sep = '\t', 
-            quote = FALSE, 
-            col.names = NA) #check to see if this is not mutating the matrix
+
 
 #----------------------------
 # Sequence Tracking
@@ -138,6 +134,15 @@ writeXStringSet(dna_strings,
                 filepath = snakemake@output$rep_asv_fasta,
                 format = "fasta")
 
+#----------------------------------------------
+# Export Sequence Table Relabeled with ASV IDs
+#----------------------------------------------
+colnames(seqtab.nochim) <- ASV_IDs
+write.table(seqtab.nochim, 
+            file = snakemake@output$seq_table, 
+            sep = '\t', 
+            quote = FALSE, 
+            col.names = NA) #check to see if this is not mutating the matrix
 
 #----------------------------
 # Log Close

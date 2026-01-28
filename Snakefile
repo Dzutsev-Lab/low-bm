@@ -4,8 +4,6 @@ from pathlib import Path
 
 configfile: "config.yaml"
 
-THREADS = config["threads"]
-
 # Input and Output Directories
 RAW = config["raw_dir"]
 OUT = config["out_root"]
@@ -23,7 +21,7 @@ POS_ALIGNMENT_DIR = f"{IP_DIR}/05_Pos_Alignment"
 DADA_DENOISE_DIR = f"{IP_DIR}/06_Dada_Denoising"
 ID_TAX_DIR = f"{IP_DIR}/07.1_IDTax_Taxonomy"
 
-MOTHUR_TAX_DIR = f"{IP_DIR}/07.2-8_Mothur_Taxonomy"
+MOTHUR_TAX_DIR = f"{IP_DIR}/07.2-09_Mothur_Taxonomy"
 
 
 TRACK_DIR = f"{OUT}/Tracking"
@@ -58,6 +56,16 @@ ID_TAX_REFERENCE = config["IDTax_reference"]
 TRIMMOMATIC_JAR = config["trimmomatic_jar"]
 TRIM_ARGS = config["trim_args"]
 TRIM_ARGS_STR =  " ".join(TRIM_ARGS)
+
+# Dada2 Parameters
+CHUNK_SIZE = config["chunk_size"]
+TRUNC_LEN = config["truncLen"]
+MAX_N = config["maxN"]
+MAX_EE = config["maxEE"]
+TRUNC_Q = config["truncQ"]
+
+
+
 
 # Negative Control Filtering Parameters
 # TODO: figure out how to format for snakemake without config file
@@ -108,7 +116,12 @@ SAMPLES_STR = " ".join(SAMPLES)
 #----------------------------
 rule all:
     input:
-        abundance_plot = f"{MOTHUR_TAX_DIR}/abundanceXconc.png",
+        abunXconc_plot = f"{MOTHUR_TAX_DIR}/abunXconc.png",
+        abunXsample_plot = f"{MOTHUR_TAX_DIR}/abunXsample.png",
+        abunXconcXsample_plot = f"{MOTHUR_TAX_DIR}/abunXconcXsample.png",
+        read_counts = f'{READ_COUNT_DIR}/all_sample.count.stats.tsv',
+        tax_count = expand(f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.{{level}}.count", level=TAX_LEVELS),
+
 
 
 #----------------------------
@@ -166,7 +179,7 @@ rule norm_fastq:
         r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
     log:
         f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
-    threads: THREADS
+    threads: 4
     shell:
         r"""
         set -euo pipefail
@@ -205,7 +218,6 @@ rule umi_extract_select_r1:
         selected_r1 = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq"
     log:
         f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
-    threads: THREADS
     # TODO: address seqtk dependency (most likely using singularity)
     shell:
         r"""
@@ -249,7 +261,7 @@ rule trim_selected_r1:
         trim_args = TRIM_ARGS_STR
     log:
         f"{LOG_DIR}/02_trim/02_trim.{{s}}.log"
-    threads: THREADS
+    threads: 4
     # TODO: figure out trimmomatic dependency
     shell:
         r"""
@@ -271,7 +283,7 @@ rule index_ref_bwa:
     output:
         # indexing produces many files but .bwt is the key one (will use as sentinel)
         bwt = "{ref}.bwt"
-    threads: THREADS
+    threads: 8
     shell:
         r"""
         set -euo pipefail
@@ -283,7 +295,9 @@ rule index_ref_bwa:
 #--------------------------------------------------------
 rule unmapped_bwa_mem:
     input:
-        trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq",
+        # trial without timmomatic
+        selected_fastq = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq",
+        #trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq",
         # What is the lambda doing???
         reference_fasta = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag],
         reference_bwt = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag] + ".bwt"
@@ -292,12 +306,12 @@ rule unmapped_bwa_mem:
         unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.{{tag}}.{{s}}.names"
     log:
         f"{LOG_DIR}/03_alignment/03_alignment_{{tag}}.{{s}}.log"
-    threads: THREADS
+    threads: 8
     # TODO: address BWA dependency (most likely using singularity)
     shell:
         r"""
         set -euo pipefail
-        bwa mem -t {threads} "{input.reference_fasta}" "{input.trimmed_fastq}" > "{output.sam}" 2> "{log}"
+        bwa mem -t {threads} "{input.reference_fasta}" "{input.selected_fastq}" > "{output.sam}" 2> "{log}"
         samtools view -f 4 "{output.sam}" | cut -f1 | sort -u > "{output.unmapped_names}"
         """
 
@@ -306,20 +320,22 @@ rule unmapped_bwa_mem:
 #------------------------------------- 
 rule nonhost_nonviral_reads:
     input:
-        trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq",
+        selected_fastq = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq",
+        #trial: dropping trimmomatic 
+        #trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq",
         host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.{{s}}.names",
         viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.{{s}}.names"
     output:
         nonhost_nonviral_reads = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.{{s}}.fastq"
     log:
         f"{LOG_DIR}/04_nonhost_nonviral/04_nonhost_nonviral{{s}}.log"
-    threads: THREADS
+    threads: 8
     # TODO: consider consolidating with unmapped_bwa_mem and make one step??
     shell:
         r"""
         set -euo pipefail
 
-        seqtk subseq "{input.trimmed_fastq}" "{input.host_unmapped_names}" \
+        seqtk subseq "{input.selected_fastq}" "{input.host_unmapped_names}" \
          | seqtk subseq - "{input.viral_unmapped_names}" \
          > "{output.nonhost_nonviral_reads}"
         """
@@ -338,7 +354,7 @@ rule bacterial_alignment:
 
     log:
         f"{LOG_DIR}/05_bact_map/05_bact_map.{{s}}.log"
-    threads: THREADS
+    threads: 8
     # Reverted filtering to use samtools view with positive selection for mapped reads (reverse of unmmaped fileter)
     #   was previously filtered via awk statement (this is more consistent)
     shell:
@@ -367,14 +383,13 @@ rule dada_denoising:
         # Directory Params
         bacterial_dir = POS_ALIGNMENT_DIR,
         # Processign Params
-        chunk_size = 5,
+        chunk_size = CHUNK_SIZE,
         # Filter and Trim Params
-        truncLen = 190,
+        truncLen = TRUNC_LEN,
         primerLen = PRIMER_LEN,
-        maxN = 0,
-        maxEE = 2,
-        truncQ = 2,
-
+        maxN = MAX_N,
+        maxEE = MAX_EE,
+        truncQ = TRUNC_Q,
     log:
         f"{LOG_DIR}/06_dada.log"
     script:
@@ -392,7 +407,7 @@ rule IDTax_classification:
     params:
         seq_table_dir = DADA_DENOISE_DIR,
         idtax_class_dir = ID_TAX_DIR,
-    threads: THREADS
+    threads: 8
     log:
         f"{LOG_DIR}/07.1_IDTax.log"
     script:
@@ -414,7 +429,7 @@ rule mothur_classify:
         #       piping properly into desired log but also creates its own in pwd
         #       currently just removing these after mothur run
         f"{LOG_DIR}/07.2_mothur_class.log"
-    threads: THREADS
+    threads: 8
     shell:
         r"""
         set -euo pipefail
@@ -432,7 +447,7 @@ rule mothur_classify:
                 )" >> {log} 2>&1
         
         # ---- Remove Redundant Mothur Logs ----
-        rm *.logfile 2>dev/null || true
+        rm *.logfile
         """
 
 #-------------------------------
@@ -441,19 +456,21 @@ rule mothur_classify:
 rule phyloseq_analysis:
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy"
+        taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy",
     output:
-        abundance_plot = f"{MOTHUR_TAX_DIR}/abundanceXconc.png",
+        abunXconc_plot = f"{MOTHUR_TAX_DIR}/abunXconc.png",
+        abunXsample_plot = f"{MOTHUR_TAX_DIR}/abunXsample.png",
+        abunXconcXsample_plot = f"{MOTHUR_TAX_DIR}/abunXconcXsample.png"
     log:
         f"{LOG_DIR}/08_phyloseq.log"
     script:
         f"{SCRIPTS}/PhyloseqTaxAnalysis.R"
 
 
-#------------------------------------
-# 08 Taxonomy Classification Counts
-#------------------------------------
-rule tax_counts:
+#--------------------------------
+# 09 Manual ASV Taxonomy Counts
+#--------------------------------
+rule asv_tax_counts:
     input:
         taxfile = f"{MOTHUR_TAX_DIR}/rep_ASV_seqs.ncbi20.wang.taxonomy"
     output:
@@ -462,7 +479,7 @@ rule tax_counts:
         min_count = lambda wc: TAX_MIN[wc.level],
         cutoff = lambda wc: TAX_FIELDS[wc.level]
     log:
-        f"{LOG_DIR}/08_mothur_count/08_mothur_count.{{level}}.log"
+        f"{LOG_DIR}/09_manual_mothur_count/09_manual_mothur_count.{{level}}.log"
     shell:
         r"""
         set -euo pipefail
@@ -492,9 +509,13 @@ rule tax_counts:
 #-----------------------------
 rule read_counts:
     input:
+        r1_norm = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
+        selected_r1 = expand(f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq", s=SAMPLES),
+        trimmed_fastq = expand(f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq", s=SAMPLES),
+        viral_sam = expand(f"{NEG_ALIGNMENT_DIR}/viral.{{s}}.sam", s=SAMPLES),
+        host_sam = expand(f"{NEG_ALIGNMENT_DIR}/host.{{s}}.sam", s=SAMPLES),
         bacterial_reads = expand(f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq", s=SAMPLES)
     output:
-        # TODO: consider numbering out the output subdirectories to keep track of order
         read_counts = f'{READ_COUNT_DIR}/all_sample.count.stats.tsv'
     params:
         samples = SAMPLES_STR,
@@ -514,7 +535,7 @@ rule read_counts:
         {{
             set -euo pipefail
         
-            echo -e "ID\tRaw_reads\tSelected_reads\tTrimmed_reads\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
+            echo -e "ID\tRaw_reads\tSelected_reads\t(Trimmed_reads)\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
             for s in {params.samples}; do
 
                 raw_r1_fq="{params.norm_raw}/${{s}}_R1_001.fastq"
@@ -532,7 +553,7 @@ rule read_counts:
                 bacterial=$(($(wc -l < "$bacterial_fq")/4))
 
                 
-                echo -e "${{s}}\t${{raw_r1}}\t${{selected}}\t${{trimmed}}\t-${{viral}}\t-${{host}}\t${{bacterial}}"
+                echo -e "${{s}}\t${{raw_r1}}\t${{selected}}\t(${{trimmed}})\t-${{viral}}\t-${{host}}\t${{bacterial}}"
             done
         }} > "{output.read_counts}"
         """

@@ -1,5 +1,3 @@
-threads: 12
-
 raw_dir: "Exp_Data/Subset_Samples"
 out_root: "Exp_Output/Subset_Samples"
 script_dir: "scripts"
@@ -21,6 +19,18 @@ IDTax_reference: "Ref_Data/silva_nr99_v138.2_toGenus_trainset.fa.gz"
 
 trimmomatic_jar: "$TRIMMOJAR"
 trim_args: ["AVGQUAL:30"]
+
+#--------------------
+# DADA2 PARAMETERS
+#--------------------
+# Chunked processing Params
+chunk_size: 5
+
+# filterandTrim Params
+truncLen: 190
+maxN: 0
+maxEE: 2
+truncQ: 2
 
 tax_min_counts:
   phylum: 50
