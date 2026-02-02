@@ -21,6 +21,7 @@ POS_ALIGNMENT_DIR = f"{IP_DIR}/05_Pos_Alignment"
 ID_TAX_DIR = f"{IP_DIR}/06.1_IDTax_Taxonomy"
 MOTHUR_TAX_DIR = f"{IP_DIR}/06.2-08_Mothur_Taxonomy"
 TRIMMED_DIR = f"{IP_DIR}/-00_Trimming"
+UMI_DEDUP_DIR = f"{IP_DIR}/UMIDeduplication"
 
 
 TRACK_DIR = f"{OUT}/Tracking"
@@ -28,9 +29,12 @@ TAX_OUTPUT_DIR = f"{OUT}/Taxonomy"
 LOG_DIR = f"{OUT}/logs"
 
 # Sequencing metadata
-PRIMER_MOTIF = config["primer_motif"]
-PRIMER_LEN = len(PRIMER_MOTIF)
+R1_PRIMER = config["r1_primer"]
+R2_PRIMER = config["r2_primer"]
+R1_PRIMER_MOTIF_LEN = config["r1_primer_motif_len"]
+R2_PRIMER_MOTIF_LEN = config["r2_primer_motif_len"]
 UMI_LEN = config["umi_len"]
+MAX_OFFSET = config["max_offset"]
 
 # Reference Data
 HOST_REF = config["host_ref"]
@@ -112,9 +116,9 @@ SAMPLES_STR = " ".join(SAMPLES)
 #----------------------------
 rule all:
     input:
-        abunXconc_plot = f"{TAX_OUTPUT_DIR}/abunXconc.png",
+        abunXtype_plot = f"{TAX_OUTPUT_DIR}/abunXtype.png",
         abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
-        abunXconcXsample_plot = f"{TAX_OUTPUT_DIR}/abunXconcXsample.png",
+        abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
         tax_summary = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
         tax_count = expand(f"{TAX_OUTPUT_DIR}/bacterial.ASV.{{level}}.count", level=TAX_LEVELS),
 
@@ -125,24 +129,9 @@ rule all:
 
 
 #----------------------------
-# Construct Directories
-#----------------------------
-rule init_dirs:
-    output:
-        touch(f"{OUT}/.init.done")
-    shell:
-        r"""
-        mkdir -p "{OUT}" "{ORIG_DIR}" "{NORM_RAW_DIR}" "{CLEAN_DIR}" "{TAX_DIR}" "{LOG_DIR}"
-        touch "{output}"
-        """
-
-
-#----------------------------
 # Record Sample Names
 #----------------------------
 rule sample_names:
-    input:
-        f"{OUT}/.init.done"
     output:
         f"{OUT}/sample.names"
     run:
@@ -189,13 +178,12 @@ rule norm_fastq:
     input:
         r1_raw = lambda wc: pick_raw_fastq(wc, 1),
         r2_raw = lambda wc: pick_raw_fastq(wc, 2),
-        init = f"{OUT}/.init.done"
     output:
         r1_norm = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
         r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
     log:
         f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
-    threads: 4
+    threads: 2
     shell:
         r"""
         set -euo pipefail
@@ -222,16 +210,17 @@ rule norm_fastq:
 #-----------------------------------------------
 # 01 UMI extraction from R2 and Select R1 Reads
 #-----------------------------------------------
-rule umi_extract_select_r1:
+rule umi_selection:
     input:
         r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
         r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
-        sample_names = f"{OUT}/sample.names",
-        init = f"{OUT}/.init.done"
     output:
-        umi = f"{UMI_SELECT_DIR}/UMIMap.{{s}}.tsv",
-        selected_names = f"{UMI_SELECT_DIR}/SelectedNames.{{s}}.names",
-        selected_r1 = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq"
+        umi_tsv = f"{UMI_SELECT_DIR}/UMIMap.{{s}}.tsv",
+        sel_names = f"{UMI_SELECT_DIR}/SelectedNames.{{s}}.names",
+        sel_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
+        sel_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.R1.fastq",
+    params:
+        r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN]
     log:
         f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
     # TODO: address seqtk dependency (most likely using singularity)
@@ -240,27 +229,49 @@ rule umi_extract_select_r1:
         set -euo pipefail
         exec 2> "{log}"
 
-        R2_IN="{input.r2}"
-        R1_IN="{input.r1}"
+        python3 scripts/UMISelection.py \
+            --r1 "{input.r1}" \
+            --r2 "{input.r2}" \
+            --r2-primer-motif "{params.r2_primer_motif}" \
+            --umi-len "{UMI_LEN}" \
+            --max-offset "{MAX_OFFSET}" \
+            --out-umi-tsv "{output.umi_tsv}" \
+            --out-sel-names "{output.sel_names}" \
+            --out-umi-r1 "{output.sel_umi_r1}" \
+            --out-sel-r1 "{output.sel_r1}"
+        """
 
-        # extract NAME<TAB>UMI from R2; also write selected names
-        awk -v motif="{PRIMER_MOTIF}" -v L={UMI_LEN} '
-            NR%4==1 {{ 
-                hdr=$0; 
-                name=substr($0,2)
-                sub(/ .*/, "", name)
-                next 
-            }}
-            NR%4==2 {{ 
-                seq=$0
-                if (match(seq, "([ACGTN]{{"L"}})" motif, m)) {{
-                            print name "\t" m[1]
-                }}
-            }}
-            ' "{input.r2}" | tee "{output.umi}" | cut -f1 > "{output.selected_names}"
 
-        # subset R1 by selected names
-        seqtk subseq "{input.r1}" "{output.selected_names}" > "{output.selected_r1}"
+#----------------------------
+# UMI Deduplication
+#----------------------------
+rule umi_dedup:
+    input:
+        selected_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
+    output:
+        umi_dedup_reads = f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq",
+    params:
+        AmpUMI_regex = "^" + ("I" * UMI_LEN)
+    log:
+        f"{LOG_DIR}/umi_dedup/umi_dedup.{{s}}.log"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > {log} 2>&1
+
+        # ---- Check if Empty FASTQ ----
+        n_lines=$(wc -l < {input.selected_umi_r1})
+
+        if [[ "$n_lines" -eq 0 ]]; then
+            echo "Input FASTQ ({input.selected_umi_r1}) is empty - skipping AmpUMI"
+            : > {output.umi_dedup_reads}
+        else
+            echo "Running AmpUMI on $n_lines lines from {input.selected_umi_r1}"
+            AmpUMI Process\
+                --fastq {input.selected_umi_r1} \
+                --fastq_out {output.umi_dedup_reads} \
+                --umi_regex "{params.AmpUMI_regex}"
+        fi
         """
 
 #----------------------------
@@ -268,7 +279,8 @@ rule umi_extract_select_r1:
 #---------------------------- 
 rule dada_denoising:
     input: 
-        selected_reads = expand(f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq", s=SAMPLES)
+        sample_names = f"{OUT}/sample.names",
+        umi_dedup_reads = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
     output:
         filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
         seq_err_plot = f"{TRACK_DIR}/dada_error_plot.png",
@@ -280,8 +292,8 @@ rule dada_denoising:
         # Processign Params
         chunk_size = CHUNK_SIZE,
         # Filter and Trim Params
+        primerLen = R1_PRIMER_MOTIF_LEN,
         truncLen = TRUNC_LEN,
-        primerLen = PRIMER_LEN,
         maxN = MAX_N,
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
@@ -436,9 +448,9 @@ rule phyloseq_analysis:
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
     output:
-        abunXconc_plot = f"{TAX_OUTPUT_DIR}/abunXconc.png",
+        abunXtype_plot = f"{TAX_OUTPUT_DIR}/abunXtype.png",
         abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
-        abunXconcXsample_plot = f"{TAX_OUTPUT_DIR}/abunXconcXsample.png"
+        abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png"
     log:
         f"{LOG_DIR}/07_phyloseq.log"
     script:
@@ -509,7 +521,7 @@ rule read_counts:
         {{
             set -euo pipefail
         
-            echo -e "ID\tRaw_reads\tSelected_reads\t(Trimmed_reads)\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
+            echo -e "SampleID\tRaw_reads\tSelected_reads\t(Trimmed_reads)\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
             for s in {params.samples}; do
 
                 raw_r1_fq="{params.norm_raw}/${{s}}_R1_001.fastq"

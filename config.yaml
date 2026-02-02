@@ -1,5 +1,5 @@
-raw_dir: "Exp_Data/Subset_Samples"
-out_root: "Exp_Output/Subset_Samples"
+raw_dir: "Exp_Data/expt3_MR68_bact_trans_firsttimepoint_041023/OUTPUT/Data/fastq"
+out_root: "Exp_Output/expt3_MR68_bact_trans_firsttimepoint_041023"
 script_dir: "scripts"
 
 
@@ -12,8 +12,16 @@ IDTax_reference: "Ref_Data/silva_nr99_v138.2_toGenus_trainset.fa.gz"
 #--------------------------
 # UMI SELECTION PARAMETERS
 #--------------------------
-primer_motif: "GGACTAC"
+r1_primer: "CCTACGGGNGGCWGCAG"
+r2_primer: "GGACTACHVGGGTATCTAATCC"
+
+# r2 Motif length chosen based on default in previous pipeline
+#     Note: motif up to first semi-ambiguous nucleotide in primer
+#     Did the same thing in selecting r1 primer motif length
+r1_primer_motif_len: 8
+r2_primer_motif_len: 7
 umi_len: 9
+max_offset: 5
 
 #------------------------
 # TRIMMOMATIC PARAMETERS

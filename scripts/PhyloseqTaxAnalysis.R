@@ -45,15 +45,15 @@ maxranks <- 9 #hardset maximum number of rank assignment (down to sub-strain)
 clean_confidence_score <- function(x) sub("\\(.*\\)$", "", x) 
 
 # function for removing level demarcation (redundant with column names)
-clean_level_marker <- function(x) sub("^[^_]+__", "", x)
+# clean_level_marker <- function(x) sub("^[^_]+__", "", x)
 
 
 # construct taxonomy matrix via matrix transposition of split taxonomy records
 tax_matrix <- t(vapply(split_tax_df, function(tax_entry) {
   tax_entry <- sapply(tax_entry, clean_confidence_score)
-  tax_entry <- sapply(tax_entry, clean_level_marker)
+  # tax_entry <- sapply(tax_entry, clean_level_marker)
   
-  # pad un assigned lower levels with NA
+  # pad unassigned lower levels with NA
   if (length(tax_entry) < maxranks) {
     tax_entry <- c(tax_entry, rep(NA, maxranks - length(tax_entry)))
   }
@@ -88,18 +88,16 @@ seq_table <- seq_table[, bacterial_IDs]
 # Sample Data Table Construction
 #--------------------------------
 sample_names <- rownames(seq_table)
-cleaned_sample_names <- sapply(strsplit(sample_names, "\\."), `[`, 2)
-rownames(seq_table) <- cleaned_sample_names
 
 # Bacterial Spike Concentration
 sample_info <- sapply(strsplit(sample_names, "_"), `[`, 3)
-bact_conc <- sub("b.*$", "", sample_info)
+sample_type <- sub("\\d+$", "", sample_info)
 
 # Number of technical replicate
-tech_rep <- sub(".*bac([0-9]+)$*", "\\1", sample_info)
+tech_rep <- sub(".*?(\\d+)$", "\\1", sample_info)
 
 sample_meta_data_df <- data.frame(
-  Concentration = factor(bact_conc),
+  SampleType = factor(sample_type),
   Replicate = factor(tech_rep),
   row.names = rownames(seq_table),
   stringsAsFactors = FALSE
@@ -127,13 +125,13 @@ all_sample_phyloseq_top10g <- prune_taxa(
 #------------------------------
 theme_set(theme_bw())
 
-abunXconc_plot <- plot_bar(all_sample_phyloseq_top10g, x="Concentration", fill = "Genus")
-abunXconc_plot + 
+abunXtype_plot <- plot_bar(all_sample_phyloseq_top10g, x="SampleType", fill = "Genus")
+abunXtype_plot + 
   theme(
     legend.position = "bottom",
     legend.text = element_text(size = 6)
   )
-ggsave(snakemake@output$abunXconc_plot)
+ggsave(snakemake@output$abunXtype_plot)
 
 abunXsample_plot <- plot_bar(all_sample_phyloseq_top10g, fill = "Genus")
 abunXsample_plot + 
@@ -144,14 +142,14 @@ abunXsample_plot +
 ggsave(snakemake@output$abunXsample_plot)
 
 
-abunXconcXsample_plot <- plot_bar(all_sample_phyloseq_top10g, "Replicate", fill = "Genus", facet_grid = ~Concentration)
-abunXconcXsample_plot +
+abunXtypeXsample_plot <- plot_bar(all_sample_phyloseq_top10g, "Replicate", fill = "Genus", facet_grid = ~SampleType)
+abunXtypeXsample_plot +
   theme(
     legend.position = "bottom",
     legend.text = element_text(size = 6)
   )
 
-ggsave(snakemake@output$abunXconcXsample_plot)
+ggsave(snakemake@output$abunXtypeXsample_plot)
 
 #------------------------------
 # Top 20 Analysis
