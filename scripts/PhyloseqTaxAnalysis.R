@@ -1,10 +1,3 @@
-
-library(phyloseq)
-library(Biostrings)
-library(ggplot2)
-library(readr)
-library(patchwork)
-
 #----------------------------
 # Log Construction
 #----------------------------  
@@ -19,6 +12,12 @@ if (!is.null(logfile) && nzchar(logfile)) {
   flush.console()
 }
 
+library(phyloseq)
+library(Biostrings)
+library(ggplot2)
+
+# Keep ggplot from producing Rplots.pdf
+if(!interactive()) pdf(NULL)
 
 #-----------------------------
 # Taxonomy Table Construction
@@ -70,7 +69,7 @@ str(tax_matrix)
 #-----------------------------
 
 #read in all ASV sequence table
-seq_table <- read.delim(snakemake@input$seq_table, header = TRUE, row.names = 1)
+seq_table <- read.delim(snakemake@input$norm_seq_table, header = TRUE, row.names = 1)
 'Sequence Table'
 str(seq_table)
 

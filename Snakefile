@@ -22,6 +22,7 @@ ID_TAX_DIR = f"{IP_DIR}/06.1_IDTax_Taxonomy"
 MOTHUR_TAX_DIR = f"{IP_DIR}/06.2-08_Mothur_Taxonomy"
 TRIMMED_DIR = f"{IP_DIR}/-00_Trimming"
 UMI_DEDUP_DIR = f"{IP_DIR}/UMIDeduplication"
+NORM_COUNT_DIR = f"{IP_DIR}/CountNormalization"
 
 
 TRACK_DIR = f"{OUT}/Tracking"
@@ -123,7 +124,8 @@ rule all:
         tax_count = expand(f"{TAX_OUTPUT_DIR}/bacterial.ASV.{{level}}.count", level=TAX_LEVELS),
 
         dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
 
 
 
@@ -303,9 +305,38 @@ rule dada_denoising:
     script:
         f"{SCRIPTS}/DadaASVFilter.R"
 
-#--------------------------------------------------------
-# 
-#--------------------------------------------------------
+#--------------------------
+# Count Normalization
+#--------------------------
+rule count_normalization:
+    #--------------------------
+    #--------------------------
+    # Normalization Reasoning
+    #--------------------------
+    #--------------------------
+    # TSS Normalization  
+    #   - for exploratory normalization starting with simplest TSS
+    #   - first normalizing my row sum (seems to be the best measure of authentic reads after PCR correction)
+    # TSS with Host Mapped Read Counts
+    #   - normalizing whole sequence table with row sums from Human Mapped subsetted data frame
+    input:
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
+    output:
+        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
+    log:
+        f"{LOG_DIR}/normalization.log"
+    shell:
+        r"""
+        set -euo pipefail
+        python scripts/SequenceTableNormalization.py \
+            --in {input.seq_table} \
+            --host-names {input.host_unmapped_names} \
+            --out {output.norm_seq_table} \
+        > "{log}" 2>&1
+        """
+    
+
 
 
 
@@ -329,7 +360,7 @@ rule host_viral_alignment:
         r"""
         set -euo pipefail
         bwa mem -t {threads} "{input.reference_fasta}" "{input.rep_asv_fasta}" > "{output.sam}" 2> "{log}"
-        samtools view -f 4 "{output.sam}" | cut -f1 | sort -u > "{output.unmapped_names}"
+        samtools view -f 4 "{output.sam}" 2> "{log}" | cut -f1 | sort -u > "{output.unmapped_names}"
         """
 
 #-------------------------------------
@@ -446,7 +477,8 @@ rule mothur_classify:
 #-------------------------------
 rule phyloseq_analysis:
     input:
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        #seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
     output:

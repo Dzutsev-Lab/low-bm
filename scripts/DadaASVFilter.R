@@ -15,7 +15,6 @@ if (!is.null(logfile) && nzchar(logfile)) {
 }
 
 library(dada2)
-library(phyloseq)
 library(Biostrings)
 library(ggplot2)
 library(DECIPHER)
