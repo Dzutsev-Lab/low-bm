@@ -91,10 +91,10 @@ sample_names <- rownames(seq_table)
 
 # Bacterial Spike Concentration
 sample_info <- sapply(strsplit(sample_names, "_"), `[`, 3)
-sample_type <- sub("\\d+$", "", sample_info)
+sample_type <- sub("\\d+[A-Za-z]*$", "", sample_info)
 
 # Number of technical replicate
-tech_rep <- sub(".*?(\\d+)$", "\\1", sample_info)
+tech_rep <- sub(".*?(\\d+[A-Za-z]*)$", "\\1", sample_info)
 
 sample_meta_data_df <- data.frame(
   SampleType = factor(sample_type),
@@ -142,14 +142,18 @@ abunXsample_plot +
 ggsave(snakemake@output$abunXsample_plot)
 
 
-abunXtypeXsample_plot <- plot_bar(all_sample_phyloseq_top10g, "Replicate", fill = "Genus", facet_grid = ~SampleType)
+abunXtypeXsample_plot <- plot_bar(all_sample_phyloseq_top10g, "Replicate", fill = "Genus")
 abunXtypeXsample_plot +
   theme(
     legend.position = "bottom",
     legend.text = element_text(size = 6)
-  )
+  ) +
+  facet_wrap(~SampleType, scales = "free_x") +
+  labs(title = "Read Counts per Sample by Sample Type",
+       x = "Sample",
+       y = "Read Count")
 
-ggsave(snakemake@output$abunXtypeXsample_plot)
+ggsave(snakemake@output$abunXtypeXsample_plot, width = 10, height = 12, units = "in")
 
 #------------------------------
 # Top 20 Analysis

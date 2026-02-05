@@ -1,5 +1,5 @@
-raw_dir: "Exp_Data/expt3_MR68_bact_trans_firsttimepoint_041023/OUTPUT/Data/fastq"
-out_root: "Exp_Output/expt3_MR68_bact_trans_firsttimepoint_041023"
+raw_dir: "Exp_Data/expt1_rnalowbiotit_300Mid_041123/OUTPUT/FASTQ"
+out_root: "Exp_Output/expt1_rnalowbiotit_300Mid_041123"
 script_dir: "scripts"
 
 

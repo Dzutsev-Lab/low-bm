@@ -140,13 +140,23 @@ seqtab.nochim <- seqtab.nochim[sample.names, , drop = FALSE]
 # Sequence Tracking
 #----------------------------
 getN <- function(x) sum(getUniques(x))
-tracker <- cbind(out_mat, rowSums(seqtab.denoise), rowSums(seqtab.nochim))
-colnames(tracker) <- c("SampleID", "filteredAndTrimmed", "denoised", "chimera-filtered")
+tracker <- cbind(out_mat, 
+                 rowSums(seqtab.denoise), 
+                 rowSums(seqtab.nochim))
+colnames(tracker) <- c("deduped", "filteredAndTrimmed", "denoised", "chimera-filtered")
 rownames(tracker) <- sample.names
-write.table(tracker, 
+
+tracker_df <- data.frame(
+  SampleID = rownames(tracker),
+  tracker,
+  check.names = FALSE
+)
+
+write.table(tracker_df, 
             file = snakemake@output$filter_stage_counts, 
             sep = '\t', 
             quote = FALSE, 
+            row.names = FALSE,
             col.names = TRUE)
 
 #----------------------------

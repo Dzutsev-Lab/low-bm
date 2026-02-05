@@ -122,8 +122,8 @@ rule all:
         tax_summary = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
         tax_count = expand(f"{TAX_OUTPUT_DIR}/bacterial.ASV.{{level}}.count", level=TAX_LEVELS),
 
-        #pipieline_read_counts = f'{TRACK_DIR}/all_sample.count.stats.tsv', # read count tracking becomes difficult when moving to ASVs after Dada
         dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
 
 
 
@@ -303,7 +303,9 @@ rule dada_denoising:
     script:
         f"{SCRIPTS}/DadaASVFilter.R"
 
-    
+#--------------------------------------------------------
+# 
+#--------------------------------------------------------
 
 
 
@@ -495,54 +497,27 @@ rule asv_tax_counts:
 #-----------------------------
 rule read_counts:
     input:
-        r1_norm = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
-        selected_r1 = expand(f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq", s=SAMPLES),
-        trimmed_fastq = expand(f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq", s=SAMPLES),
-        viral_sam = expand(f"{NEG_ALIGNMENT_DIR}/viral.{{s}}.sam", s=SAMPLES),
-        host_sam = expand(f"{NEG_ALIGNMENT_DIR}/host.{{s}}.sam", s=SAMPLES),
-        bacterial_reads = expand(f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq", s=SAMPLES)
-    output:
-        read_counts = f'{TRACK_DIR}/all_sample.count.stats.tsv'
-    params:
-        samples = SAMPLES_STR,
-        norm_raw = NORM_RAW_DIR,
-        selected = UMI_SELECT_DIR,
-        trimmed = TRIMMED_DIR,
-        unmapping = NEG_ALIGNMENT_DIR,
-        bacterial = POS_ALIGNMENT_DIR
-    log:
-        f"{LOG_DIR}/-01_read_count/-01_read_count.log"
-    shell:
-        # TODO: take into account secondary and supplementary alignments when counting records in sam's
-        r"""
-        set -euo pipefail
-        exec 2> "{log}"
+        norm_raw_r1_fqs = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
+        selected_r1_fqs = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES),
+        deduped_fqs = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES),
 
-        {{
-            set -euo pipefail
+        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         
-            echo -e "SampleID\tRaw_reads\tSelected_reads\t(Trimmed_reads)\tPos_Viral_reads\tPos_Host_reads\tPos_Bacterial_reads"
-            for s in {params.samples}; do
-
-                raw_r1_fq="{params.norm_raw}/${{s}}_R1_001.fastq"
-                selected_fq="{params.selected}/SelectedReads.${{s}}.R1.fastq"
-                trimmed_fq="{params.trimmed}/trimmed.${{s}}.R1.fastq"
-                viral_sam="{params.unmapping}/viral.${{s}}.sam"
-                host_sam="{params.unmapping}/host.${{s}}.sam"
-                bacterial_fq="{params.bacterial}/bacterial.${{s}}.fastq"
-
-                raw_r1=$(($(wc -l < "$raw_r1_fq")/4))
-                selected=$(($(wc -l < "$selected_fq")/4))
-                trimmed=$(($(wc -l < "$trimmed_fq")/4))
-                viral=$(samtools view -F 4 "$viral_sam" | wc -l)
-                host=$(samtools view -F 4 "$host_sam" | wc -l)
-                bacterial=$(($(wc -l < "$bacterial_fq")/4))
-
-                
-                echo -e "${{s}}\t${{raw_r1}}\t${{selected}}\t(${{trimmed}})\t-${{viral}}\t-${{host}}\t${{bacterial}}"
-            done
-        }} > "{output.read_counts}"
-        """
+        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
+        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+    output:
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+    params:
+        samples = SAMPLES,
+        normalized = NORM_RAW_DIR,
+        selected = UMI_SELECT_DIR,
+        deduped = UMI_DEDUP_DIR
+    log:
+        f"{LOG_DIR}/-01_read_count.log"
+    script:
+        "scripts/ReadCountCompilation.R"
 
 
 
