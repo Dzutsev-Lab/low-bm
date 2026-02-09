@@ -1,26 +1,47 @@
-#----------------------------
-# Log Construction
-#----------------------------  
-logfile <- snakemake@log[[1]]
-if (!is.null(logfile) && nzchar(logfile)) {
-  logcon <- file(logfile, open = "wt")
-  sink(logcon, type = "output")
-  sink(logcon, type = "message")
-  cat("----- R script started -----\n")
-  cat("Working dir:", getwd(), "\n")
-  cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
-  flush.console()
-}
+# #----------------------------
+# # Log Construction
+# #----------------------------  
+# logfile <- snakemake@log[[1]]
+# if (!is.null(logfile) && nzchar(logfile)) {
+#   logcon <- file(logfile, open = "wt")
+#   sink(logcon, type = "output")
+#   sink(logcon, type = "message")
+#   cat("----- R script started -----\n")
+#   cat("Working dir:", getwd(), "\n")
+#   cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
+#   flush.console()
+# }
 
 
 library(ShortRead)
 library(dplyr)
 library(tibble)
+library(argparse)
 
-#---------------------------
-# Read Counts from fastq's
-#---------------------------
-sample_names <- snakemake@params$samples
+#---------------------------------
+# Execution Arguments
+#---------------------------------
+parser <- ArgumentParser()
+
+#
+parser$add_argument("--sample-names", type="character", nargs='+', help="List of sample names")
+parser$add_argument("--raw-dir", type="character", help="File path to directory with raw reads")
+parser$add_argument("--selected-dir", type="character", help="File path to directory with selected authentic reads")
+parser$add_argument("--deduped-dir", type="character", help="File path to directory with UMI deduplicated reads")
+
+parser$add_argument("--dada-filter-counts", type="character", help="File path to tsv with Dada filtering stage counts")
+parser$add_argument("--seq-table", type="character", help="File path to tsv of denoised sequence table")
+
+parser$add_argument("--host-names", type="character", help="File path to list of ASV's unmapped to host reference")
+parser$add_argument("--viral-names", type="character", help="File path to list of ASV's unmapped to viral reference")
+parser$add_argument("--bacterial-names", type="character", help="File path to list of ASV's mapped to bacterial reference")
+
+parser$add_argument("--combined-counts", type="character", help="Output combined read count tsv file path")
+
+args <- parser$parse_args()
+
+sample_names <- args$sample_names
+
 
 fastq_read_counter <- function(fq_path) {
   wc_out <- system2("wc", c("-l", fq_path), stdout = TRUE, stderr = "")
@@ -30,9 +51,9 @@ fastq_read_counter <- function(fq_path) {
 }
 
 fastq_counts <- lapply(sample_names, function(s){
-  normalized_path <- file.path(snakemake@params$normalized, paste0(s, "_R1_001.fastq"))
-  selected_path   <- file.path(snakemake@params$selected, paste0("Selected.", s, ".UMI_R1.fastq"))
-  dedpued_path    <- file.path(snakemake@params$deduped, paste0("Deduped.", s, ".fastq"))
+  normalized_path <- file.path(args$raw_dir, paste0(s, "_R1_001.fastq"))
+  selected_path   <- file.path(args$selected_dir, paste0("Selected.", s, ".UMI_R1.fastq"))
+  dedpued_path    <- file.path(args$deduped_dir, paste0("Deduped.", s, ".fastq"))
   tibble(
     SampleID = s,
     Raw_reads      = fastq_read_counter(normalized_path),
@@ -45,13 +66,13 @@ str(fastq_counts)
 #---------------------------------
 # Read Counts from Dada Denoising
 #---------------------------------
-dada_counts <- read.delim(snakemake@input$dada_read_counts, header =TRUE)
+dada_counts <- read.delim(args$dada_filter_counts, header =TRUE)
 str(dada_counts)
 
 #---------------------------------
 # Filter Read Counts from ASV
 #---------------------------------
-seq_table <- read.delim(snakemake@input$seq_table, header = TRUE)
+seq_table <- read.delim(args$seq_table, header = TRUE)
 seq_table <- rename(seq_table, 'SampleID' = 'X')
 str(seq_table)
 
@@ -68,9 +89,9 @@ make_ASV_summary_df <- function(tag, name_file, seq_table) {
     }
   )
 }
-host_unmapped_summary_df    <- make_ASV_summary_df('HostUnmapped_reads', snakemake@input$host_unmapped_names, seq_table)
-viral_unmapped_summary_df   <- make_ASV_summary_df('ViralUnmapped_reads', snakemake@input$viral_unmapped_names, seq_table)
-bacterial_mapped_summary_df <- make_ASV_summary_df('BacterialMapped_reads', snakemake@input$bacterial_names, seq_table)
+host_unmapped_summary_df    <- make_ASV_summary_df('HostUnmapped_reads', args$host_names, seq_table)
+viral_unmapped_summary_df   <- make_ASV_summary_df('ViralUnmapped_reads', args$viral_names, seq_table)
+bacterial_mapped_summary_df <- make_ASV_summary_df('BacterialMapped_reads', args$bacterial_names, seq_table)
 
 str(bacterial_mapped_summary_df)
 
@@ -90,16 +111,16 @@ combined_counts <- Reduce(
 )
 
 write.table(combined_counts, 
-            file = snakemake@output$combined_read_counts, 
+            file = args$combined_counts, 
             sep = '\t', 
             quote = FALSE,
             row.names = FALSE,
             col.names = TRUE)
 
-#----------------------------
-# Log Close
-#----------------------------
-if (!is.null(logfile) && nzchar(logfile)) {
-  sink(type = "message"); sink(type = "output")
-  close(logcon)
-}
+# #----------------------------
+# # Log Close
+# #----------------------------
+# if (!is.null(logfile) && nzchar(logfile)) {
+#   sink(type = "message"); sink(type = "output")
+#   close(logcon)
+# }

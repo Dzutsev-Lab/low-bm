@@ -46,10 +46,10 @@ def main():
     print(host_count_df.info())
     print(host_count_df.head())
 
-    normalized_df = np.log2(
-                        count_df.div(   host_count_df.sum(axis='columns').replace(0, np.nan), 
-                                        axis='index').fillna(0.0)
-                        + 1) #offset to handle zero values
+    normalized_df = np.log2(count_df + 0.001) #off set to handle zero values
+                        # count_df.div(count_df.sum(axis='columns').replace(0, np.nan), #if no reads found, change to NA to handle zero-devisor
+                        #              axis='index').fillna(0.0) #keep all as numerial now that zero divsor averted
+                        # + 1) #offset to handle zero values
 
     
     # Output Normalized data frame with sample IDs attached

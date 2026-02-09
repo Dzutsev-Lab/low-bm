@@ -5,3 +5,4 @@ Exp_Data/
 OLD_TRIALS/
 Exp_Output/
 .snakemake/
+.vscode/

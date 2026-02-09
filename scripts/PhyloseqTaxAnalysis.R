@@ -1,30 +1,40 @@
-#----------------------------
-# Log Construction
-#----------------------------  
-logfile <- snakemake@log[[1]]
-if (!is.null(logfile) && nzchar(logfile)) {
-  logcon <- file(logfile, open = "wt")
-  sink(logcon, type = "output")
-  sink(logcon, type = "message")
-  cat("----- R script started -----\n")
-  cat("Working dir:", getwd(), "\n")
-  cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
-  flush.console()
-}
+# #----------------------------
+# # Log Construction
+# #----------------------------  
+# logfile <- snakemake@log[[1]]
+# if (!is.null(logfile) && nzchar(logfile)) {
+#   logcon <- file(logfile, open = "wt")
+#   sink(logcon, type = "output")
+#   sink(logcon, type = "message")
+#   cat("----- R script started -----\n")
+#   cat("Working dir:", getwd(), "\n")
+#   cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
+#   flush.console()
+# }
 
 library(phyloseq)
 library(Biostrings)
 library(ggplot2)
+library(argparse)
 
 # Keep ggplot from producing Rplots.pdf
 if(!interactive()) pdf(NULL)
+
+parser <- ArgumentParser()
+
+parser$add_argument("--tax-file", type="character", help="taxonomy classification file path")
+parser$add_argument("--norm-seq-table", type="character", help="normalized seq table tsv file path")
+parser$add_argument("--bacterial-names", type="character", help="names of bacterial ASVs")
+parser$add_argument("--abund-plot-dir", type="character", help="directory to store output abundance plots")
+
+args <- parser$parse_args()
 
 #-----------------------------
 # Taxonomy Table Construction
 #-----------------------------
 
 #read in taxonomy file
-tax_file <- snakemake@input$taxfile
+tax_file <- args$tax_file
 tax_lines <- readLines(tax_file) # split records by line
 tax_lines <- tax_lines[nzchar(tax_lines)] # removes empty lines
 
@@ -69,12 +79,12 @@ str(tax_matrix)
 #-----------------------------
 
 #read in all ASV sequence table
-seq_table <- read.delim(snakemake@input$norm_seq_table, header = TRUE, row.names = 1)
+seq_table <- read.delim(args$norm_seq_table, header = TRUE, row.names = 1)
 'Sequence Table'
 str(seq_table)
 
 # read in positive bacterial ASV IDs
-bacterial_IDs <- readLines(snakemake@input$bacterial_names) # split IDs by line
+bacterial_IDs <- readLines(args$bacterial_names) # split IDs by line
 bacterial_IDs <- bacterial_IDs[nzchar(bacterial_IDs)] # removes empty lines
 'Bacterial ASV IDs'
 str(bacterial_IDs)
@@ -87,12 +97,12 @@ seq_table <- seq_table[, bacterial_IDs]
 # Sample Data Table Construction
 #--------------------------------
 sample_names <- rownames(seq_table)
-
-# Bacterial Spike Concentration
 sample_info <- sapply(strsplit(sample_names, "_"), `[`, 3)
+
+# Sample Type
 sample_type <- sub("\\d+[A-Za-z]*$", "", sample_info)
 
-# Number of technical replicate
+# Technical Rep
 tech_rep <- sub(".*?(\\d+[A-Za-z]*)$", "\\1", sample_info)
 
 sample_meta_data_df <- data.frame(
@@ -130,7 +140,7 @@ abunXtype_plot +
     legend.position = "bottom",
     legend.text = element_text(size = 6)
   )
-ggsave(snakemake@output$abunXtype_plot)
+ggsave(file.path(args$abund_plot_dir, "abunXtype.png"))
 
 abunXsample_plot <- plot_bar(all_sample_phyloseq_top10g, fill = "Genus")
 abunXsample_plot + 
@@ -138,7 +148,7 @@ abunXsample_plot +
     legend.position = "bottom",
     legend.text = element_text(size = 6)
   )
-ggsave(snakemake@output$abunXsample_plot)
+ggsave(file.path(args$abund_plot_dir, "abunXsample.png"))
 
 
 abunXtypeXsample_plot <- plot_bar(all_sample_phyloseq_top10g, "Replicate", fill = "Genus")
@@ -152,7 +162,7 @@ abunXtypeXsample_plot +
        x = "Sample",
        y = "Read Count")
 
-ggsave(snakemake@output$abunXtypeXsample_plot, width = 10, height = 12, units = "in")
+ggsave(file.path(args$abund_plot_dir, "abunXtypeXsample.png"), width = 10, height = 12, units = "in")
 
 #------------------------------
 # Top 20 Analysis
@@ -171,10 +181,10 @@ ggsave(snakemake@output$abunXtypeXsample_plot, width = 10, height = 12, units = 
 # ord.nmds.bray <- ordinate(sample.phyloseq.prop, method="NMDS", distance="bray")
 
 
-#----------------------------
-# Log Close
-#----------------------------
-if (!is.null(logfile) && nzchar(logfile)) {
-  sink(type = "message"); sink(type = "output")
-  close(logcon)
-}
+# #----------------------------
+# # Log Close
+# #----------------------------
+# if (!is.null(logfile) && nzchar(logfile)) {
+#   sink(type = "message"); sink(type = "output")
+#   close(logcon)
+# }

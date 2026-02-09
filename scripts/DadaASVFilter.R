@@ -1,33 +1,60 @@
 #!/usr/bin/env Rscript
 
 #----------------------------
-# Log Construction
+# Log Construction (no longer needed becuase running via shell directive with std err and std out taken care of)
 #----------------------------  
-logfile <- snakemake@log[[1]]
-if (!is.null(logfile) && nzchar(logfile)) {
-  logcon <- file(logfile, open = "wt")
-  sink(logcon, type = "output")
-  sink(logcon, type = "message")
-  cat("----- R script started -----\n")
-  cat("Working dir:", getwd(), "\n")
-  cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
-  flush.console()
-}
+# logfile <- snakemake@log[[1]]
+# if (!is.null(logfile) && nzchar(logfile)) {
+#   logcon <- file(logfile, open = "wt")
+#   sink(logcon, type = "output")
+#   sink(logcon, type = "message")
+#   cat("----- R script started -----\n")
+#   cat("Working dir:", getwd(), "\n")
+#   cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
+#   flush.console()
+# }
 
 library(dada2)
 library(Biostrings)
 library(ggplot2)
-library(DECIPHER)
+#library(DECIPHER)
+library(argparse)
+
+#---------------------------------
+# Execution Arguments
+#---------------------------------
+parser <- ArgumentParser()
+
+#input files
+parser$add_argument("--fqs", type="character", nargs='+', help="List of fastq file pathes to be used in denoising") # nargs='+' tells it to look for one or more arguments
+parser$add_argument("--sample-names", type="character", help="File path to .names file with sample names, one per line")
+
+#output files
+parser$add_argument("--filtered-fqs", type="character", nargs='+', help="List of fastq file pathes to store filtered reads.")
+parser$add_argument("--err-plt", type="character", help="File path to store error modeling plot.")
+parser$add_argument("--filt-counts", type="character", help="File path to store filter stage read counts tsv.")
+parser$add_argument("--asv-fa", type="character", help="File path to store stable ASV IDs")
+parser$add_argument("--seq-table", type="character", help="File path to store sequence table")
+
+#trimAndFilerter Paramters
+parser$add_argument("--chunk-size", type="integer")
+parser$add_argument("--truncLen", type="integer")
+parser$add_argument("--primerLen", type="integer")
+parser$add_argument("--maxN", type="integer")
+parser$add_argument("--maxEE", type="integer")
+parser$add_argument("--truncQ", type="integer")
+
+args <- parser$parse_args()
 
 # ------ params from snakemake ----
 
 # filterAndTrim PARAMETERS
-chunk_size <- snakemake@params$chunk_size
-truncLen <-  snakemake@params$truncLen
-primerLen <- snakemake@params$primerLen
-maxN <- snakemake@params$maxN
-maxEE <- snakemake@params$maxEE
-truncQ <- snakemake@params$truncQ
+chunk_size <- args$chunk_size
+truncLen <-  args$truncLen
+primerLen <- args$primerLen
+maxN <- args$maxN
+maxEE <- args$maxEE
+truncQ <- args$truncQ
 
 
 
@@ -36,15 +63,21 @@ truncQ <- snakemake@params$truncQ
 #----------------------------  
 #internal to R script, snakemake should be standing sentinal
 # ---- discover fastqs ----
-fq.files <- snakemake@input$umi_dedup_reads
+fq.files <- args$fqs
 
 # ---- import sample names ----
-sample.names <- readLines(snakemake@input$sample_names)
+sample.names <- readLines(args$sample_names)
 sample.names <- sample.names[nzchar(sample.names)] # removes empty lines
 
 
 # --- import outpaths for filtered fastqs ----
-filtered.fq.files <- snakemake@output$filtered_reads
+filtered.fq.files <- args$filtered_fqs
+
+#check correct number of filtered fastq compared to input fastqs
+if (length(fq.files) != length(filtered.fq.files)) {
+  stop("Mismatch: fqs=", length(fq.files), " filtered_fqs=", length(filtered.fq.files))
+}
+
 
 # --- set names for fastq vectors to sample names ---
 names(fq.files) <- sample.names
@@ -103,7 +136,7 @@ if (length(nonzero.fq.files) < 2) stop("Not enough filtered+trimmed FASTQs to le
 error.model <- learnErrors(nonzero.fq.files, multithread = TRUE)
 
 # ---- plot error models ----
-png(filename = snakemake@output$seq_err_plot, width=800, height=600)
+png(filename = args$err_plt, width=800, height=600)
 plotErrors(error.model, nominalQ = TRUE)
 dev.off()
 
@@ -122,23 +155,35 @@ seqtab.nochim <- removeBimeraDenovo(seqtab.denoise, method = "consensus", multit
 missing.samples <- setdiff(sample.names, rownames(seqtab.nochim))
 
 if (length(missing.samples) > 0) {
-  zero.matrix <- matrix(
+
+  #adding entries to both no-chimera seq table and just denoised seq table to ensure same size for read count tsv construction
+  denoised.zero.matrix <- matrix(
+    0,
+    nrow = length(missing.samples),
+    ncol = ncol(seqtab.denoise),
+    dimnames = list(missing.samples, colnames(seqtab.denoise))
+  )
+  seqtab.denoise <- rbind(seqtab.denoise, denoised.zero.matrix)
+
+  nochim.zero.matrix <- matrix(
     0,
     nrow = length(missing.samples),
     ncol = ncol(seqtab.nochim),
     dimnames = list(missing.samples, colnames(seqtab.nochim))
   )
-  
-  seqtab.nochim <- rbind(seqtab.nochim, zero.matrix)
+  seqtab.nochim <- rbind(seqtab.nochim, nochim.zero.matrix)
+
+  # Reordering sequence tables to ensure they match row ordering with other sample matrices
+  seqtab.denoise <- seqtab.denoise[sample.names, , drop = FALSE]
+  seqtab.nochim  <- seqtab.nochim[sample.names, , drop = FALSE]
 }
 
-#reordering to match original sample ordering
-seqtab.nochim <- seqtab.nochim[sample.names, , drop = FALSE]
+
 
 #----------------------------
 # Sequence Tracking
 #----------------------------
-getN <- function(x) sum(getUniques(x))
+
 tracker <- cbind(out_mat, 
                  rowSums(seqtab.denoise), 
                  rowSums(seqtab.nochim))
@@ -152,7 +197,7 @@ tracker_df <- data.frame(
 )
 
 write.table(tracker_df, 
-            file = snakemake@output$filter_stage_counts, 
+            file = args$filt_counts, 
             sep = '\t', 
             quote = FALSE, 
             row.names = FALSE,
@@ -166,7 +211,7 @@ ASV_IDs <- paste0("ASV", seq_len(ncol(seqtab.nochim)))
 dna_strings <- DNAStringSet(colnames((seqtab.nochim)))
 names(dna_strings) <- ASV_IDs
 writeXStringSet(dna_strings, 
-                filepath = snakemake@output$rep_asv_fasta,
+                filepath = args$asv_fa,
                 format = "fasta")
 
 #----------------------------------------------
@@ -174,15 +219,15 @@ writeXStringSet(dna_strings,
 #----------------------------------------------
 colnames(seqtab.nochim) <- ASV_IDs
 write.table(seqtab.nochim, 
-            file = snakemake@output$seq_table, 
+            file = args$seq_table, 
             sep = '\t', 
             quote = FALSE, 
             col.names = NA) #check to see if this is not mutating the matrix
 
-#----------------------------
-# Log Close
-#----------------------------
-if (!is.null(logfile) && nzchar(logfile)) {
-  sink(type = "message"); sink(type = "output")
-  close(logcon)
-}
+# #----------------------------
+# # Log Close
+# #----------------------------
+# if (!is.null(logfile) && nzchar(logfile)) {
+#   sink(type = "message"); sink(type = "output")
+#   close(logcon)
+# }

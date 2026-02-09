@@ -149,6 +149,7 @@ rule index_ref_bwa:
         # indexing produces many files but .bwt is the key one (will use as sentinel)
         bwt = "{ref}.bwt"
     threads: 8
+    conda: "bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -185,6 +186,7 @@ rule norm_fastq:
         r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
     log:
         f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
+    conda: "bio-tools-env"
     threads: 2
     shell:
         r"""
@@ -225,6 +227,7 @@ rule umi_selection:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN]
     log:
         f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
+    conda: "bio-tools-env"
     # TODO: address seqtk dependency (most likely using singularity)
     shell:
         r"""
@@ -256,6 +259,7 @@ rule umi_dedup:
         AmpUMI_regex = "^" + ("I" * UMI_LEN)
     log:
         f"{LOG_DIR}/umi_dedup/umi_dedup.{{s}}.log"
+    conda: "AmpUMI-env"
     shell:
         r"""
         set -euo pipefail
@@ -299,11 +303,31 @@ rule dada_denoising:
         maxN = MAX_N,
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
+    conda: "R-tools-env"
     threads: 16
     log:
         f"{LOG_DIR}/02_dada.log"
-    script:
-        f"{SCRIPTS}/DadaASVFilter.R"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1 
+
+        Rscript scripts/DadaASVFilter.R \
+            --fqs {input.umi_dedup_reads} \
+            --sample-names {input.sample_names} \
+            --filtered-fqs {output.filtered_reads} \
+            --err-plt {output.seq_err_plot} \
+            --filt-counts {output.filter_stage_counts} \
+            --asv-fa {output.rep_asv_fasta} \
+            --seq-table {output.seq_table} \
+            --chunk-size {params.chunk_size} \
+            --truncLen {params.truncLen} \
+            --primerLen {params.primerLen} \
+            --maxN {params.maxN} \
+            --maxEE {params.maxEE} \
+            --truncQ {params.truncQ} 
+        """
+        
 
 #--------------------------
 # Count Normalization
@@ -326,6 +350,7 @@ rule count_normalization:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
     log:
         f"{LOG_DIR}/normalization.log"
+    conda: "bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -355,6 +380,7 @@ rule host_viral_alignment:
     log:
         f"{LOG_DIR}/03_alignment/03_alignment_{{tag}}.log"
     threads: 8
+    conda: "bio-tools-env"
     # TODO: address BWA dependency (most likely using singularity)
     shell:
         r"""
@@ -376,6 +402,7 @@ rule nonhost_nonviral_filter:
     log:
         f"{LOG_DIR}/04_nonhost_nonviral.log"
     threads: 8
+    conda: "bio-tools-env"
     # TODO: consider consolidating with unmapped_bwa_mem and make one step??
     shell:
         r"""
@@ -401,6 +428,7 @@ rule bacterial_alignment:
     log:
         f"{LOG_DIR}/05_bact_map.log"
     threads: 8
+    conda: "bio-tools-env"
     # Reverted filtering to use samtools view with positive selection for mapped reads (reverse of unmmaped fileter)
     #   was previously filtered via awk statement (this is more consistent)
     shell:
@@ -410,26 +438,6 @@ rule bacterial_alignment:
         samtools view -F 4 "{output.bacterial_alignment}" | cut -f1 | sort -u > "{output.bacterial_names}"
         seqtk subseq "{input.nonhost_nonviral_ASVs}" "{output.bacterial_names}" > "{output.bacterial_ASVs}" 2> "{log}"
         """
-
-#------------------------------------------------------------
-# 06.1 IDTax (DECIPHER) Taxa Classification (NONFUNCTIONING)
-#------------------------------------------------------------
-rule IDTax_classification:
-    input:
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        tax_ref = ID_TAX_REFERENCE
-    output:
-        taxonomy_table = f"{ID_TAX_DIR}/IDTax_Taxonomy.tsv",
-    params:
-        seq_table_dir = DADA_DENOISE_DIR,
-        idtax_class_dir = ID_TAX_DIR,
-    threads: 8
-    log:
-        f"{LOG_DIR}/06.1_IDTax.log"
-    script:
-        #would need to adjust script to deal with ealier Dada filter
-        f"{SCRIPTS}/IdTaxaClassification.R"
         
 #------------------------------
 # 06.2 Mothur Taxa Classifcation 
@@ -449,6 +457,7 @@ rule mothur_classify:
         #       currently just removing these after mothur run
         f"{LOG_DIR}/06.2_mothur_class.log"
     threads: 8
+    conda: "mothur-env"
     shell:
         r"""
         set -euo pipefail
@@ -487,8 +496,17 @@ rule phyloseq_analysis:
         abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png"
     log:
         f"{LOG_DIR}/07_phyloseq.log"
-    script:
-        f"{SCRIPTS}/PhyloseqTaxAnalysis.R"
+    conda: "R-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        Rscript scripts/PhyloseqTaxAnalysis.R \
+            --tax-file {input.taxfile} \
+            --norm-seq-table {input.norm_seq_table} \
+            --bacterial-names {input.bacterial_names} \
+            --abund-plot-dir {TAX_OUTPUT_DIR}
+        """
 
 
 #--------------------------------
@@ -502,6 +520,7 @@ rule asv_tax_counts:
     params:
         min_count = lambda wc: TAX_MIN[wc.level],
         cutoff = lambda wc: TAX_FIELDS[wc.level]
+    conda: "bio-tools-env"
     log:
         f"{LOG_DIR}/08_manual_mothur_count/08_manual_mothur_count.{{level}}.log"
     shell:
@@ -546,10 +565,26 @@ rule read_counts:
         normalized = NORM_RAW_DIR,
         selected = UMI_SELECT_DIR,
         deduped = UMI_DEDUP_DIR
+    conda: "R-tools-env"
     log:
         f"{LOG_DIR}/-01_read_count.log"
-    script:
-        "scripts/ReadCountCompilation.R"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+
+        Rscript scripts/ReadCountCompilation.R \
+            --sample-names {params.samples} \
+            --raw-dir {params.normalized} \
+            --selected-dir {params.selected} \
+            --deduped-dir {params.deduped} \
+            --dada-filter-counts {input.dada_read_counts} \
+            --seq-table {input.seq_table} \
+            --host-names {input.host_unmapped_names} \
+            --viral-names {input.viral_unmapped_names} \
+            --bacterial-names {input.bacterial_names} \
+            --combined-counts {output.combined_read_counts}
+        """
 
 
 
@@ -595,3 +630,23 @@ rule trim_selected_r1:
         trimmomatic_jar="$TRIMMOJAR"
         java -jar "$trimmomatic_jar" SE -threads {threads} -phred33 "{input.selected_fastq}" "{output.trimmed_fastq}" "{params.trim_args}"
         """
+
+#------------------------------------------------------------
+# 06.1 IDTax (DECIPHER) Taxa Classification (NONFUNCTIONING)
+#------------------------------------------------------------
+# rule IDTax_classification:
+#     input:
+#         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+#         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+#         tax_ref = ID_TAX_REFERENCE
+#     output:
+#         taxonomy_table = f"{ID_TAX_DIR}/IDTax_Taxonomy.tsv",
+#     params:
+#         seq_table_dir = DADA_DENOISE_DIR,
+#         idtax_class_dir = ID_TAX_DIR,
+#     threads: 8
+#     log:
+#         f"{LOG_DIR}/06.1_IDTax.log"
+#     script:
+#         #would need to adjust script to deal with ealier Dada filter
+#         f"{SCRIPTS}/IdTaxaClassification.R"
