@@ -3,6 +3,7 @@ out_root: "Exp_Output/expt1_rnalowbiotit_300Mid_041123"
 script_dir: "scripts"
 
 
+
 host_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
 viral_ref: "Ref_Data/all.viral.fna"
 bact16s_ref: "Ref_Data/all.rrna.bacteria"
@@ -59,6 +60,12 @@ tax_min_counts:
   class: 50
   genus: 10
   species: 5
+
+#-------------------------------------
+# READ COUNT NORMALIZATION PARAMETERS
+#-------------------------------------
+norm_method: "rawTSSlog2"
+norm_offset: 0.001
 
 
 #-----------------------------

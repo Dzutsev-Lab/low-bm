@@ -65,7 +65,9 @@ MAX_N = config["maxN"]
 MAX_EE = config["maxEE"]
 TRUNC_Q = config["truncQ"]
 
-
+# Read Count Normalization Parameters
+NORM_METHOD = config["norm_method"]
+NORM_OFFSET = config["norm_offset"]
 
 
 # Negative Control Filtering Parameters
@@ -228,7 +230,7 @@ rule umi_selection:
     log:
         f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
     conda: "bio-tools-env"
-    # TODO: address seqtk dependency (most likely using singularity)
+    threads: 1
     shell:
         r"""
         set -euo pipefail
@@ -260,6 +262,7 @@ rule umi_dedup:
     log:
         f"{LOG_DIR}/umi_dedup/umi_dedup.{{s}}.log"
     conda: "AmpUMI-env"
+    threads: 8
     shell:
         r"""
         set -euo pipefail
@@ -327,44 +330,6 @@ rule dada_denoising:
             --maxEE {params.maxEE} \
             --truncQ {params.truncQ} 
         """
-        
-
-#--------------------------
-# Count Normalization
-#--------------------------
-rule count_normalization:
-    #--------------------------
-    #--------------------------
-    # Normalization Reasoning
-    #--------------------------
-    #--------------------------
-    # TSS Normalization  
-    #   - for exploratory normalization starting with simplest TSS
-    #   - first normalizing my row sum (seems to be the best measure of authentic reads after PCR correction)
-    # TSS with Host Mapped Read Counts
-    #   - normalizing whole sequence table with row sums from Human Mapped subsetted data frame
-    input:
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
-    output:
-        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
-    log:
-        f"{LOG_DIR}/normalization.log"
-    conda: "bio-tools-env"
-    shell:
-        r"""
-        set -euo pipefail
-        python scripts/SequenceTableNormalization.py \
-            --in {input.seq_table} \
-            --host-names {input.host_unmapped_names} \
-            --out {output.norm_seq_table} \
-        > "{log}" 2>&1
-        """
-    
-
-
-
-
 
 #--------------------------------------------------------
 # 03 Contaminant Alignment and Unmapped Selection
@@ -481,12 +446,48 @@ rule mothur_classify:
         rm *.logfile
         """
 
+#--------------------------
+# Count Normalization
+#--------------------------
+rule count_normalization:
+    #--------------------------
+    #--------------------------
+    # Normalization Reasoning
+    #--------------------------
+    #--------------------------
+    # TSS Normalization  
+    #   - for exploratory normalization starting with simplest TSS
+    #   - first normalizing my row sum (seems to be the best measure of authentic reads after PCR correction)
+    # TSS with Host Mapped Read Counts
+    #   - normalizing whole sequence table with row sums from Human Mapped subsetted data frame
+    input:
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
+    output:
+        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
+    params:
+        method = NORM_METHOD,
+        offset = NORM_OFFSET
+    log:
+        f"{LOG_DIR}/normalization.log"
+    conda: "bio-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        python scripts/SequenceTableNormalization.py \
+            --in {input.seq_table} \
+            --host-names {input.host_unmapped_names} \
+            --out {output.norm_seq_table} \
+            --method {params.method} \
+            --offset {params.offset} \
+        > "{log}" 2>&1
+        """
+
 #-------------------------------
 # 07 Phyloseq Taxonomy Analysis
 #-------------------------------
 rule phyloseq_analysis:
     input:
-        #seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
@@ -541,8 +542,6 @@ rule asv_tax_counts:
         """
 
         
-# TODO: get to work with post-ASV collapse read counts
-#       probably will have to do with R script (subsetting sequence table)
 #-----------------------------
 # -01 Read Count Calculations
 #-----------------------------
@@ -587,66 +586,3 @@ rule read_counts:
         """
 
 
-
-
-#----------------------------
-# -00 FASTQ to FASTA (Defunct)
-#----------------------------   
-# TODO: check if mothur really requires FASTA over FASTQ
-rule fastq_to_fasta:
-    input:
-        fastq = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fastq"
-    output:
-        fasta = f"{POS_ALIGNMENT_DIR}/bacterial.{{s}}.fasta"
-    log:
-        f"{LOG_DIR}/-02_fq2fa/-02_fq2fa.{{s}}.log"
-    # TODO: address seqkit dependency (most likely using singularity)
-    shell:
-        r"""
-        set -euo pipefail
-        seqkit fq2fa "{input.fastq}" > "{output.fasta}" 2> "{log}"
-        """
-
-
-#----------------------------------------
-# -00 Trimming with Trimmomatic (Defunct)
-#----------------------------------------   
-rule trim_selected_r1:
-    input:
-        selected_fastq = f"{UMI_SELECT_DIR}/SelectedReads.{{s}}.R1.fastq",
-        init = f"{OUT}/.init.done"
-    output:
-        trimmed_fastq = f"{TRIMMED_DIR}/trimmed.{{s}}.R1.fastq"
-    params:
-        trim_args = TRIM_ARGS_STR
-    log:
-        f"{LOG_DIR}/02_trim/02_trim.{{s}}.log"
-    threads: 4
-    # TODO: figure out trimmomatic dependency
-    shell:
-        r"""
-        set -euo pipefail
-
-        trimmomatic_jar="$TRIMMOJAR"
-        java -jar "$trimmomatic_jar" SE -threads {threads} -phred33 "{input.selected_fastq}" "{output.trimmed_fastq}" "{params.trim_args}"
-        """
-
-#------------------------------------------------------------
-# 06.1 IDTax (DECIPHER) Taxa Classification (NONFUNCTIONING)
-#------------------------------------------------------------
-# rule IDTax_classification:
-#     input:
-#         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-#         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-#         tax_ref = ID_TAX_REFERENCE
-#     output:
-#         taxonomy_table = f"{ID_TAX_DIR}/IDTax_Taxonomy.tsv",
-#     params:
-#         seq_table_dir = DADA_DENOISE_DIR,
-#         idtax_class_dir = ID_TAX_DIR,
-#     threads: 8
-#     log:
-#         f"{LOG_DIR}/06.1_IDTax.log"
-#     script:
-#         #would need to adjust script to deal with ealier Dada filter
-#         f"{SCRIPTS}/IdTaxaClassification.R"

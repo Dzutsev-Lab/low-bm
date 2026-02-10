@@ -10,6 +10,8 @@ def main():
     ap.add_argument("--sep", default="\t")
     ap.add_argument("--id-col", default=None,
                     help="Name of samples ID column in input sequence table. If omitted, will use first column")
+    ap.add_argument("--method", required=True)
+    ap.add_argument("--offset", default=0.0, type=float)
     args = ap.parse_args()
 
     # Import sequence table
@@ -28,11 +30,7 @@ def main():
     print("\nSample IDs")
     print(sample_ids)
 
-    # REtrieve Unmapped ASV names
-    with open(args.host_names, 'r') as name_file:
-        unmapped_names = [line.strip() for line in name_file]
-    print('\nUnmapped ASV IDs')
-    print(unmapped_names)
+
 
     # Create count-only data frame for easy calculation
     count_df = seq_table_df.drop(columns=[sample_id_col]).apply(pd.to_numeric)
@@ -40,16 +38,54 @@ def main():
     print(count_df.info())
     print(count_df.head())
 
-    # Create data frame with only host-mapped ASV columns
-    host_count_df = count_df.drop(columns= unmapped_names)
-    print('\nHost Mapped Sequence Count Table')
-    print(host_count_df.info())
-    print(host_count_df.head())
 
-    normalized_df = np.log2(count_df + 0.001) #off set to handle zero values
-                        # count_df.div(count_df.sum(axis='columns').replace(0, np.nan), #if no reads found, change to NA to handle zero-devisor
-                        #              axis='index').fillna(0.0) #keep all as numerial now that zero divsor averted
-                        # + 1) #offset to handle zero values
+
+    #---------------------------
+    # Normalization Function
+    #---------------------------
+    def rawTSS(count_df):
+        # host count df included as parameter to make inclusion in function dict easier
+        return count_df.div(count_df.sum(axis='columns').replace(0, np.nan),
+                            axis='index').fillna(0.0) #keep all as numerial now that zero divsor averted
+    
+    def hostTSS(count_df):
+        # Retrieve Unmapped ASV names
+        with open(args.host_names, 'r') as name_file:
+            unmapped_names = [line.strip() for line in name_file]
+        print('\nUnmapped ASV IDs')
+        print(unmapped_names)
+
+        # Create data frame with only host-mapped ASV columns
+        host_count_df = count_df.drop(columns= unmapped_names)
+        print('\nHost Mapped Sequence Count Table')
+        print(host_count_df.info())
+        print(host_count_df.head())
+
+        return count_df.div(host_count_df.sum(axis='columns').replace(0, 1), # replacing with 1 to reward samples of no host alignment
+                            axis='index')
+    
+    def log2(count_df):
+        return np.log2(count_df + args.offset)
+
+    def rawTSSlog2(count_df):
+        return log2(rawTSS(count_df))
+
+    def hostTSSlog2(count_df):
+        return log2(hostTSS(count_df))
+    
+    norm_methods_dict = {
+        "rawTSS" : rawTSS,
+        "hostTSS" : hostTSS,
+        "log2" : log2,
+        "rawTSSlog2" : rawTSSlog2,
+        "hostTSSlog2" : hostTSSlog2
+    }
+
+
+    #---------------------------
+    # Normalize Sequence Table
+    #---------------------------
+    normalized_df = norm_methods_dict[args.method](count_df)
 
     
     # Output Normalized data frame with sample IDs attached
