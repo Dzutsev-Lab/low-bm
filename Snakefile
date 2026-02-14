@@ -8,6 +8,7 @@ configfile: "config.yaml"
 RAW = config["raw_dir"]
 OUT = config["out_root"]
 SCRIPTS = config["script_dir"]
+CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
 ORIG_DIR = f"{OUT}/original.fastq"
 
@@ -151,7 +152,7 @@ rule index_ref_bwa:
         # indexing produces many files but .bwt is the key one (will use as sentinel)
         bwt = "{ref}.bwt"
     threads: 8
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -188,7 +189,7 @@ rule norm_fastq:
         r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
     log:
         f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     threads: 2
     shell:
         r"""
@@ -229,7 +230,7 @@ rule umi_selection:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN]
     log:
         f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     threads: 1
     shell:
         r"""
@@ -261,7 +262,7 @@ rule umi_dedup:
         AmpUMI_regex = "^" + ("I" * UMI_LEN)
     log:
         f"{LOG_DIR}/umi_dedup/umi_dedup.{{s}}.log"
-    conda: "AmpUMI-env"
+    conda: f"{CONDA_ENV_DIR}/AmpUMI-env"
     threads: 8
     shell:
         r"""
@@ -306,7 +307,7 @@ rule dada_denoising:
         maxN = MAX_N,
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
-    conda: "R-tools-env"
+    conda: f"{CONDA_ENV_DIR}/R-tools-env"
     threads: 16
     log:
         f"{LOG_DIR}/02_dada.log"
@@ -345,7 +346,7 @@ rule host_viral_alignment:
     log:
         f"{LOG_DIR}/03_alignment/03_alignment_{{tag}}.log"
     threads: 8
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     # TODO: address BWA dependency (most likely using singularity)
     shell:
         r"""
@@ -367,7 +368,7 @@ rule nonhost_nonviral_filter:
     log:
         f"{LOG_DIR}/04_nonhost_nonviral.log"
     threads: 8
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     # TODO: consider consolidating with unmapped_bwa_mem and make one step??
     shell:
         r"""
@@ -393,7 +394,7 @@ rule bacterial_alignment:
     log:
         f"{LOG_DIR}/05_bact_map.log"
     threads: 8
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     # Reverted filtering to use samtools view with positive selection for mapped reads (reverse of unmmaped fileter)
     #   was previously filtered via awk statement (this is more consistent)
     shell:
@@ -422,7 +423,7 @@ rule mothur_classify:
         #       currently just removing these after mothur run
         f"{LOG_DIR}/06.2_mothur_class.log"
     threads: 8
-    conda: "mothur-env"
+    conda: f"{CONDA_ENV_DIR}/mothur-env"
     shell:
         r"""
         set -euo pipefail
@@ -470,7 +471,7 @@ rule count_normalization:
         offset = NORM_OFFSET
     log:
         f"{LOG_DIR}/normalization.log"
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -494,10 +495,11 @@ rule phyloseq_analysis:
     output:
         abunXtype_plot = f"{TAX_OUTPUT_DIR}/abunXtype.png",
         abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
-        abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png"
+        abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
+        genus_tabl = f"{TAX_OUTPUT_DIR}/genus_table.tsv"
     log:
         f"{LOG_DIR}/07_phyloseq.log"
-    conda: "R-tools-env"
+    conda: f"{CONDA_ENV_DIR}/R-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -521,7 +523,7 @@ rule asv_tax_counts:
     params:
         min_count = lambda wc: TAX_MIN[wc.level],
         cutoff = lambda wc: TAX_FIELDS[wc.level]
-    conda: "bio-tools-env"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     log:
         f"{LOG_DIR}/08_manual_mothur_count/08_manual_mothur_count.{{level}}.log"
     shell:
@@ -549,7 +551,6 @@ rule read_counts:
     input:
         norm_raw_r1_fqs = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
         selected_r1_fqs = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES),
-        deduped_fqs = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES),
 
         dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
@@ -564,7 +565,7 @@ rule read_counts:
         normalized = NORM_RAW_DIR,
         selected = UMI_SELECT_DIR,
         deduped = UMI_DEDUP_DIR
-    conda: "R-tools-env"
+    conda: f"{CONDA_ENV_DIR}/R-tools-env"
     log:
         f"{LOG_DIR}/-01_read_count.log"
     shell:
@@ -576,7 +577,6 @@ rule read_counts:
             --sample-names {params.samples} \
             --raw-dir {params.normalized} \
             --selected-dir {params.selected} \
-            --deduped-dir {params.deduped} \
             --dada-filter-counts {input.dada_read_counts} \
             --seq-table {input.seq_table} \
             --host-names {input.host_unmapped_names} \

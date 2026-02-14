@@ -53,14 +53,11 @@ maxranks <- 9 #hardset maximum number of rank assignment (down to sub-strain)
 # function for removing confidence score from level entry
 clean_confidence_score <- function(x) sub("\\(.*\\)$", "", x) 
 
-# function for removing level demarcation (redundant with column names)
-# clean_level_marker <- function(x) sub("^[^_]+__", "", x)
-
 
 # construct taxonomy matrix via matrix transposition of split taxonomy records
 tax_matrix <- t(vapply(split_tax_df, function(tax_entry) {
   tax_entry <- sapply(tax_entry, clean_confidence_score)
-  # tax_entry <- sapply(tax_entry, clean_level_marker)
+
   
   # pad unassigned lower levels with NA
   if (length(tax_entry) < maxranks) {
@@ -120,8 +117,34 @@ all_sample_phyloseq <- phyloseq(otu_table(seq_table, taxa_are_rows = FALSE),
                                 sample_data(sample_meta_data_df),
                                 tax_table(tax_matrix))
 str(all_sample_phyloseq)
+
+
+
 # glom all samples based on common genus (sets all low assignments to NA)
-all_sample_phyloseq_genus_glom <- tax_glom(all_sample_phyloseq, taxrank = "Genus")
+all_sample_phyloseq_genus_glom <- tax_glom(all_sample_phyloseq,
+                                           taxrank = "Genus",
+                                           NArm = TRUE) # generates NA column containing count of all ASVs unclassified at genus level
+                                                        # shouldn't do anything with mothur confidence threshold at 0 (all taxa level given assignment)
+str(all_sample_phyloseq_genus_glom)
+
+# constructing genus name matrix from tax table of genus glommed phyloseq object
+genus_name_matrix <- as(tax_table(all_sample_phyloseq_genus_glom), "matrix")[, "Genus"]
+genus_name_matrix[is.na(genus_name_matrix) | genus_name_matrix == ""] <- "Unassigned" # dealing with Unassigned column label
+
+# setting taxa names in phyloseq object to genus level name matrix
+taxa_names(all_sample_phyloseq_genus_glom) <- genus_name_matrix
+
+# Constructing genus count table from glommed OTU table
+genus_table <- otu_table(all_sample_phyloseq_genus_glom)
+str(genus_table)
+write.table(
+  genus_table,
+  file = file.path(args$abund_plot_dir, "genus_table.tsv"),
+  sep = "\t",
+  quote = FALSE
+)
+
+
 
 # subset to only top 10 most prevelant genus
 all_sample_phyloseq_top10g <- prune_taxa(
@@ -164,21 +187,6 @@ abunXtypeXsample_plot +
 
 ggsave(file.path(args$abund_plot_dir, "abunXtypeXsample.png"), width = 10, height = 12, units = "in")
 
-#------------------------------
-# Top 20 Analysis
-#------------------------------
-# top20_names <- names(sort(taxa_sums(all_sample_phyloseq), decreasing=TRUE))[1:20]
-# all_sample_phyloseq.top20 <- transform_sample_counts(all_sample_phyloseq, function(OTU) OTU/sum(OTU))
-# all_sample_phyloseq.top20 <- prune_taxa(top20_names, all_sample_phyloseq.top20)
-# plot_bar(all_sample_phyloseq.top20, x="Concentration", fill="Family")
-# ggsave(snakemake@output$abundance_plot)
-
-
-#------------------------------
-# Bray-Curtis Distances Analysis
-#------------------------------
-# sample.phyloseq.prop <- transform_sample_counts(sample.phyloseq, function(otu) otu/sum(otu))
-# ord.nmds.bray <- ordinate(sample.phyloseq.prop, method="NMDS", distance="bray")
 
 
 # #----------------------------

@@ -27,7 +27,6 @@ parser <- ArgumentParser()
 parser$add_argument("--sample-names", type="character", nargs='+', help="List of sample names")
 parser$add_argument("--raw-dir", type="character", help="File path to directory with raw reads")
 parser$add_argument("--selected-dir", type="character", help="File path to directory with selected authentic reads")
-parser$add_argument("--deduped-dir", type="character", help="File path to directory with UMI deduplicated reads")
 
 parser$add_argument("--dada-filter-counts", type="character", help="File path to tsv with Dada filtering stage counts")
 parser$add_argument("--seq-table", type="character", help="File path to tsv of denoised sequence table")
@@ -53,12 +52,10 @@ fastq_read_counter <- function(fq_path) {
 fastq_counts <- lapply(sample_names, function(s){
   normalized_path <- file.path(args$raw_dir, paste0(s, "_R1_001.fastq"))
   selected_path   <- file.path(args$selected_dir, paste0("Selected.", s, ".UMI_R1.fastq"))
-  dedpued_path    <- file.path(args$deduped_dir, paste0("Deduped.", s, ".fastq"))
   tibble(
     SampleID = s,
     Raw_reads      = fastq_read_counter(normalized_path),
-    Selected_reads = fastq_read_counter(selected_path),
-    Deduped_reads  = fastq_read_counter(dedpued_path)
+    Selected_reads = fastq_read_counter(selected_path)
     )
 }) |> bind_rows()
 str(fastq_counts)

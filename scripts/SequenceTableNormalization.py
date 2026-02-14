@@ -43,6 +43,9 @@ def main():
     #---------------------------
     # Normalization Function
     #---------------------------
+    def noNorm(count_df):
+        return(count_df)
+    
     def rawTSS(count_df):
         # host count df included as parameter to make inclusion in function dict easier
         return count_df.div(count_df.sum(axis='columns').replace(0, np.nan),
@@ -74,6 +77,7 @@ def main():
         return log2(hostTSS(count_df))
     
     norm_methods_dict = {
+        "noNorm" : noNorm,
         "rawTSS" : rawTSS,
         "hostTSS" : hostTSS,
         "log2" : log2,
