@@ -479,8 +479,8 @@ rule kraken_classification:
         bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
         kraken_database = f"{REF_DIR}/{KRAKEN_DB}"
     output:
-        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
-        kraken_report_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.k2report",
+        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
+        kraken_report_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report",
     threads: 16
     log: f"{LOG_DIR}/06.3_kraken_class.log"
     conda: f"{CONDA_ENV_DIR}/kraken-env"
@@ -541,7 +541,7 @@ rule phyloseq_analysis:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
-        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
+        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
         nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
 

@@ -207,11 +207,11 @@ library(taxonomizr)
 # Taxonomy Database File Paths
 names_dmp <- file.path(args$dump_dir, "names.dmp")
 nodes_dmp <- file.path(args$dump_dir, "nodes.dmp")
-sql_db <- file.path(args$abund_plot_dir, "tax_db.sqlite")
+sql_db <- file.path(args$abund_plot_dir, paste0("tax_db_", basename(args$dump_dir), ".sqlite"))
 
 # Taxonomy Database Construction
-read.names.sql(names_dmp, sql_db)
-read.nodes.sql(nodes_dmp, sql_db)
+read.names.sql(names_dmp, sql_db, overwrite = TRUE)
+read.nodes.sql(nodes_dmp, sql_db, overwrite = TRUE)
 
 # Import ASVid -> TaxID info from .kraken2 file
 kraken_info <- read.delim(args$kraken_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE)
