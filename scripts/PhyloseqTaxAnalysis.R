@@ -16,6 +16,7 @@ library(phyloseq)
 library(Biostrings)
 library(ggplot2)
 library(argparse)
+library(dplyr)
 
 # Keep ggplot from producing Rplots.pdf
 if(!interactive()) pdf(NULL)
@@ -23,6 +24,8 @@ if(!interactive()) pdf(NULL)
 parser <- ArgumentParser()
 
 parser$add_argument("--tax-file", type="character", help="taxonomy classification file path")
+parser$add_argument("--kraken-file", type="character", help="kraken taxonomy classification file path")
+parser$add_argument("--dump-dir", type="character", help="directory containing nodes.dmp and names.dmp to be used in database construction")
 parser$add_argument("--norm-seq-table", type="character", help="normalized seq table tsv file path")
 parser$add_argument("--bacterial-names", type="character", help="names of bacterial ASVs")
 parser$add_argument("--abund-plot-dir", type="character", help="directory to store output abundance plots")
@@ -135,13 +138,21 @@ genus_name_matrix[is.na(genus_name_matrix) | genus_name_matrix == ""] <- "Unassi
 taxa_names(all_sample_phyloseq_genus_glom) <- genus_name_matrix
 
 # Constructing genus count table from glommed OTU table
-genus_table <- otu_table(all_sample_phyloseq_genus_glom)
-str(genus_table)
+genus_matrix <- as.matrix(otu_table(all_sample_phyloseq_genus_glom))
+str(genus_matrix)
+
+#ensure proper orientation of genus table
+if (taxa_are_rows(all_sample_phyloseq_genus_glom)) {
+  genus_matrix <- t(genus_matrix)
+}
+
 write.table(
-  genus_table,
+  genus_matrix,
   file = file.path(args$abund_plot_dir, "genus_table.tsv"),
   sep = "\t",
-  quote = FALSE
+  quote = FALSE,
+  row.names = TRUE,
+  col.names = NA 
 )
 
 
@@ -184,10 +195,80 @@ abunXtypeXsample_plot +
   labs(title = "Read Counts per Sample by Sample Type",
        x = "Sample",
        y = "Read Count")
-
 ggsave(file.path(args$abund_plot_dir, "abunXtypeXsample.png"), width = 10, height = 12, units = "in")
 
 
+
+
+#-----------------------------
+# Kraken Phyloseq Analysis
+#-----------------------------
+library(taxonomizr)
+# Taxonomy Database File Paths
+names_dmp <- file.path(args$dump_dir, "names.dmp")
+nodes_dmp <- file.path(args$dump_dir, "nodes.dmp")
+sql_db <- file.path(args$abund_plot_dir, "tax_db.sqlite")
+
+# Taxonomy Database Construction
+read.names.sql(names_dmp, sql_db)
+read.nodes.sql(nodes_dmp, sql_db)
+
+# Import ASVid -> TaxID info from .kraken2 file
+kraken_info <- read.delim(args$kraken_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE)
+colnames(kraken_info)[1:3] <- c("status", "ASVid", "taxid")
+
+# trimming kraken information to ASVid and TaxID for all with positive classifications
+kraken_info <- kraken_info[kraken_info$status == "C" & kraken_info$taxid != 0, c("ASVid", "taxid")]
+kraken_info$taxid <- as.integer(kraken_info$taxid)
+
+desiredTaxa <- c("superkingdom","phylum","class","order","family","genus","species")
+
+tax_df <- getTaxonomy(ids = kraken_info$taxid, 
+                      sqlFile = sql_db, 
+                      desiredTaxa = desiredTaxa)
+tax_df <- as.data.frame(tax_df, stringsAsFactors = FALSE)
+tax_df$ASVid <- kraken_info$ASVid
+
+tax_df <- rename( tax_df, 
+                  Kingdom = superkingdom,
+                  Phylum  = phylum,
+                  Class   = class,
+                  Order   = order,
+                  Family  = family,
+                  Genus   = genus,
+                  Species = species)
+
+
+tax_matrix <- as.matrix(tax_df[, c("Kingdom","Phylum","Class","Order","Family","Genus","Species")])
+rownames(tax_matrix) <- tax_df$ASVid
+str(tax_matrix)
+
+
+kraken_all_sample_phyloseq <- phyloseq(otu_table(seq_table, taxa_are_rows = FALSE),
+                                       sample_data(sample_meta_data_df),
+                                       tax_table(tax_matrix))
+str(kraken_all_sample_phyloseq)
+
+kraken_all_sample_phyloseq_genus_glom <- tax_glom(kraken_all_sample_phyloseq, 
+                                                  taxrank = "Genus",
+                                                  NArm = TRUE)
+
+kraken_all_sample_phyloseq_top10g <- prune_taxa(
+  names(sort(taxa_sums(kraken_all_sample_phyloseq_genus_glom), decreasing = TRUE))[1:10],
+  kraken_all_sample_phyloseq_genus_glom
+)
+
+kraken_abunXtypeXsample_plot <- plot_bar(kraken_all_sample_phyloseq_top10g, "Replicate", fill = "Genus")
+kraken_abunXtypeXsample_plot +
+  theme(
+    legend.position = "bottom",
+    legend.text = element_text(size = 6)
+  ) +
+  facet_wrap(~SampleType, scales = "free_x") +
+  labs(title = "Read Counts per Sample by Sample Type",
+       x = "Sample",
+       y = "Read Count")
+ggsave(file.path(args$abund_plot_dir, "kraken_abunXtypeXsample.png"), width = 10, height = 12, units = "in")
 
 # #----------------------------
 # # Log Close

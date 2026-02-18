@@ -1,14 +1,14 @@
-raw_dir: "Exp_Data/exp3_lungcancer_plasmatrial_110524/OUTPUT/Data/fastq"
-out_root: "Exp_Output/exp3_lungcancer_plasmatrial_110524"
+raw_dir: "Exp_Data/expt1_rnalowbiotit_300Mid_041123/OUTPUT/FASTQ"
+out_root: "Exp_Output/expt1_rnalowbiotit_300Mid_041123"
 script_dir: "scripts"
 
 
-
+#--------------------------
+# REFERENCE GENOMES
+#--------------------------
 host_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
 viral_ref: "Ref_Data/all.viral.fna"
 bact16s_ref: "Ref_Data/all.rrna.bacteria"
-
-IDTax_reference: "Ref_Data/silva_nr99_v138.2_toGenus_trainset.fa.gz"
 
 #--------------------------
 # UMI SELECTION PARAMETERS
@@ -51,6 +51,11 @@ mothur_tax_file: "Ref_Data/ncbi20.tax"
 mothur_cutoff: 0
 mothur_method: "wang"
 
+
+#------------------------
+# KRAKEN PARAMETERS
+#------------------------
+kraken_db: "greengenes"
 
 #---------------------------
 # TAXONOMY COUNT PARAMETERS

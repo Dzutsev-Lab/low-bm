@@ -10,6 +10,7 @@ OUT = config["out_root"]
 SCRIPTS = config["script_dir"]
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
+REF_DIR = "Ref_Data"
 ORIG_DIR = f"{OUT}/original.fastq"
 
 IP_DIR = f"{OUT}/InProcess"
@@ -24,7 +25,6 @@ MOTHUR_TAX_DIR = f"{IP_DIR}/06.2-08_Mothur_Taxonomy"
 TRIMMED_DIR = f"{IP_DIR}/-00_Trimming"
 UMI_DEDUP_DIR = f"{IP_DIR}/UMIDeduplication"
 NORM_COUNT_DIR = f"{IP_DIR}/CountNormalization"
-
 
 TRACK_DIR = f"{OUT}/Tracking"
 TAX_OUTPUT_DIR = f"{OUT}/Taxonomy"
@@ -50,8 +50,8 @@ MOTHUR_TAX_FILE = config["mothur_tax_file"]
 MOTHUR_CUTOFF = config["mothur_cutoff"]
 MOTHUR_METHOD = config["mothur_method"]
 
-# Dada reference
-ID_TAX_REFERENCE = config["IDTax_reference"]
+# Kraken Parameters
+KRAKEN_DB = config["kraken_db"]
 
 
 # Trimming Parameters
@@ -126,9 +126,13 @@ rule all:
         tax_summary = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
         tax_count = expand(f"{TAX_OUTPUT_DIR}/bacterial.ASV.{{level}}.count", level=TAX_LEVELS),
 
-        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
-        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
-        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
+        #kraken classification
+        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
+        kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
+
+        # dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        # combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        # norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
 
 
 
@@ -159,10 +163,30 @@ rule index_ref_bwa:
         bwa index "{input.ref}"
         """
 
-#----------------------------
-# Link Original Files
-#----------------------------
-# TODO: implement
+#------------------------------
+# Kraken Database Construction
+#------------------------------
+rule kraken_db_construction:
+    output:
+        # using database dump files as sentinal 
+        # (needed for tax table reconstruction in phyloseq analysis)
+        names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
+        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
+    params:
+        kraken_db = KRAKEN_DB
+    threads: 16
+    log: f"{LOG_DIR}/00_kraken_db.log"
+    conda: f"{CONDA_ENV_DIR}/kraken-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > {log} 2>&1
+        
+        kraken2-build \
+            --db {REF_DIR}/{params.kraken_db} \
+            --special {params.kraken_db} \
+            --threads {threads}
+        """
 
 
 #-------------------------------------
@@ -447,6 +471,31 @@ rule mothur_classify:
         rm *.logfile
         """
 
+#--------------------------------------
+# 06.3 Kraken2 Taxanomic Classifcation 
+#--------------------------------------
+rule kraken_classification:
+    input:
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
+        kraken_database = f"{REF_DIR}/{KRAKEN_DB}"
+    output:
+        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
+        kraken_report_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.k2report",
+    threads: 16
+    log: f"{LOG_DIR}/06.3_kraken_class.log"
+    conda: f"{CONDA_ENV_DIR}/kraken-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        kraken2 --threads {threads} \
+                --db {input.kraken_database} \
+                --report {output.kraken_report_file} \
+                --output {output.kraken_class_file} \
+                {input.bacterial_ASV_fa}
+        """
+
+
 #--------------------------
 # Count Normalization
 #--------------------------
@@ -492,20 +541,30 @@ rule phyloseq_analysis:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
+        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
+        names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
+        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
+
     output:
         abunXtype_plot = f"{TAX_OUTPUT_DIR}/abunXtype.png",
         abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
         abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
+        kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
+
         genus_tabl = f"{TAX_OUTPUT_DIR}/genus_table.tsv"
     log:
         f"{LOG_DIR}/07_phyloseq.log"
     conda: f"{CONDA_ENV_DIR}/R-tools-env"
+    params:
+        kraken_db = KRAKEN_DB
     shell:
         r"""
         set -euo pipefail
         exec > "{log}" 2>&1
         Rscript scripts/PhyloseqTaxAnalysis.R \
             --tax-file {input.taxfile} \
+            --kraken-file {input.kraken_class_file} \
+            --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
             --norm-seq-table {input.norm_seq_table} \
             --bacterial-names {input.bacterial_names} \
             --abund-plot-dir {TAX_OUTPUT_DIR}
