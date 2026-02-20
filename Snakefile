@@ -1,4 +1,3 @@
-# TODO: adjust log file numbering
 import os, re, glob
 from pathlib import Path
 
@@ -11,20 +10,20 @@ SCRIPTS = config["script_dir"]
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
 REF_DIR = "Ref_Data"
-ORIG_DIR = f"{OUT}/original.fastq"
 
 IP_DIR = f"{OUT}/InProcess"
 NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
 UMI_SELECT_DIR = f"{IP_DIR}/01_UMISelection"
-DADA_DENOISE_DIR = f"{IP_DIR}/02_Dada_Denoising"
-NEG_ALIGNMENT_DIR = f"{IP_DIR}/03_Neg_Alignment"
-NEG_ALIGN_FILT_DIR = f"{IP_DIR}/04_Neg_Alignment_Filter"
-POS_ALIGNMENT_DIR = f"{IP_DIR}/05_Pos_Alignment"
-ID_TAX_DIR = f"{IP_DIR}/06.1_IDTax_Taxonomy"
-MOTHUR_TAX_DIR = f"{IP_DIR}/06.2-08_Mothur_Taxonomy"
-TRIMMED_DIR = f"{IP_DIR}/-00_Trimming"
-UMI_DEDUP_DIR = f"{IP_DIR}/UMIDeduplication"
-NORM_COUNT_DIR = f"{IP_DIR}/CountNormalization"
+UMI_DEDUP_DIR = f"{IP_DIR}/02_UMIDeduplication"
+DADA_DENOISE_DIR = f"{IP_DIR}/03_Dada_Denoising"
+NEG_ALIGNMENT_DIR = f"{IP_DIR}/04_Neg_Alignment"
+NEG_ALIGN_FILT_DIR = f"{IP_DIR}/05_Neg_Alignment_Filter"
+POS_ALIGNMENT_DIR = f"{IP_DIR}/06_Pos_Alignment"
+ID_TAX_DIR = f"{IP_DIR}/07.1_IDTax_Taxonomy"
+MOTHUR_TAX_DIR = f"{IP_DIR}/07.2_Mothur_Taxonomy"
+KRAKEN_TAX_DIR = f"{IP_DIR}/07.3_Kraken_Taxonomy"
+NORM_COUNT_DIR = f"{IP_DIR}/08_CountNormalization"
+PHYLOSEQ_DIR = f"{IP_DIR}/09_Phyloseq_Analysis"
 
 TRACK_DIR = f"{OUT}/Tracking"
 TAX_OUTPUT_DIR = f"{OUT}/Taxonomy"
@@ -87,8 +86,11 @@ TAX_FIELDS = {
 }
 
 
+#------------------------------------
+# Helper Functions
+#------------------------------------
 
-
+# Sample Discovery
 def discover_samples():
     pats = [
         os.path.join(RAW, "*_R1_001.fastq"),
@@ -110,10 +112,18 @@ def discover_samples():
         raise ValueError(f"No samples found in {RAW} matching *_R1_001.fastq(.gz) with paired R2.")
     return samples
 
-SAMPLES = discover_samples()
-#makes samples list into an format that works better with bash for-loop in read counts rule
-SAMPLES_STR = " ".join(SAMPLES)
 
+# Input FASTQ Compression check
+#   checks if the input raw fastq need to be unzipped for input to raw normalization
+def pick_raw_fastq(wc, read):
+    fastq_path = os.path.join(RAW, f"{wc.s}_R{read}_001.fastq")
+    gz_path = fastq_path + ".gz"
+    if os.path.exists(fastq_path):
+        return fastq_path
+    elif os.path.exists(gz_path):
+        return gz_path
+    else:
+        raise (ValueError(f"Missing raw FASTQ for sample {wc.s} read R{read}: {fastq_path}(.gz)"))
 
 #----------------------------
 # All Rule
@@ -124,14 +134,13 @@ rule all:
         abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
         abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
         tax_summary = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
-        tax_count = expand(f"{TAX_OUTPUT_DIR}/bacterial.ASV.{{level}}.count", level=TAX_LEVELS),
 
         #kraken classification
         kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
         kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
 
-        # dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
-        # combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
 
 
@@ -140,6 +149,10 @@ rule all:
 #----------------------------
 # Record Sample Names
 #----------------------------
+#Construct global variable of all samples based on available fastq's
+SAMPLES = discover_samples()
+#makes samples list into an format that works better with bash for-loop in read counts rule
+SAMPLES_STR = " ".join(SAMPLES)
 rule sample_names:
     output:
         f"{OUT}/sample.names"
@@ -156,10 +169,12 @@ rule index_ref_bwa:
         # indexing produces many files but .bwt is the key one (will use as sentinel)
         bwt = "{ref}.bwt"
     threads: 8
+    log: f"{LOG_DIR}/00_bwa_ref.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
+        exec > {log} 2>&1
         bwa index "{input.ref}"
         """
 
@@ -192,18 +207,6 @@ rule kraken_db_construction:
 #-------------------------------------
 # 00 Normalizing and Unzipping FASTQs
 #-------------------------------------
-#checks if the input raw fastq is already decompressed or not for feeding input to raw normalization
-def pick_raw_fastq(wc, read):
-    fastq_path = os.path.join(RAW, f"{wc.s}_R{read}_001.fastq")
-    gz_path = fastq_path + ".gz"
-    if os.path.exists(fastq_path):
-        return fastq_path
-    elif os.path.exists(gz_path):
-        return gz_path
-    else:
-        raise (ValueError(f"Missing raw FASTQ for sample {wc.s} read R{read}: {fastq_path}(.gz)"))
-
-
 rule norm_fastq:
     input:
         r1_raw = lambda wc: pick_raw_fastq(wc, 1),
@@ -211,10 +214,9 @@ rule norm_fastq:
     output:
         r1_norm = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
         r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
-    log:
-        f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     threads: 2
+    log: f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -252,10 +254,9 @@ rule umi_selection:
         sel_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.R1.fastq",
     params:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN]
-    log:
-        f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     threads: 1
+    log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -275,7 +276,7 @@ rule umi_selection:
 
 
 #----------------------------
-# UMI Deduplication
+# 02 UMI Deduplication
 #----------------------------
 rule umi_dedup:
     input:
@@ -284,10 +285,9 @@ rule umi_dedup:
         umi_dedup_reads = f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq",
     params:
         AmpUMI_regex = "^" + ("I" * UMI_LEN)
-    log:
-        f"{LOG_DIR}/umi_dedup/umi_dedup.{{s}}.log"
-    conda: f"{CONDA_ENV_DIR}/AmpUMI-env"
     threads: 8
+    log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.{{s}}.log"
+    conda:  f"{CONDA_ENV_DIR}/AmpUMI-env"
     shell:
         r"""
         set -euo pipefail
@@ -309,7 +309,7 @@ rule umi_dedup:
         """
 
 #----------------------------
-# 02 Dada Denoising
+# 03 Dada Denoising
 #---------------------------- 
 rule dada_denoising:
     input: 
@@ -321,7 +321,6 @@ rule dada_denoising:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
         filter_stage_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
-        
     params:
         # Processign Params
         chunk_size = CHUNK_SIZE,
@@ -331,10 +330,9 @@ rule dada_denoising:
         maxN = MAX_N,
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
-    conda: f"{CONDA_ENV_DIR}/R-tools-env"
     threads: 16
-    log:
-        f"{LOG_DIR}/02_dada.log"
+    log:    f"{LOG_DIR}/03_dada.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -357,7 +355,7 @@ rule dada_denoising:
         """
 
 #--------------------------------------------------------
-# 03 Contaminant Alignment and Unmapped Selection
+# 04 Host and Viral Mapping Selection
 #--------------------------------------------------------
 rule host_viral_alignment:
     input:
@@ -367,11 +365,9 @@ rule host_viral_alignment:
     output:
         sam = f"{NEG_ALIGNMENT_DIR}/{{tag}}.ASV.sam",
         unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.{{tag}}.ASV.names"
-    log:
-        f"{LOG_DIR}/03_alignment/03_alignment_{{tag}}.log"
     threads: 8
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
-    # TODO: address BWA dependency (most likely using singularity)
+    log:    f"{LOG_DIR}/04_alignment/04_alignment_{{tag}}.log"
+    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -379,9 +375,9 @@ rule host_viral_alignment:
         samtools view -f 4 "{output.sam}" 2> "{log}" | cut -f1 | sort -u > "{output.unmapped_names}"
         """
 
-#-------------------------------------
-# 04 Unmapped Host and Viral Read Filter
-#------------------------------------- 
+#-----------------------------------------
+# 05 Unmapped Host and Viral Read Filter
+#----------------------------------------- 
 rule nonhost_nonviral_filter:
     input:
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
@@ -389,11 +385,9 @@ rule nonhost_nonviral_filter:
         viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names"
     output:
         nonhost_nonviral_ASVs = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.ASV.fasta"
-    log:
-        f"{LOG_DIR}/04_nonhost_nonviral.log"
     threads: 8
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
-    # TODO: consider consolidating with unmapped_bwa_mem and make one step??
+    log:    f"{LOG_DIR}/05_nonhost_nonviral.log"
+    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -405,7 +399,7 @@ rule nonhost_nonviral_filter:
 
 
 #-------------------------------------
-# 05 Positive Bacterial Alignment
+# 06 Positive Bacterial Alignment
 #------------------------------------- 
 rule bacterial_alignment:
     input:
@@ -414,13 +408,9 @@ rule bacterial_alignment:
         bacterial_alignment = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.sam",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         bacterial_ASVs = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
-
-    log:
-        f"{LOG_DIR}/05_bact_map.log"
     threads: 8
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
-    # Reverted filtering to use samtools view with positive selection for mapped reads (reverse of unmmaped fileter)
-    #   was previously filtered via awk statement (this is more consistent)
+    log:    f"{LOG_DIR}/06_bact_map.log"
+    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -430,7 +420,7 @@ rule bacterial_alignment:
         """
         
 #------------------------------
-# 06.2 Mothur Taxa Classifcation 
+# 07.1 Mothur Taxa Classifcation 
 #------------------------------
 rule mothur_classify:
     input:
@@ -441,13 +431,9 @@ rule mothur_classify:
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         tax_summary = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
         tax_summary_copy = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary"
-    log:
-        # TODO: determine why mothur still outputs additional .logfile
-        #       piping properly into desired log but also creates its own in pwd
-        #       currently just removing these after mothur run
-        f"{LOG_DIR}/06.2_mothur_class.log"
     threads: 8
-    conda: f"{CONDA_ENV_DIR}/mothur-env"
+    log:    f"{LOG_DIR}/07.1_mothur_class.log"
+    conda:  f"{CONDA_ENV_DIR}/mothur-env"
     shell:
         r"""
         set -euo pipefail
@@ -472,7 +458,7 @@ rule mothur_classify:
         """
 
 #--------------------------------------
-# 06.3 Kraken2 Taxanomic Classifcation 
+# 07.2 Kraken2 Taxanomic Classifcation 
 #--------------------------------------
 rule kraken_classification:
     input:
@@ -482,8 +468,8 @@ rule kraken_classification:
         kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         kraken_report_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report",
     threads: 16
-    log: f"{LOG_DIR}/06.3_kraken_class.log"
-    conda: f"{CONDA_ENV_DIR}/kraken-env"
+    log:    f"{LOG_DIR}/07.2_kraken_class.log"
+    conda:  f"{CONDA_ENV_DIR}/kraken-env"
     shell:
         r"""
         set -euo pipefail
@@ -497,19 +483,9 @@ rule kraken_classification:
 
 
 #--------------------------
-# Count Normalization
+# 08 Count Normalization
 #--------------------------
 rule count_normalization:
-    #--------------------------
-    #--------------------------
-    # Normalization Reasoning
-    #--------------------------
-    #--------------------------
-    # TSS Normalization  
-    #   - for exploratory normalization starting with simplest TSS
-    #   - first normalizing my row sum (seems to be the best measure of authentic reads after PCR correction)
-    # TSS with Host Mapped Read Counts
-    #   - normalizing whole sequence table with row sums from Human Mapped subsetted data frame
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
@@ -518,9 +494,9 @@ rule count_normalization:
     params:
         method = NORM_METHOD,
         offset = NORM_OFFSET
-    log:
-        f"{LOG_DIR}/normalization.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+    threads: 1
+    log:    f"{LOG_DIR}/08_normalization.log"
+    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
@@ -534,7 +510,7 @@ rule count_normalization:
         """
 
 #-------------------------------
-# 07 Phyloseq Taxonomy Analysis
+# 08 Phyloseq Taxonomy Analysis
 #-------------------------------
 rule phyloseq_analysis:
     input:
@@ -550,13 +526,13 @@ rule phyloseq_analysis:
         abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
         abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
         kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
-
-        genus_tabl = f"{TAX_OUTPUT_DIR}/genus_table.tsv"
-    log:
-        f"{LOG_DIR}/07_phyloseq.log"
-    conda: f"{CONDA_ENV_DIR}/R-tools-env"
+        genus_table = f"{TAX_OUTPUT_DIR}/genus_table.tsv"
     params:
         kraken_db = KRAKEN_DB
+    threads: 4
+    log:    f"{LOG_DIR}/08_phyloseq.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+
     shell:
         r"""
         set -euo pipefail
@@ -570,10 +546,52 @@ rule phyloseq_analysis:
             --abund-plot-dir {TAX_OUTPUT_DIR}
         """
 
+#-----------------------------
+# -01 Read Count Calculations
+#-----------------------------
+rule read_counts:
+    input:
+        norm_raw_r1_fqs = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
+        selected_r1_fqs = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES),
 
-#--------------------------------
-# 08 Manual ASV Taxonomy Counts
-#--------------------------------
+        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        
+        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
+        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+    output:
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+    params:
+        samples = SAMPLES,
+        normalized = NORM_RAW_DIR,
+        selected = UMI_SELECT_DIR,
+        deduped = UMI_DEDUP_DIR
+    threads: 8
+    log:    f"{LOG_DIR}/-01_read_count.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+
+        Rscript scripts/ReadCountCompilation.R \
+            --sample-names {params.samples} \
+            --raw-dir {params.normalized} \
+            --selected-dir {params.selected} \
+            --dada-filter-counts {input.dada_read_counts} \
+            --seq-table {input.seq_table} \
+            --host-names {input.host_unmapped_names} \
+            --viral-names {input.viral_unmapped_names} \
+            --bacterial-names {input.bacterial_names} \
+            --combined-counts {output.combined_read_counts}
+        """
+
+#------------------------------------------
+# -02 Manual ASV Taxonomy Counts (Defunct)
+#------------------------------------------
+# TODO: Shift this functionality to phyloseq analysis (repeat genus table construction for various levels)
 rule asv_tax_counts:
     input:
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy"
@@ -603,45 +621,6 @@ rule asv_tax_counts:
         """
 
         
-#-----------------------------
-# -01 Read Count Calculations
-#-----------------------------
-rule read_counts:
-    input:
-        norm_raw_r1_fqs = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
-        selected_r1_fqs = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES),
 
-        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        
-        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
-        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-    output:
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
-    params:
-        samples = SAMPLES,
-        normalized = NORM_RAW_DIR,
-        selected = UMI_SELECT_DIR,
-        deduped = UMI_DEDUP_DIR
-    conda: f"{CONDA_ENV_DIR}/R-tools-env"
-    log:
-        f"{LOG_DIR}/-01_read_count.log"
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-
-        Rscript scripts/ReadCountCompilation.R \
-            --sample-names {params.samples} \
-            --raw-dir {params.normalized} \
-            --selected-dir {params.selected} \
-            --dada-filter-counts {input.dada_read_counts} \
-            --seq-table {input.seq_table} \
-            --host-names {input.host_unmapped_names} \
-            --viral-names {input.viral_unmapped_names} \
-            --bacterial-names {input.bacterial_names} \
-            --combined-counts {output.combined_read_counts}
-        """
 
 

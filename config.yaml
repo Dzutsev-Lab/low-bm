@@ -2,6 +2,9 @@ raw_dir: "Exp_Data/exp3_lungcancer_plasmatrial_110524/OUTPUT/Data/fastq"
 out_root: "Exp_Output/exp3_lungcancer_plasmatrial_110524"
 script_dir: "scripts"
 
+#Considering separating trial results to different folders for persistance
+out_dir: "runs"
+run_id: "Feb20-Trial4_Run_Org_Exp3"
 
 #--------------------------
 # REFERENCE GENOMES
