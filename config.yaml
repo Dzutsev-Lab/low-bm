@@ -69,8 +69,8 @@ tax_min_counts:
 #-------------------------------------
 # READ COUNT NORMALIZATION PARAMETERS
 #-------------------------------------
-norm_method: "noNorm"
-norm_offset: 0
+norm_method: "log2"
+norm_offset: 1
 
 
 #-----------------------------

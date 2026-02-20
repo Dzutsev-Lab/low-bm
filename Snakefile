@@ -132,7 +132,7 @@ rule all:
 
         # dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
         # combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
-        # norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
+        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
 
 
 

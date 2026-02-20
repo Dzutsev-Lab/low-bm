@@ -249,9 +249,35 @@ kraken_all_sample_phyloseq <- phyloseq(otu_table(seq_table, taxa_are_rows = FALS
                                        tax_table(tax_matrix))
 str(kraken_all_sample_phyloseq)
 
+
 kraken_all_sample_phyloseq_genus_glom <- tax_glom(kraken_all_sample_phyloseq, 
                                                   taxrank = "Genus",
                                                   NArm = TRUE)
+
+# constructing genus name matrix from tax table of genus glommed phyloseq object
+kraken_genus_name_matrix <- as(tax_table(kraken_all_sample_phyloseq_genus_glom), "matrix")[, "Genus"]
+kraken_genus_name_matrix[is.na(kraken_genus_name_matrix) | kraken_genus_name_matrix == ""] <- "Unassigned" # dealing with Unassigned column label
+
+# setting taxa names in phyloseq object to genus level name matrix
+taxa_names(kraken_all_sample_phyloseq_genus_glom) <- kraken_genus_name_matrix
+
+# Constructing genus count table from glommed OTU table
+kraken_genus_matrix <- as.matrix(otu_table(kraken_all_sample_phyloseq_genus_glom))
+str(kraken_genus_matrix)
+
+#ensure proper orientation of genus table
+if (taxa_are_rows(all_sample_phyloseq_genus_glom)) {
+  kraken_genus_matrix <- t(kraken_genus_matrix)
+}
+
+write.table(
+  kraken_genus_matrix,
+  file = file.path(args$abund_plot_dir, "kraken_genus_table.tsv"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = TRUE,
+  col.names = NA 
+)
 
 kraken_all_sample_phyloseq_top10g <- prune_taxa(
   names(sort(taxa_sums(kraken_all_sample_phyloseq_genus_glom), decreasing = TRUE))[1:10],
