@@ -26,6 +26,9 @@ r1_primer_motif_len: 8
 r2_primer_motif_len: 7
 umi_len: 9
 max_offset: 5
+r2_primer_skip: true
+poly_G_threshold: 0.5
+
 
 #------------------------
 # TRIMMOMATIC PARAMETERS

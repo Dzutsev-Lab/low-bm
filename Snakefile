@@ -34,6 +34,8 @@ R1_PRIMER = config["r1_primer"]
 R2_PRIMER = config["r2_primer"]
 R1_PRIMER_MOTIF_LEN = config["r1_primer_motif_len"]
 R2_PRIMER_MOTIF_LEN = config["r2_primer_motif_len"]
+R2_PRIMER_SKIP = config["r2_primer_skip"]
+POLY_G_THRESHOLD = config["poly_G_threshold"]
 UMI_LEN = config["umi_len"]
 MAX_OFFSET = config["max_offset"]
 
@@ -136,7 +138,7 @@ rule all:
         tax_summary = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
 
         #kraken classification
-        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.SILVA.kraken2",
+        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
 
         dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
@@ -169,13 +171,13 @@ rule index_ref_bwa:
         # indexing produces many files but .bwt is the key one (will use as sentinel)
         bwt = "{ref}.bwt"
     threads: 8
-    log: f"{LOG_DIR}/00_bwa_ref.log"
+    log: f"{LOG_DIR}/00_bwa_{{ref}}_ref.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
         set -euo pipefail
         exec > {log} 2>&1
-        bwa index "{input.ref}"
+        bwa index {input.reference}
         """
 
 #------------------------------
@@ -253,7 +255,9 @@ rule umi_selection:
         sel_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
         sel_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.R1.fastq",
     params:
-        r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN]
+        r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
+        r2_primer_skip_flag = "--r2-primer-skip" if R2_PRIMER_SKIP else "",
+        poly_G_threshold = POLY_G_THRESHOLD
     threads: 1
     log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
@@ -266,6 +270,8 @@ rule umi_selection:
             --r1 "{input.r1}" \
             --r2 "{input.r2}" \
             --r2-primer-motif "{params.r2_primer_motif}" \
+            {params.r2_primer_skip_flag} \
+            --poly-G-threshold {params.poly_G_threshold} \
             --umi-len "{UMI_LEN}" \
             --max-offset "{MAX_OFFSET}" \
             --out-umi-tsv "{output.umi_tsv}" \
@@ -510,7 +516,7 @@ rule count_normalization:
         """
 
 #-------------------------------
-# 08 Phyloseq Taxonomy Analysis
+# 09 Phyloseq Taxonomy Analysis
 #-------------------------------
 rule phyloseq_analysis:
     input:
@@ -530,7 +536,7 @@ rule phyloseq_analysis:
     params:
         kraken_db = KRAKEN_DB
     threads: 4
-    log:    f"{LOG_DIR}/08_phyloseq.log"
+    log:    f"{LOG_DIR}/09_phyloseq.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
 
     shell:

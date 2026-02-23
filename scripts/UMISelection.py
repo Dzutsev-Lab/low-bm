@@ -23,8 +23,8 @@ def read_name(header_line: str) -> str:
         raise ValueError(f"Bad FASTQ header : {header_line}")
     return header_line[1:].split()[0] # taking the @ symbol out and taking first string from split
 
-def autheticate_and_extract_umi(seq2: str, qual2: str, motif: str, umi_len: int, max_offset: int):
-    motif_len = len(motif)
+def autheticate_and_extract_umi(seq2: str, qual2: str, r2_primer_motif: str, r2_primer_skip: bool, poly_G_threshold: float, umi_len: int, max_offset: int):
+    motif_len = len(r2_primer_motif)
 
     for offset in range(max_offset+1):
         end_umi = offset + umi_len
@@ -35,10 +35,20 @@ def autheticate_and_extract_umi(seq2: str, qual2: str, motif: str, umi_len: int,
         umi = seq2[offset:end_umi]
         motif_candidate = seq2[end_umi:end_motif]
 
-        if motif_candidate == motif:
+        if motif_candidate == r2_primer_motif:
             umi_qual = qual2[offset:end_umi]
             return offset, umi, umi_qual
     
+    # In case where skipping R2 primer motif check for authenticity
+    #   Put after offset check to ensure we do catch all possible cases of junk beginning inserts
+    #   If no authetic motif found, just return umi as first umi-length characters
+    #   Offset set to -1 in this case to indicate no motif was found
+    if r2_primer_skip:
+        umi = seq2[:umi_len]
+        umi_qual =qual2[:umi_len]
+        # checking poly-G content of UMI
+        if not (umi.count("G") / umi_len > poly_G_threshold):
+            return -1, umi, umi_qual
     return None
 
 def main():
@@ -47,6 +57,8 @@ def main():
     ap.add_argument("--r1", required=True)
     ap.add_argument("--r2", required=True)
     ap.add_argument("--r2-primer-motif", required=True, help="Primer/adapter motif immediately following UMI in R2 used to authenticate R1-R2 read pairings")
+    ap.add_argument("--r2-primer-skip", action='store_true', help="Skipping mofit-based authentification of R1-R2 read pairs")
+    ap.add_argument("--poly-G-threshold", type=float, default=1.0, help="The maximum fraction of G's in UMI before filteration, only applicable with --r2-primer-skip")
     ap.add_argument("--umi-len", type=int ,required=True)
     ap.add_argument("--max-offset", type=int, default=0, help="The maximum number of leading junk bases allowed in R2 when searching for [UMI][R2-primer-motif]")
     ap.add_argument("--out-umi-tsv", required=True)
@@ -56,6 +68,8 @@ def main():
     args = ap.parse_args()
 
     r2_primer_motif = args.r2_primer_motif
+    r2_primer_skip = args.r2_primer_skip
+    poly_G_threshold = args.poly_G_threshold
     motif_len = len(r2_primer_motif)
     umi_len = args.umi_len
     max_offset = args.max_offset
@@ -84,8 +98,14 @@ def main():
                 continue
 
 
-            extracted = autheticate_and_extract_umi(seq2, qual2, r2_primer_motif, umi_len, max_offset)
-            if not extracted:
+            extracted = autheticate_and_extract_umi(seq2 = seq2, 
+                                                    qual2 = qual2, 
+                                                    r2_primer_motif = r2_primer_motif, 
+                                                    r2_primer_skip = r2_primer_skip, 
+                                                    poly_G_threshold = poly_G_threshold, 
+                                                    umi_len = umi_len, 
+                                                    max_offset = max_offset)
+            if not extracted or extracted[0] == -1:
                 motif_fail += 1
                 continue
 
