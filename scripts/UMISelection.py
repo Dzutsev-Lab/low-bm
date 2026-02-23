@@ -74,7 +74,7 @@ def main():
     umi_len = args.umi_len
     max_offset = args.max_offset
 
-    total = authentic = motif_fail = short_fail = desync_fail = 0
+    total = authentic = motif_fail = polyG_fail = short_fail = desync_fail = 0
 
     with \
         open(args.r1, "r") as r1_fq, open(args.r2, "r") as r2_fq, \
@@ -105,9 +105,16 @@ def main():
                                                     poly_G_threshold = poly_G_threshold, 
                                                     umi_len = umi_len, 
                                                     max_offset = max_offset)
-            if not extracted or extracted[0] == -1:
-                motif_fail += 1
+            if not extracted:
+                if r2_primer_skip:
+                    polyG_fail += 1
+                else:
+                    motif_fail += 1
                 continue
+            elif extracted[0] == -1:
+                motif_fail += 1
+            else:
+                authentic += 1
 
             offset, umi, umi_qual = extracted
 
@@ -118,11 +125,12 @@ def main():
                 out_sel_r1.write(f"{head1}\n{seq1}\n{plus1}\n{qual1}\n")
 
             out_umi_r1.write(f"{head1} UMI:{umi}\n{umi}{seq1}\n{plus1}\n{umi_qual}{qual1}\n")
-            authentic += 1
+            
     
 
     print(f"Total read pairs:           {total}", file=sys.stderr)
-    print(f"Authentic read pairs:       {authentic}", file=sys.stderr)
+    print(f"Fully Authentic read pairs: {authentic}", file=sys.stderr)
+    print(f"High G content UMI:         {polyG_fail}", file=sys.stderr)
     print(f"Motif mismatches:           {motif_fail}", file=sys.stderr)
     print(f"Too shorts:                 {short_fail}", file=sys.stderr)
     print(f"Desync failures:            {desync_fail}", file=sys.stderr)
