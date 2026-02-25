@@ -105,6 +105,9 @@ def discover_samples():
     for r1 in sorted(r1s):
         name = os.path.basename(r1)
         base = name.replace("_R1_001.fastq.gz", "").replace("_R1_001.fastq", "")
+        # skip undertermined fastq
+        if "Undetermined" in base:
+            continue
         # require matching R2 (either gz or not)
         r2a = os.path.join(RAW, f"{base}_R2_001.fastq")
         r2b = os.path.join(RAW, f"{base}_R2_001.fastq.gz")
@@ -569,6 +572,7 @@ rule read_counts:
     output:
         combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
     params:
+        #change to use sample names text file as input, no snakemake object
         samples = SAMPLES,
         normalized = NORM_RAW_DIR,
         selected = UMI_SELECT_DIR,
