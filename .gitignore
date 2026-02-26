@@ -3,6 +3,7 @@ Select_Trial_Output/
 Ref_Data/
 Exp_Data/
 OLD_TRIALS/
+IP_Data/
 Exp_Output/
 .snakemake/
 .vscode/

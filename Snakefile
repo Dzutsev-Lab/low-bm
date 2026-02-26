@@ -4,14 +4,17 @@ from pathlib import Path
 configfile: "config.yaml"
 
 # Input and Output Directories
+TRIAL_ID = config["trialID"]
+TRIAL_NAME = TRIAL_ID + "_" + config["trial_descript"]
+EXP_NAME = config["exp_name"]
 RAW = config["raw_dir"]
-OUT = config["out_root"]
+IP_DIR = os.path.join(config["ip_root"], EXP_NAME)
+OUT_DIR = os.path.join(config["out_root"], TRIAL_NAME)
 SCRIPTS = config["script_dir"]
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
 REF_DIR = "Ref_Data"
 
-IP_DIR = f"{OUT}/InProcess"
 NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
 UMI_SELECT_DIR = f"{IP_DIR}/01_UMISelection"
 UMI_DEDUP_DIR = f"{IP_DIR}/02_UMIDeduplication"
@@ -19,15 +22,13 @@ DADA_DENOISE_DIR = f"{IP_DIR}/03_Dada_Denoising"
 NEG_ALIGNMENT_DIR = f"{IP_DIR}/04_Neg_Alignment"
 NEG_ALIGN_FILT_DIR = f"{IP_DIR}/05_Neg_Alignment_Filter"
 POS_ALIGNMENT_DIR = f"{IP_DIR}/06_Pos_Alignment"
-ID_TAX_DIR = f"{IP_DIR}/07.1_IDTax_Taxonomy"
-MOTHUR_TAX_DIR = f"{IP_DIR}/07.2_Mothur_Taxonomy"
-KRAKEN_TAX_DIR = f"{IP_DIR}/07.3_Kraken_Taxonomy"
+MOTHUR_TAX_DIR = f"{IP_DIR}/07.1_Mothur_Taxonomy"
+KRAKEN_TAX_DIR = f"{IP_DIR}/07.2_Kraken_Taxonomy"
 NORM_COUNT_DIR = f"{IP_DIR}/08_CountNormalization"
-PHYLOSEQ_DIR = f"{IP_DIR}/09_Phyloseq_Analysis"
+PHYLOSEQ_DIR = f"{OUT_DIR}"
 
-TRACK_DIR = f"{OUT}/Tracking"
-TAX_OUTPUT_DIR = f"{OUT}/Taxonomy"
-LOG_DIR = f"{OUT}/logs"
+TRACK_DIR = f"{OUT_DIR}/Tracking"
+LOG_DIR = f"{OUT_DIR}/Logs"
 
 # Sequencing metadata
 R1_PRIMER = config["r1_primer"]
@@ -135,18 +136,18 @@ def pick_raw_fastq(wc, read):
 #----------------------------
 rule all:
     input:
-        abunXtype_plot = f"{TAX_OUTPUT_DIR}/abunXtype.png",
-        abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
-        abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
-        tax_summary = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
-
-        #kraken classification
-        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
-        kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
-
-        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        kraken_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
+        mothur_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_countXtypeXsample.png",
+        kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
+        mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
         combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
-        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
+    output:
+        config_copy = f"{OUT_DIR}/config.yaml"
+    shell:
+        r"""
+        set -euo pipefail
+        cp config.yaml {output.config_copy}
+        """
 
 
 
@@ -160,7 +161,7 @@ SAMPLES = discover_samples()
 SAMPLES_STR = " ".join(SAMPLES)
 rule sample_names:
     output:
-        f"{OUT}/sample.names"
+        f"{OUT_DIR}/sample.names"
     run:
         Path(output[0]).write_text("\n".join(SAMPLES) + "\n")
 
@@ -322,14 +323,14 @@ rule umi_dedup:
 #---------------------------- 
 rule dada_denoising:
     input: 
-        sample_names = f"{OUT}/sample.names",
+        sample_names = f"{OUT_DIR}/sample.names",
         umi_dedup_reads = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
     output:
         filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
         seq_err_plot = f"{TRACK_DIR}/dada_error_plot.png",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
-        filter_stage_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        filter_stage_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
     params:
         # Processign Params
         chunk_size = CHUNK_SIZE,
@@ -439,7 +440,6 @@ rule mothur_classify:
     output:
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         tax_summary = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
-        tax_summary_copy = f"{TAX_OUTPUT_DIR}/bacterial.ASV.ncbi20.wang.tax.summary"
     threads: 8
     log:    f"{LOG_DIR}/07.1_mothur_class.log"
     conda:  f"{CONDA_ENV_DIR}/mothur-env"
@@ -459,8 +459,6 @@ rule mothur_classify:
                     processors={threads}
                 )" >> {log} 2>&1
         
-        # ---- Copy Taxonomy Summary to Output ---
-        cp {output.tax_summary} {TAX_OUTPUT_DIR}/
         
         # ---- Remove Redundant Mothur Logs ----
         rm *.logfile
@@ -474,8 +472,8 @@ rule kraken_classification:
         bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
         kraken_database = f"{REF_DIR}/{KRAKEN_DB}"
     output:
-        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
-        kraken_report_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report",
+        kraken_class_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
+        kraken_report_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report",
     threads: 16
     log:    f"{LOG_DIR}/07.2_kraken_class.log"
     conda:  f"{CONDA_ENV_DIR}/kraken-env"
@@ -525,17 +523,16 @@ rule phyloseq_analysis:
     input:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
-        kraken_class_file = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
+        mothur_file = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
+        kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
         nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
 
     output:
-        abunXtype_plot = f"{TAX_OUTPUT_DIR}/abunXtype.png",
-        abunXsample_plot = f"{TAX_OUTPUT_DIR}/abunXsample.png",
-        abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/abunXtypeXsample.png",
-        kraken_abunXtypeXsample_plot = f"{TAX_OUTPUT_DIR}/kraken_abunXtypeXsample.png",
-        genus_table = f"{TAX_OUTPUT_DIR}/genus_table.tsv"
+        mothur_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_countXtypeXsample.png",
+        kraken_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
+        mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
+        kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
     params:
         kraken_db = KRAKEN_DB
     threads: 4
@@ -547,12 +544,13 @@ rule phyloseq_analysis:
         set -euo pipefail
         exec > "{log}" 2>&1
         Rscript scripts/PhyloseqTaxAnalysis.R \
-            --tax-file {input.taxfile} \
-            --kraken-file {input.kraken_class_file} \
+            --mothur-file {input.mothur_file} \
+            --kraken-file {input.kraken_file} \
             --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
             --norm-seq-table {input.norm_seq_table} \
             --bacterial-names {input.bacterial_names} \
-            --abund-plot-dir {TAX_OUTPUT_DIR}
+            --trialID {TRIAL_ID} \
+            --out {PHYLOSEQ_DIR}
         """
 
 #-----------------------------
@@ -563,7 +561,7 @@ rule read_counts:
         norm_raw_r1_fqs = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
         selected_r1_fqs = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES),
 
-        dada_read_counts = f"{TRACK_DIR}/dada_read_counts.tsv",
+        dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         
         host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
@@ -596,38 +594,6 @@ rule read_counts:
             --viral-names {input.viral_unmapped_names} \
             --bacterial-names {input.bacterial_names} \
             --combined-counts {output.combined_read_counts}
-        """
-
-#------------------------------------------
-# -02 Manual ASV Taxonomy Counts (Defunct)
-#------------------------------------------
-# TODO: Shift this functionality to phyloseq analysis (repeat genus table construction for various levels)
-rule asv_tax_counts:
-    input:
-        taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy"
-    output:
-        tax_count = f"{TAX_OUTPUT_DIR}/bacterial.ASV.{{level}}.count"
-    params:
-        min_count = lambda wc: TAX_MIN[wc.level],
-        cutoff = lambda wc: TAX_FIELDS[wc.level]
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
-    log:
-        f"{LOG_DIR}/08_manual_mothur_count/08_manual_mothur_count.{{level}}.log"
-    shell:
-        r"""
-        set -euo pipefail
-        exec 2> "{log}"
-
-        # taxonomy -> (strip confidences) -> lineage col -> split by ';' -> count filtered taxa
-        sed -E 's/\([^()]*\)//g' "{input.taxfile}" \
-        | awk -F"\t" '{{print $2}}' \
-        | cut -d ';' -f {params.cutoff} \
-        | sort \
-        | uniq -c \
-        | awk -v m="{params.min_count}" '$1>m{{print $1, $2}}' \
-        | sed -E 's/^ +//' \
-        | sort -k2 \
-        > "{output.tax_count}"
         """
 
         
