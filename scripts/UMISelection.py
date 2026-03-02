@@ -54,6 +54,7 @@ def autheticate_and_extract_umi(seq2: str, qual2: str, r2_primer_motif: str, r2_
 def main():
 
     ap = argparse.ArgumentParser()
+    ap.add_argument("--sample-name", required=True)
     ap.add_argument("--r1", required=True)
     ap.add_argument("--r2", required=True)
     ap.add_argument("--r2-primer-motif", required=True, help="Primer/adapter motif immediately following UMI in R2 used to authenticate R1-R2 read pairings")
@@ -61,10 +62,8 @@ def main():
     ap.add_argument("--poly-G-threshold", type=float, default=1.0, help="The maximum fraction of G's in UMI before filteration, only applicable with --r2-primer-skip")
     ap.add_argument("--umi-len", type=int ,required=True)
     ap.add_argument("--max-offset", type=int, default=0, help="The maximum number of leading junk bases allowed in R2 when searching for [UMI][R2-primer-motif]")
-    ap.add_argument("--out-umi-tsv", required=True)
-    ap.add_argument("--out-sel-names", required=True)
+    ap.add_argument("--out-count-summary", required=True, help="Output summary TSV file with read count columns Raw_reads (input R1), Selected_reads (ouput)")
     ap.add_argument("--out-umi-r1", required=True)
-    ap.add_argument("--out-sel-r1", default=None, help="Optional sanity-check fastq output of selected authentic R1 reads without concatenated UMIs" )
     args = ap.parse_args()
 
     r2_primer_motif = args.r2_primer_motif
@@ -78,10 +77,8 @@ def main():
 
     with \
         open(args.r1, "r") as r1_fq, open(args.r2, "r") as r2_fq, \
-        open(args.out_umi_tsv, "w") as out_umi_tsv, \
-        open(args.out_sel_names, "w") as out_sel_names, \
         open(args.out_umi_r1, "w") as out_umi_r1, \
-        (open(args.out_sel_r1, "w") if args.out_sel_r1 else open ("/dev/null", "w")) as out_sel_r1:
+        open(args.out_count_summary, "w") as count_summary:
 
         for (head1, seq1, plus1, qual1), (head2, seq2, plus2, qual2) in zip(fastq_iterator(r1_fq), fastq_iterator(r2_fq)):
             total += 1
@@ -112,19 +109,20 @@ def main():
                     motif_fail += 1
                 continue
             elif extracted[0] == -1:
+                # motif search failed but we are skipping as mofit check as hard filter,
+                # but must have passed poly-G content check to be here
+                # will count as both a motif failure and an authentic read pair since we are keeping it despite mofit failure
                 motif_fail += 1
+                authentic += 1
             else:
                 authentic += 1
 
             offset, umi, umi_qual = extracted
 
-            out_umi_tsv.write(f"{name1}\t{umi}\t{umi_qual}\n")
-            out_sel_names.write(f"{name1}\n")
-
-            if args.out_sel_r1:
-                out_sel_r1.write(f"{head1}\n{seq1}\n{plus1}\n{qual1}\n")
-
             out_umi_r1.write(f"{head1} UMI:{umi}\n{umi}{seq1}\n{plus1}\n{umi_qual}{qual1}\n")
+
+        count_summary.write(f"SampleID\tRaw_reads\tSelected_reads\n")
+        count_summary.write(f"{args.sample_name}\t{total}\t{authentic}\n")
             
     
 

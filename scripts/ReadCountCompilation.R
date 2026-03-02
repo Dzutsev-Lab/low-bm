@@ -1,18 +1,3 @@
-# #----------------------------
-# # Log Construction
-# #----------------------------  
-# logfile <- snakemake@log[[1]]
-# if (!is.null(logfile) && nzchar(logfile)) {
-#   logcon <- file(logfile, open = "wt")
-#   sink(logcon, type = "output")
-#   sink(logcon, type = "message")
-#   cat("----- R script started -----\n")
-#   cat("Working dir:", getwd(), "\n")
-#   cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
-#   flush.console()
-# }
-
-
 library(ShortRead)
 library(dplyr)
 library(tibble)
@@ -24,7 +9,7 @@ library(argparse)
 parser <- ArgumentParser()
 
 #
-parser$add_argument("--sample-names", type="character", nargs='+', help="List of sample names")
+parser$add_argument("--sample-name-file", type="character", help="Text file containing list of sample names, one per line")
 parser$add_argument("--raw-dir", type="character", help="File path to directory with raw reads")
 parser$add_argument("--selected-dir", type="character", help="File path to directory with selected authentic reads")
 
@@ -39,36 +24,33 @@ parser$add_argument("--combined-counts", type="character", help="Output combined
 
 args <- parser$parse_args()
 
-sample_names <- args$sample_names
+sample_names <- readLines(args$sample_name_file)
+sample_names <- trimws(sample_names)
+sample_names <- sample_names[sample_names != ""]
 
+#----------------------------------------
+# Read Counts from UMI Selection Summary
+#----------------------------------------
+# - Raw reads
+# - Selected authentic reads
 
-# fastq_read_counter <- function(fq_path) {
-#   wc_out <- system2("wc", c("-l", fq_path), stdout = TRUE, stderr = "")
-#   line_count <- as.numeric(strsplit(wc_out[1], "\\s+")[[1]][1])
-#   read_count <- line_count / 4
-#   read_count
-# }
-fastq_read_counter <- function(fq_path, chunk_size =1e6) {
-  streamer <- FastqStreamer(fq_path, n = chunk_size)
-  on.exit(close(streamer))
-  total_reads <- 0L
-  repeat {
-    fq_chunk <- yield(streamer)
-    if (length(fq_chunk) == 0) break
-    total_reads <- total_reads + length(fq_chunk)
-  }
+# Function to read FastQ read counts from UMI selection summary files
+read_umi_selection_summary <- function(sample_name, selected_dir) {
+  summary_file <- file.path(selected_dir, paste0("CountSummary.", sample_name, ".tsv"))
+  summary_df <- read.delim(summary_file, header = TRUE, stringsAsFactors = FALSE)
+  row <- summary_df[1, ]
+  tibble(
+    SampleID = as.character(row$SampleID),
+    Raw_reads = row$Raw_reads,
+    Selected_reads = row$Selected_reads
+  )
 }
 
-fastq_counts <- lapply(sample_names, function(s){
-  normalized_path <- file.path(args$raw_dir, paste0(s, "_R1_001.fastq"))
-  selected_path   <- file.path(args$selected_dir, paste0("Selected.", s, ".UMI_R1.fastq"))
-  tibble(
-    SampleID = s,
-    Raw_reads      = fastq_read_counter(normalized_path),
-    Selected_reads = fastq_read_counter(selected_path)
-    )
-}) |> bind_rows()
-str(fastq_counts)
+# Read and combine UMI selection summaries for all samples
+umi_selection_summary_counts_list <- lapply(sample_names, read_umi_selection_summary, selected_dir = args$selected_dir)
+umi_selection_summary_counts <- bind_rows(umi_selection_summary_counts_list)
+str(umi_selection_summary_counts)
+
 
 #---------------------------------
 # Read Counts from Dada Denoising
@@ -106,7 +88,7 @@ str(bacterial_mapped_summary_df)
 # Combine All Read Counts
 #---------------------------------
 all_summary_tables <- list(
-  fastq_counts,
+  umi_selection_summary_counts,
   dada_counts, 
   host_unmapped_summary_df, 
   viral_unmapped_summary_df,
@@ -124,10 +106,3 @@ write.table(combined_counts,
             row.names = FALSE,
             col.names = TRUE)
 
-# #----------------------------
-# # Log Close
-# #----------------------------
-# if (!is.null(logfile) && nzchar(logfile)) {
-#   sink(type = "message"); sink(type = "output")
-#   close(logcon)
-# }

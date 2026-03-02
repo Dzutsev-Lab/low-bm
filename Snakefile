@@ -142,7 +142,7 @@ rule all:
         mothur_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_countXtypeXsample.png",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
         mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
-        #combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
     output:
         config_copy = f"{OUT_DIR}/config.yaml"
     shell:
@@ -256,10 +256,8 @@ rule umi_selection:
         r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
         r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
     output:
-        umi_tsv = f"{UMI_SELECT_DIR}/UMIMap.{{s}}.tsv",
-        sel_names = f"{UMI_SELECT_DIR}/SelectedNames.{{s}}.names",
         sel_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
-        sel_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.R1.fastq",
+        count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
     params:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
         r2_primer_skip_flag = "--r2-primer-skip" if R2_PRIMER_SKIP else "",
@@ -273,6 +271,7 @@ rule umi_selection:
         exec 2> "{log}"
 
         python3 scripts/UMISelection.py \
+            --sample-name "{wildcards.s}" \
             --r1 "{input.r1}" \
             --r2 "{input.r2}" \
             --r2-primer-motif "{params.r2_primer_motif}" \
@@ -280,10 +279,8 @@ rule umi_selection:
             --poly-G-threshold {params.poly_G_threshold} \
             --umi-len "{UMI_LEN}" \
             --max-offset "{MAX_OFFSET}" \
-            --out-umi-tsv "{output.umi_tsv}" \
-            --out-sel-names "{output.sel_names}" \
-            --out-umi-r1 "{output.sel_umi_r1}" \
-            --out-sel-r1 "{output.sel_r1}"
+            --out-count-summary "{output.count_summary}" \
+            --out-umi-r1 "{output.sel_umi_r1}"
         """
 
 
@@ -562,8 +559,9 @@ rule phyloseq_analysis:
 #-----------------------------
 rule read_counts:
     input:
-        norm_raw_r1_fqs = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES),
-        selected_r1_fqs = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES),
+        sample_names = f"{OUT_DIR}/sample.names",
+        
+        umi_selection_count_summary_tsv = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES),
 
         dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
@@ -574,11 +572,7 @@ rule read_counts:
     output:
         combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
     params:
-        #change to use sample names text file as input, no snakemake object
-        samples = SAMPLES,
-        normalized = NORM_RAW_DIR,
         selected = UMI_SELECT_DIR,
-        deduped = UMI_DEDUP_DIR
     threads: 8
     log:    f"{LOG_DIR}/-01_read_count.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
@@ -589,8 +583,7 @@ rule read_counts:
         exec > "{log}" 2>&1
 
         Rscript scripts/ReadCountCompilation.R \
-            --sample-names {params.samples} \
-            --raw-dir {params.normalized} \
+            --sample-name-file {input.sample_names} \
             --selected-dir {params.selected} \
             --dada-filter-counts {input.dada_read_counts} \
             --seq-table {input.seq_table} \
