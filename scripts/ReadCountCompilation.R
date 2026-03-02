@@ -42,11 +42,21 @@ args <- parser$parse_args()
 sample_names <- args$sample_names
 
 
-fastq_read_counter <- function(fq_path) {
-  wc_out <- system2("wc", c("-l", fq_path), stdout = TRUE, stderr = "")
-  line_count <- as.numeric(strsplit(wc_out[1], "\\s+")[[1]][1])
-  read_count <- line_count / 4
-  read_count
+# fastq_read_counter <- function(fq_path) {
+#   wc_out <- system2("wc", c("-l", fq_path), stdout = TRUE, stderr = "")
+#   line_count <- as.numeric(strsplit(wc_out[1], "\\s+")[[1]][1])
+#   read_count <- line_count / 4
+#   read_count
+# }
+fastq_read_counter <- function(fq_path, chunk_size =1e6) {
+  streamer <- FastqStreamer(fq_path, n = chunk_size)
+  on.exit(close(streamer))
+  total_reads <- 0L
+  repeat {
+    fq_chunk <- yield(streamer)
+    if (length(fq_chunk) == 0) break
+    total_reads <- total_reads + length(fq_chunk)
+  }
 }
 
 fastq_counts <- lapply(sample_names, function(s){

@@ -16,7 +16,11 @@ parser$add_argument("--dump-dir", type="character", help="directory containing n
 parser$add_argument("--norm-seq-table", type="character", help="normalized seq table tsv file path")
 parser$add_argument("--bacterial-names", type="character", help="names of bacterial ASVs")
 parser$add_argument("--trialID", type="character", help="ID number for the trial")
+parser$add_argument("--add-unclassified-prefix", help="Whether to add prefix to unclassified taxa based on lowest assigned taxonomic level",
+                    action="store_true",
+                    default=FALSE)
 parser$add_argument("--out", type="character", help="directory to store output abundance plots")
+
 
 args <- parser$parse_args()
 
@@ -143,6 +147,8 @@ kraken_tax_df <- rename( kraken_tax_df,
 
 kraken_tax_matrix <- as.matrix(kraken_tax_df[, c("Domain","Phylum","Class","Order","Family","Genus","Species")])
 rownames(kraken_tax_matrix) <- kraken_tax_df$ASVid
+
+# add taxonomic level prefixes to kraken taxonomy matrix for consistancy with mothur taxonomy
 taxa_level_prefix_addition <- function(tax_matrix) {
 
   tax_prefixes <- c(
@@ -170,39 +176,41 @@ kraken_tax_matrix <- taxa_level_prefix_addition(kraken_tax_matrix)
 str(kraken_tax_matrix)
 
 #------------------------------------
-# Unassigned Taxa Handling
+# Unclassified Taxa Handling
 #------------------------------------
-fill_unassigned_by_lowest <- function(tax_matrix, prefix = "Unclassified_") {
-  tax_matrix <- as.matrix(tax_matrix)
-  is_unassigned <- function(x) is.na(x) || x == "Unclassified"
+if (args$add_unclassified_prefix) {
 
-  for (i in seq_len(nrow(tax_matrix))) {
-    row <- tax_matrix[i, ]
+  fill_unassigned_by_lowest <- function(tax_matrix, prefix = "Unclassified_") {
+    tax_matrix <- as.matrix(tax_matrix)
+    is_unassigned <- function(x) is.na(x) || x == "Unclassified"
 
-    assigned_index <- which(!vapply(row, is_unassigned, logical(1)))
-    if (length(assigned_index) == 0) next
+    for (i in seq_len(nrow(tax_matrix))) {
+      row <- tax_matrix[i, ]
 
-    lowest_assigned_index <- max(assigned_index)
-    lowest_assigned_rank <- colnames(tax_matrix)[lowest_assigned_index]
-    lowest_assigned_value <- row[lowest_assigned_index]
+      assigned_index <- which(!vapply(row, is_unassigned, logical(1)))
+      if (length(assigned_index) == 0) next
 
-    fill_value <- paste0(prefix, lowest_assigned_value)
+      lowest_assigned_index <- max(assigned_index)
+      lowest_assigned_rank <- colnames(tax_matrix)[lowest_assigned_index]
+      lowest_assigned_value <- row[lowest_assigned_index]
 
-    if (lowest_assigned_index < length(row)) {
-      for (j in (lowest_assigned_index + 1):length(row)) {
-        if (is_unassigned(row[j])) {
-          tax_matrix[i, j] <- fill_value
+      fill_value <- paste0(prefix, lowest_assigned_value)
+
+      if (lowest_assigned_index < length(row)) {
+        for (j in (lowest_assigned_index + 1):length(row)) {
+          if (is_unassigned(row[j])) {
+            tax_matrix[i, j] <- fill_value
+          }
         }
       }
     }
+
+    return(tax_matrix)
   }
 
-  return(tax_matrix)
+  mothur_tax_matrix <- fill_unassigned_by_lowest(mothur_tax_matrix)
+  kraken_tax_matrix <- fill_unassigned_by_lowest(kraken_tax_matrix)
 }
-
-mothur_tax_matrix <- fill_unassigned_by_lowest(mothur_tax_matrix)
-kraken_tax_matrix <- fill_unassigned_by_lowest(kraken_tax_matrix)
-
 #--------------------------------------
 # Mothur Phyloseq Objects Construction
 #--------------------------------------
@@ -284,10 +292,6 @@ write.table(
 # constructing genus name matrix from tax table of genus glommed phyloseq object
 kraken_genus_name_matrix <- as(tax_table(kraken_genusGlom_phyloseq), "matrix")[, "Genus"]
 
-dups <- kraken_genus_name_matrix[duplicated(kraken_genus_name_matrix)] 
-print(dups) 
-table(kraken_genus_name_matrix)[table(kraken_genus_name_matrix) > 1]
-
 # setting taxa names in phyloseq object to genus level name matrix
 taxa_names(kraken_genusGlom_phyloseq) <- kraken_genus_name_matrix
 
@@ -327,7 +331,7 @@ abunXtypeXsample_plot +
   labs(title = "Read Counts per Sample by Sample Type",
        x = "Sample",
        y = "Read Count")
-ggsave(paste0(args$out, '/', args$trialID, "_mothur_countXtypeXsample.png"), width = 10, height = 12, units = "in")
+ggsave(paste0(args$out, '/', args$trialID, "_mothur_countXtypeXsample.png"), width = 14, height = 12, units = "in")
 
 kraken_abunXtypeXsample_plot <- plot_bar(kraken_top10genus_phyloseq, "Replicate", fill = "Genus")
 kraken_abunXtypeXsample_plot +
@@ -339,5 +343,5 @@ kraken_abunXtypeXsample_plot +
   labs(title = "Read Counts per Sample by Sample Type",
        x = "Sample",
        y = "Read Count")
-ggsave(paste0(args$out, '/', args$trialID, "_kraken_countXtypeXsample.png"), width = 10, height = 12, units = "in")
+ggsave(paste0(args$out, '/', args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
   

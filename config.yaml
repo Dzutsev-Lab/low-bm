@@ -1,9 +1,10 @@
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "022626.1"
-trial_descript: "SpikeExp3_TrialDirectories"
-exp_name:       "Exp3_LungCancer_PlasmaTrial_110524"
+trialID:        "030226.3"
+trial_descript: "SpikeExp3_SanityCheck"
+exp_name:       "exp3_lungcancer_plasmatrial_110524"
 raw_dir:        "Exp_Data/exp3_lungcancer_plasmatrial_110524/OUTPUT/Data/fastq"
+
 
 ip_root:        "IP_Data/"
 out_root:       "Exp_Output/"
@@ -29,8 +30,8 @@ r1_primer_motif_len: 8
 r2_primer_motif_len: 7
 umi_len: 9
 max_offset: 5
-r2_primer_skip: true
-poly_G_threshold: 0.5
+r2_primer_skip: false
+poly_G_threshold: 1.0
 
 
 #------------------------
@@ -65,7 +66,7 @@ mothur_method: "wang"
 # KRAKEN PARAMETERS
 #------------------------
 #current options: [silva, greengenes, ncbi20_k2]
-kraken_db: "ncbi20_k2"
+kraken_db: "greengenes"
 
 #---------------------------
 # TAXONOMY COUNT PARAMETERS
@@ -82,6 +83,11 @@ tax_min_counts:
 #current options: [noNorm, rawTSS, hostTSS, log2, rawTSSlog2, hostTSSlog2]
 norm_method: "log2"
 norm_offset: 1
+
+#-----------------------------
+# PYLOSEQ PARAMETERS
+#-----------------------------
+add_unclassified_prefix: false
 
 
 #-----------------------------

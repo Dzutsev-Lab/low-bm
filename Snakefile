@@ -72,6 +72,8 @@ TRUNC_Q = config["truncQ"]
 NORM_METHOD = config["norm_method"]
 NORM_OFFSET = config["norm_offset"]
 
+# Phyloseq Analysis Parameters
+ADD_UNCLASSIFIED_PREFIX = config["add_unclassified_prefix"]
 
 # Negative Control Filtering Parameters
 # TODO: figure out how to format for snakemake without config file
@@ -140,7 +142,7 @@ rule all:
         mothur_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_countXtypeXsample.png",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
         mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
-        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        #combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
     output:
         config_copy = f"{OUT_DIR}/config.yaml"
     shell:
@@ -534,7 +536,8 @@ rule phyloseq_analysis:
         mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
     params:
-        kraken_db = KRAKEN_DB
+        kraken_db = KRAKEN_DB,
+        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
     threads: 4
     log:    f"{LOG_DIR}/09_phyloseq.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
@@ -550,6 +553,7 @@ rule phyloseq_analysis:
             --norm-seq-table {input.norm_seq_table} \
             --bacterial-names {input.bacterial_names} \
             --trialID {TRIAL_ID} \
+            {params.unclassified_prefix_flag} \
             --out {PHYLOSEQ_DIR}
         """
 
