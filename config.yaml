@@ -1,10 +1,10 @@
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "030226.3"
-trial_descript: "SpikeExp3_SanityCheck"
-exp_name:       "exp3_lungcancer_plasmatrial_110524"
-raw_dir:        "Exp_Data/exp3_lungcancer_plasmatrial_110524/OUTPUT/Data/fastq"
-
+trialID:        "030426.1"
+trial_descript: "ItalyLungExp240308_HumanRef"
+exp_name:       "240308_VH01090_210_AACCY2YHV"
+raw_dir:        "Exp_Data/240308_VH01090_210_AACCY2YHV_Data/OUTPUT/Data/fastq"
+host:           "human"
 
 ip_root:        "IP_Data/"
 out_root:       "Exp_Output/"
@@ -13,9 +13,10 @@ script_dir:     "scripts"
 #--------------------------
 # REFERENCE GENOMES
 #--------------------------
-host_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
-viral_ref: "Ref_Data/all.viral.fna"
-bact16s_ref: "Ref_Data/all.rrna.bacteria"
+human_ref:    "Ref_Data/clean.human.fa"
+mouse_ref:    "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
+viral_ref:    "Ref_Data/all.viral.fna"
+bact16s_ref:  "Ref_Data/all.rrna.bacteria"
 
 #--------------------------
 # UMI SELECTION PARAMETERS

@@ -26,13 +26,13 @@ args <- parser$parse_args()
 
 
 
-#-----------------------------
-# Sequence Table Construction
-#-----------------------------
+#-----------------------------------------
+# Normalized Sequence Table Construction
+#-----------------------------------------
 #read in all ASV sequence table
-seq_table <- read.delim(args$norm_seq_table, header = TRUE, row.names = 1)
+norm_seq_table <- read.delim(args$norm_seq_table, header = TRUE, row.names = 1)
 'Sequence Table'
-str(seq_table)
+str(norm_seq_table)
 
 # read in positive bacterial ASV IDs
 bacterial_IDs <- readLines(args$bacterial_names) # split IDs by line
@@ -41,7 +41,7 @@ bacterial_IDs <- bacterial_IDs[nzchar(bacterial_IDs)] # removes empty lines
 str(bacterial_IDs)
 
 # select columns from sequence table to positive bacterial ASVs
-seq_table <- seq_table[, bacterial_IDs]
+norm_seq_table <- norm_seq_table[, bacterial_IDs]
 
 
 #--------------------------------
@@ -53,7 +53,7 @@ sample_info <- sapply(strsplit(sample_names, "_"), `[`, 3)
 # Sample Type
 sample_type <- sub("\\d+[A-Za-z]*$", "", sample_info)
 
-# Technical Rep
+# Technical Rep (Will also denote patient ID for patient samples)
 tech_rep <- sub(".*?(\\d+[A-Za-z]*)$", "\\1", sample_info)
 
 sample_meta_data_df <- data.frame(
@@ -62,6 +62,15 @@ sample_meta_data_df <- data.frame(
   row.names = rownames(seq_table),
   stringsAsFactors = FALSE
 )
+
+sample_meta_data_df <- sample_meta_data_df %>% 
+  mutate(
+    SampleType = case_when(
+      (is.na(SampleType) | SampleType == "") & (grepl("NT$", Replicate) | grepl("N$", Replicate)) ~ "NormalTissue", #check before tumor otherwise all would be labeled tumor (ending with T)
+      (is.na(SampleType) | SampleType == "") & grepl("T$", Replicate) ~ "Tumor",
+      TRUE ~ SampleType
+    )
+  )
 
 #------------------------------------
 # Mothur Taxonomy Table Construction
@@ -344,4 +353,64 @@ kraken_abunXtypeXsample_plot +
        x = "Sample",
        y = "Read Count")
 ggsave(paste0(args$out, '/', args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
-  
+
+#-------------------------------------------
+# Un-normalized Phyloseq Object Contruction
+#-------------------------------------------
+#import raw read count sequence table
+raw_seq_table <- read.delim("./IP_Data/240308_VH01090_210_AACCY2YHV/03_Dada_Denoising/SeqTable.tsv", 
+														header = TRUE, 
+														row.names = 1)
+raw_seq_table <- raw_seq_table[, bacterial_IDs]
+
+#copy normalized phyloseq object
+raw_kraken_phyloseq <- kraken_phyloseq
+
+otu_table(raw_kraken_phyloseq) <- otu_table(raw_seq_table, taxa_are_rows = FALSE)
+
+#------------------------------
+# Differential Analysis
+#------------------------------
+
+
+#------------------------------
+# Beta Diversity Plots
+#------------------------------
+# distance_methods <- unlist(distanceMethodList)
+# # Remove distance metrics that require trees as a part of the phyloseq object
+# distance_methods <- distance_methods[-(1:3)]
+
+# # Remove user-defined method (we havent defined it)
+# distance_methods <- distance_methods[-which(distance_methods=='ANY')]
+
+# head(distance_methods)
+# #construct plot list for distance panel
+# plist <- vector("list", length(distance_methods))
+# names(plist) = distance_methods
+ # for( i in distance_methods ){
+ #   dist_matrix <- distance(kraken_phyloseq, method = i)
+ #   ordination_matrix <- ordinate(kraken_phyloseq, "MDS", distance = dist_matrix)
+ #  
+ #   #PLOTTING
+ #   # clear previous plot
+ #   p <- NULL
+ #  
+ #   p <- plot_ordination(kraken_phyloseq, ordination_matrix, color="SampleType")
+ #   p <- p + ggtitle(paste("MDS using ditance method ", i, sep=""))
+ #   plist[[i]] = p
+ # }
+# p_df = ldply(plist, function(x) x$data)
+# names(p_df)[1] <- "distance"
+# p = ggplot(p_df, aes(Axis.1, Axis.2, color=SampleType))
+# p = p + geom_point(size=3, alpha=0.5)
+# p = p + facet_wrap(~distance, scales = "free")
+# p = p + ggtitle("MDS on various distance metrics for Kraken Classification")
+# p
+
+# ggsave(paste0(args$out, '/', args$trialID, "_kraken_beta.png"), width = 8, height = 6, units = "in")
+
+#-------------------------------
+# R Session Cataloging
+#-------------------------------
+# allows for more accessible downstream exploratory data analysis
+save.image(file = paste0(args$out, '/', args$trialID, "_PhyloSeqSession.RData"))

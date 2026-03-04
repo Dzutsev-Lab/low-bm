@@ -41,7 +41,12 @@ UMI_LEN = config["umi_len"]
 MAX_OFFSET = config["max_offset"]
 
 # Reference Data
-HOST_REF = config["host_ref"]
+HOST = config["host"]
+if HOST == "human":
+    HOST_REF = config["human_ref"]
+elif HOST == "mouse":
+    HOST_REF = config["mouse_ref"]
+
 VIRAL_REF = config["viral_ref"]
 BACT16S_REF = config["bact16s_ref"]
 
@@ -326,7 +331,7 @@ rule dada_denoising:
         umi_dedup_reads = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
     output:
         filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
-        seq_err_plot = f"{TRACK_DIR}/dada_error_plot.png",
+        seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
         filter_stage_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
