@@ -526,6 +526,7 @@ rule count_normalization:
 rule phyloseq_analysis:
     input:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
+        raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         mothur_file = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
@@ -553,6 +554,7 @@ rule phyloseq_analysis:
             --kraken-file {input.kraken_file} \
             --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
             --norm-seq-table {input.norm_seq_table} \
+            --raw-seq-table {input.raw_seq_table} \
             --bacterial-names {input.bacterial_names} \
             --trialID {TRIAL_ID} \
             {params.unclassified_prefix_flag} \
