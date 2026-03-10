@@ -144,9 +144,7 @@ def pick_raw_fastq(wc, read):
 rule all:
     input:
         kraken_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
-        mothur_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_countXtypeXsample.png",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
-        mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
         combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
     output:
         config_copy = f"{OUT_DIR}/config.yaml"
@@ -531,16 +529,16 @@ rule phyloseq_analysis:
         mothur_file = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
-        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
+        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp",
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
 
     output:
-        mothur_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_countXtypeXsample.png",
         kraken_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
-        mothur_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_mothur_genus_table.tsv",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
     params:
         kraken_db = KRAKEN_DB,
-        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
+        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else "",
+        norm_method = NORM_METHOD
     threads: 4
     log:    f"{LOG_DIR}/09_phyloseq.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
@@ -553,11 +551,13 @@ rule phyloseq_analysis:
             --mothur-file {input.mothur_file} \
             --kraken-file {input.kraken_file} \
             --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
+            --norm-method {params.norm_method} \
             --norm-seq-table {input.norm_seq_table} \
             --raw-seq-table {input.raw_seq_table} \
             --bacterial-names {input.bacterial_names} \
             --trialID {TRIAL_ID} \
             {params.unclassified_prefix_flag} \
+            --read-count-file {input.combined_read_counts} \
             --out {PHYLOSEQ_DIR}
         """
 

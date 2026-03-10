@@ -1,10 +1,12 @@
 library(phyloseq)
 library(Biostrings)
 library(ggplot2)
+library(ggrepel)
 library(argparse)
 library(dplyr)
 library(taxonomizr)
 library(DESeq2)
+library(tidyr)
 
 # Keep ggplot from producing Rplots.pdf
 if(!interactive()) pdf(NULL)
@@ -14,6 +16,7 @@ parser <- ArgumentParser()
 parser$add_argument("--mothur-file", type="character", help="taxonomy classification file path")
 parser$add_argument("--kraken-file", type="character", help="kraken taxonomy classification file path")
 parser$add_argument("--dump-dir", type="character", help="directory containing nodes.dmp and names.dmp to be used in database construction")
+parser$add_argument("--norm-method", type="character", help="normalization method used to produce normalized seq table")
 parser$add_argument("--norm-seq-table", type="character", help="normalized seq table tsv file path")
 parser$add_argument("--raw-seq-table", type="character", help="un-normalized seq table tsv file path")
 parser$add_argument("--bacterial-names", type="character", help="names of bacterial ASVs")
@@ -21,29 +24,38 @@ parser$add_argument("--trialID", type="character", help="ID number for the trial
 parser$add_argument("--add-unclassified-prefix", help="Whether to add prefix to unclassified taxa based on lowest assigned taxonomic level",
                     action="store_true",
                     default=FALSE)
+parser$add_argument("--read-count-file", type="character", help="combined read count file path")
 parser$add_argument("--out", type="character", help="directory to store output abundance plots")
 
 
 args <- parser$parse_args()
 
 
-
-#-----------------------------------------
-# Normalized Sequence Table Construction
-#-----------------------------------------
-#read in all ASV sequence table
-norm_seq_table <- read.delim(args$norm_seq_table, header = TRUE, row.names = 1)
-'Sequence Table'
-str(norm_seq_table)
-
-# read in positive bacterial ASV IDs
+#----------------------------------------
+# Positive Bacterial ASVID Extraction
+#----------------------------------------
 bacterial_IDs <- readLines(args$bacterial_names) # split IDs by line
 bacterial_IDs <- bacterial_IDs[nzchar(bacterial_IDs)] # removes empty lines
-'Bacterial ASV IDs'
-str(bacterial_IDs)
 
-# select columns from sequence table to positive bacterial ASVs
+#-----------------------------------
+# Read Count Extraction
+#-----------------------------------
+read_counts_df <- read.delim(args$read_count_file, header = TRUE, row.names = 1)
+
+#-----------------------------------------
+# Sequence Table Construction
+#-----------------------------------------
+# NORMALIZED
+norm_seq_table <- read.delim(args$norm_seq_table, 
+                             header = TRUE, 
+                             row.names = 1)
 norm_seq_table <- norm_seq_table[, bacterial_IDs]
+
+# UN-NORMALIZED
+raw_seq_table <- read.delim(args$raw_seq_table, 
+                            header = TRUE, 
+                            row.names = 1)
+raw_seq_table <- raw_seq_table[, bacterial_IDs]
 
 
 #--------------------------------
@@ -129,7 +141,7 @@ kraken_tax_df <- rename( kraken_tax_df,
 kraken_tax_matrix <- as.matrix(kraken_tax_df[, c("Domain","Phylum","Class","Order","Family","Genus","Species")])
 rownames(kraken_tax_matrix) <- kraken_tax_df$ASVid
 
-# add taxonomic level prefixes to kraken taxonomy matrix for consistancy with mothur taxonomy
+# Taxanomic tag added to all classified taxa
 taxa_level_prefix_addition <- function(tax_matrix) {
 
   tax_prefixes <- c(
@@ -156,131 +168,114 @@ taxa_level_prefix_addition <- function(tax_matrix) {
   return(tax_matrix)
 }
 kraken_tax_matrix <- taxa_level_prefix_addition(kraken_tax_matrix)
-str(kraken_tax_matrix)
 
-#--------------------------------------
-# Kraken Phyloseq Objects Construction
-#--------------------------------------
-kraken_phyloseq <- phyloseq(otu_table(norm_seq_table, taxa_are_rows = FALSE),
-                                       sample_data(sample_meta_data_df),
-                                       tax_table(kraken_tax_matrix))
-str(kraken_phyloseq)
-
-#------------------------------------
-# Unclassified Taxa Handling Function
-#------------------------------------
-kraken_forabund_phyloseq <- if (isTRUE(args$add_unclassified_prefix)) {
-  org_tax_matrix <- as(tax_table(kraken_phyloseq), "matrix")
-  filled_tax_matrix <- org_tax_matrix
-  dim(org_tax_matrix)
-  dim(filled_tax_matrix)
+# Handling Unclassified Taxa
+unclassified_label_progigation <- function(tax_matrix) {
+  
   is_unassigned <- function(x) is.na(x) || x == "" || x == "Unclassified"
   
-  for (i in 1:nrow(filled_tax_matrix)) {
-    i
-    row <- filled_tax_matrix[i, , drop = TRUE]
+  for (i in 1:nrow(tax_matrix)) {
+    row <- tax_matrix[i, , drop = TRUE]
     assigned_index <- which(!vapply(row, is_unassigned, logical(1)))
     if (length(assigned_index) == 0) next
     lowest_assigned_index <- max(assigned_index)
     lowest_assigned_value <- row[lowest_assigned_index]
-    fill_value <- paste0("Unclassified_", lowest_assigned_value)
-    if (lowest_assigned_index < ncol(filled_tax_matrix)) {
-      for (j in (lowest_assigned_index + 1):ncol(filled_tax_matrix)) {
+    fill_value <- paste0("UC_", lowest_assigned_value)
+    if (lowest_assigned_index < ncol(tax_matrix)) {
+      for (j in (lowest_assigned_index + 1):ncol(tax_matrix)) {
         j
         if (is_unassigned(row[j])) {
-          filled_tax_matrix[i, j] <- fill_value
+          tax_matrix[i, j] <- fill_value
         }
       }
     }
   }
-  dim(org_tax_matrix)
-  dim(filled_tax_matrix)
-  
-  kraken_filled_phyloseq <- kraken_phyloseq
-  tax_table(kraken_filled_phyloseq) <- filled_tax_matrix
-  kraken_filled_phyloseq
-} else {
-  kraken_phyloseq
+  return(tax_matrix)
 }
 
-kraken_genusGlom_phyloseq <- tax_glom(kraken_forabund_phyloseq, 
-                                       taxrank = "Genus",
-                                       NArm = TRUE
-                                       )
-
-kraken_top10genus_phyloseq <- prune_taxa(
-  names(sort(taxa_sums(kraken_genusGlom_phyloseq), decreasing = TRUE))[1:10],
-  kraken_genusGlom_phyloseq
-)
+kraken_tax_matrix <- if (isTRUE(args$add_unclassified_prefix)) {
+  unclassified_label_progigation(kraken_tax_matrix)
+}
 
 
 #--------------------------------------
-# Kraken Genus Table Construction
+# Kraken Phyloseq Objects Construction
 #--------------------------------------
-# constructing genus name matrix from tax table of genus glommed phyloseq object
-kraken_genus_name_matrix <- as(tax_table(kraken_genusGlom_phyloseq), "matrix")[, "Genus"]
+norm_kraken_phyloseq <- phyloseq(otu_table(norm_seq_table, taxa_are_rows = FALSE),
+                                       sample_data(sample_meta_data_df),
+                                       tax_table(kraken_tax_matrix))
 
-# setting taxa names in phyloseq object to genus level name matrix
-taxa_names(kraken_genusGlom_phyloseq) <- kraken_genus_name_matrix
+raw_kraken_phyloseq <- phyloseq(otu_table(raw_seq_table, taxa_are_rows = FALSE),
+                                sample_data(sample_meta_data_df),
+                                tax_table(kraken_tax_matrix))
 
-# Constructing genus count table from glommed OTU table
-kraken_genus_matrix <- as.matrix(otu_table(kraken_genusGlom_phyloseq))
-str(kraken_genus_matrix)
-
-#ensure proper orientation of genus table
-if (taxa_are_rows(kraken_genusGlom_phyloseq)) {
-  kraken_genus_matrix <- t(kraken_genus_matrix)
+#--------------------------------------
+# Abundance Table and Plot
+#--------------------------------------
+GenusAbundance_tableXplot <- function(norm_phyloseq) {
+  
+  # STEP 1: Genus Glomming
+  genusGlom_phyloseq <- tax_glom(norm_phyloseq, 
+                                 taxrank = "Genus",
+                                 NArm = TRUE)
+  
+  top10genus_phyloseq <- prune_taxa(
+    names(sort(taxa_sums(genusGlom_phyloseq), decreasing = TRUE))[1:10],
+    genusGlom_phyloseq
+  )
+  
+  # STEP 2: Genus Table Construction
+  # constructing genus name matrix from tax table of genus glommed phyloseq object
+  genus_name_matrix <- as(tax_table(genusGlom_phyloseq), "matrix")[, "Genus"]
+  
+  # setting taxa names in phyloseq object to genus level name matrix
+  taxa_names(genusGlom_phyloseq) <- genus_name_matrix
+  
+  # Constructing genus count table from glommed OTU table
+  genus_matrix <- as.matrix(otu_table(genusGlom_phyloseq))
+  
+  if (taxa_are_rows(genusGlom_phyloseq)) {
+    genus_matrix <- t(genus_matrix)
+  }
+  
+  # Add total row
+  genus_matrix <- rbind(genus_matrix, Total = colSums(genus_matrix))
+  
+  write.table(
+    genus_matrix,
+    file = paste0(args$out, '/', args$trialID, "_kraken_genus_table.tsv"),
+    sep = "\t",
+    quote = FALSE,
+    row.names = TRUE,
+    col.names = NA 
+  )
+  
+  # STEP 3: Count Plot
+  theme_set(theme_bw())
+  
+  abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "Replicate", fill = "Genus")
+  abunXtypeXsample_plot +
+    theme(
+      legend.position = "bottom",
+      legend.text = element_text(size = 6)
+    ) +
+    facet_wrap(~SampleType, scales = "free_x") +
+    labs(title = "Read Counts per Sample by Sample Type",
+         x = "Sample",
+         y = "Read Count")
+  ggsave(paste0(args$out, '/', args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
 }
 
-# Add total row
-kraken_genus_matrix <- rbind(kraken_genus_matrix, Total = colSums(kraken_genus_matrix))
+GenusAbundance_tableXplot(norm_kraken_phyloseq)
 
-write.table(
-  kraken_genus_matrix,
-  file = paste0(args$out, '/', args$trialID, "_kraken_genus_table.tsv"),
-  sep = "\t",
-  quote = FALSE,
-  row.names = TRUE,
-  col.names = NA 
-)
 
-#------------------------------
-# Count Plot
-#------------------------------
-theme_set(theme_bw())
 
-kraken_abunXtypeXsample_plot <- plot_bar(kraken_top10genus_phyloseq, "Replicate", fill = "Genus")
-kraken_abunXtypeXsample_plot +
-  theme(
-    legend.position = "bottom",
-    legend.text = element_text(size = 6)
-  ) +
-  facet_wrap(~SampleType, scales = "free_x") +
-  labs(title = "Read Counts per Sample by Sample Type",
-       x = "Sample",
-       y = "Read Count")
-ggsave(paste0(args$out, '/', args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
-
-#----------------------------------------------------
-# Differential Abundance Phyloseq Object Contruction
-#----------------------------------------------------
-#copy normalized phyloseq object
-raw_kraken_phyloseq <- kraken_phyloseq
-
-#import raw read count sequence table
-raw_seq_table <- read.delim(args$raw_seq_table, 
-														header = TRUE, 
-														row.names = 1)
-raw_seq_table <- raw_seq_table[, bacterial_IDs]
-
-otu_table(raw_kraken_phyloseq) <- otu_table(raw_seq_table, taxa_are_rows = FALSE)
-
-#------------------------------
-# Differential Analysis
-#------------------------------
-PStoCtrlStatusDA <- function(CtrlType) {
+#---------------------------------------
+# Grouping Samples by Control Type
+#---------------------------------------
+CtrlGrouping <- function(Ungrouped_phyloseq, CtrlType) {
   
-  sample_df_orig <- as(sample_data(raw_kraken_phyloseq), "data.frame")
+  sample_df_orig <- as(sample_data(Ungrouped_phyloseq), "data.frame")
   
   if (CtrlType == "AllCtrl") {
     sample_df <- sample_df_orig %>%
@@ -295,17 +290,17 @@ PStoCtrlStatusDA <- function(CtrlType) {
     rownames(sample_df) <- rownames(sample_df_orig)
     sample_df$CtrlStatus <- factor(sample_df$CtrlStatus)
     
-    PStoCtrl_phyloseq <- raw_kraken_phyloseq
-    sample_data(PStoCtrl_phyloseq) <- sample_data(sample_df[ sample_names(PStoCtrl_phyloseq), , drop = FALSE ])
-                                                  
+    CtrlGrouped_phyloseq <- Ungrouped_phyloseq
+    sample_data(CtrlGrouped_phyloseq) <- sample_data(sample_df[ sample_names(CtrlGrouped_phyloseq), , drop = FALSE ])
+    
   } else {
     sample_df <- sample_df_orig
     select_samples <- rownames(sample_df)[ sample_df$CtrlStatus %in% c("PatientSample", CtrlType) ]
-
-    PStoCtrl_phyloseq <- prune_samples(select_samples, raw_kraken_phyloseq)
+    
+    CtrlGrouped_phyloseq <- prune_samples(select_samples, Ungrouped_phyloseq)
     
     # Checking if comparison is valid (i.e. we have at least one of each sample category)
-    count_check <- as(sample_data(PStoCtrl_phyloseq), "data.frame")
+    count_check <- as(sample_data(CtrlGrouped_phyloseq), "data.frame")
     group_counts <- table(count_check$CtrlStatus)
     if (length(group_counts) < 2 || any(group_counts == 0)) {
       message("Skipping comparison PatientSample vs ", CtrlType,
@@ -315,76 +310,350 @@ PStoCtrlStatusDA <- function(CtrlType) {
     }
     
     #remove any taxa that now have zero count after filtering by sample type
-    PStoCtrl_phyloseq <- prune_taxa(taxa_sums(PStoCtrl_phyloseq) > 0, PStoCtrl_phyloseq)
+    CtrlGrouped_phyloseq <- prune_taxa(taxa_sums(CtrlGrouped_phyloseq) > 0, CtrlGrouped_phyloseq)
   }
   
+  return(CtrlGrouped_phyloseq)
+}
 
-  # convert phyloseq object to DESeqDataSet split by CtrlStatus label (i.e. PS, selected control type)
-  PStoCtrl_DDS <- phyloseq_to_deseq2(PStoCtrl_phyloseq, ~ CtrlStatus)
+#----------------------------------------------
+# DESeq2 Differential Abundance Anlysis
+#----------------------------------------------
+DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
   
-  # estimate size factors using positive counts (addresses sparse dataset issues, avoiding log 0 errors)
-  PStoCtrl_DDS <- estimateSizeFactors(PStoCtrl_DDS, type="poscounts")
+  # STEP 1: Group by Control Statans and convert phyloseq object to DESeqDataSet
+  Grouped_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Raw_phyloseq, 
+                                   CtrlType = CtrlType)
+  PStoCtrl_DDS <- phyloseq_to_deseq2(Grouped_phyloseq, ~ CtrlStatus)
   
-  # run DA analysis 
+  # STEP 2: Prepare normMatrix with host read normalization factors
+  sample_order <- sample_names(Grouped_phyloseq)
+  
+  chimera_filtered_vec <- as.numeric(read_counts_df[sample_order, "chimera.filtered"])
+  host_unmapped_vec <- as.numeric(read_counts_df[sample_order, "HostUnmapped_reads"])
+  host_reads_per_sample <- chimera_filtered_vec - host_unmapped_vec
+  
+  names(host_reads_per_sample) <- sample_order
+  host_reads_per_sample[host_reads_per_sample <= 0] <- 1 # replacing any zeros with small number to avoid zero divisor problem
+  
+  n_features <- ntaxa(Grouped_phyloseq) # number of taxa (ASVids) will dictate dimensions of normMatrix
+  normMatrix <- matrix(rep(host_reads_per_sample, each = n_features),
+                       nrow= n_features, ncol = length(host_reads_per_sample),
+                       dimnames = list(taxa_names(Grouped_phyloseq),
+                                       names(host_reads_per_sample)))
+  row_geom_mean <- apply(normMatrix, 1, function(row) exp(mean(log(row))))
+  normMatrix <- normMatrix / row_geom_mean
+  
+  #check that normMatrix rows match DDS counts table
+  dds_colnames <- colnames(counts(PStoCtrl_DDS))
+  if (!identical(colnames(normMatrix), dds_colnames)) {
+    normMatrix <- normMatrix[, dds_colnames, drop=FALSE]
+  }
+  # Final explicit matrix formatting (all should be redundant with previous steps)
+  normMatrix <- apply(normMatrix, 2, as.numeric)
+  rownames(normMatrix) <- taxa_names(Grouped_phyloseq)
+  colnames(normMatrix) <- dds_colnames
+  
+  # STEP 3: estimate size factors 
+  # using Positive Counts Method (addresses sparse data set issues, avoiding log 0 errors) 
+  # and Host Reac Count Normalization Matrix
+  PStoCtrl_DDS <- estimateSizeFactors(PStoCtrl_DDS, type="poscounts", normMatrix = normMatrix)
+  
+  # STEP 4: Run DA Analysis
   PStoCtrl_DDS <- DESeq(PStoCtrl_DDS, test="Wald", fitType="parametric")
+  DA_results_df <- as.data.frame(results(PStoCtrl_DDS, cooksCutoff = FALSE), stringAsFactor = FALSE)
+  DA_results_df$ASVid <- rownames(DA_results_df)
   
-  # Get DA results and turn into data.frame
-  DA_results <- results(PStoCtrl_DDS, cooksCutoff = FALSE)
-  DA_df <- as.data.frame(DA_results, stringAsFactor = FALSE)
+  # STEP 5: Attach Taxa Classifications
+  tax_df <- as.data.frame(tax_table(Grouped_phyloseq))
+  tax_df$ASVid <- rownames(tax_df)
   
-  # Filter significant rows
-  alpha = 0.01
-  sig_idx <- which(!is.na(DA_df$padj) & (DA_df$padj < alpha))
+  # combine to final table
+  DA_results_df <- left_join(DA_results_df, tax_df, by="ASVid")
+  
+  # STEP 6: Add additional label fields 
+  # Taxa label with ASVid (with just ASVid fallback when no classification available)
+  DA_results_df$Label <- ifelse(is.na(DA_results_df$Genus) | DA_results_df$Genus == "",
+                                DA_results_df$ASVid,
+                                paste0(DA_results_df$Genus, '(', DA_results_df$ASVid, ')'))
+  
+  # Significance label by alpha and lfc cutoff
+  DA_results_df$Significance <- "NotSig"
+  DA_results_df$Significance[
+    DA_results_df$padj < alpha &
+    abs(DA_results_df$log2FoldChange) > lfc_cutoff
+  ] <- "Sig"
+  
+  rownames(DA_results_df) <- DA_results_df$ASVid
+  
+  # STEP 7: Export Significant Results
+  sig_idx <- which(DA_results_df$Significance == "Sig")
   if (length(sig_idx) == 0) {
-    sig_DA_results <- DA_df[0, , drop = FALSE] #empty data.frame with the same columns as DA results
+    sig_DA_results_df <- DA_results_df[0, , drop = FALSE] #empty data.frame with the same columns as DA results
   } else {
-    sig_DA_results <- DA_df[sig_idx, , drop = FALSE]
-    
-    #retrieve tax table
-    tax_tab <- as.matrix(tax_table(PStoCtrl_phyloseq))
-    
-    # get canonical list of significant taxa (intersection of taxa that exist in taxa table and those found to be significant in DA)
-    # should be the same with perfect overlap (simple safety measure for ordering purposes)
-    sig_taxa <- intersect(rownames(sig_DA_results), rownames(tax_tab))
-    
-    # subset and reorder for perfect match between significant DA results and taxa table (subset to siginificant taxa)
-    sig_DA_results <- sig_DA_results[sig_taxa, , drop = FALSE]
-    sig_tax_tab <- tax_tab[sig_taxa, , drop = FALSE]
-    
-    # combine to final table
-    sig_DA_results <- cbind(sig_DA_results, as.data.frame(sig_tax_tab, stringsAsFactors = FALSE))
+    sig_DA_results_df <- DA_results_df[sig_idx, , drop = FALSE]
+  }
+  
+  # Create directory for specific comparison
+  # TODO: shift this responsibility to snakemake
+  if (!dir.exists(paste0(args$out, '/', args$trialID, "_PSto", CtrlType))) {
+    dir.create(paste0(args$out, '/', args$trialID, "_PSto", CtrlType))
   }
   
   write.table(
-    sig_DA_results,
-    file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,"_DA_results.tsv"),
+    sig_DA_results_df,
+    file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,'/', 
+                  args$trialID, "_PSto", CtrlType,"_DA_results.tsv"),
     sep = "\t",
     quote = FALSE,
     row.names = TRUE,
     col.names = NA 
   )
   
-  theme_set(theme_bw())
-  scale_fill_discrete <- function(palname = "Set1", ...) {}
-  scale_fill_discrete <- function(palname = "Set1", ...) {
-    scale_fill_brewer(palette = palname, ...)
-  }
-  x = tapply(sig_DA_results$log2FoldChange, sig_DA_results$Phylum, function(x) max(x))
-  x = sort(x, TRUE)
-  sig_DA_results$Phylum = factor(as.character(sig_DA_results$Phylum), levels=names(x))
-  ggplot(sig_DA_results, aes(x=Genus, y=log2FoldChange, color=Phylum)) + geom_point(size=6) + theme(axis.test.x = element_text(angle= -90, hjust = 0, vjust=0.5))
-  ggsave(paste0(args$out, '/', args$trialID, "_PSto", CtrlType,"_DA_results.png"), width = 14, height = 12, units = "in")
+  # STEP 8: Export DESeq Normalized Counts with per-sample sums
+  DESeq_norm_counts <- counts(PStoCtrl_DDS, normalized = TRUE)
+  sample_totals_vec <- colSums(DESeq_norm_counts)
+  sample_totals_df <- as.data.frame(sample_totals_vec)
+  write.table(sample_totals_df,
+              file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,'/', 
+                            args$trialID, "_PSto", CtrlType,"_DESeqNormCountTotals.tsv"),
+              sep = "\t",
+              quote = FALSE,
+              col.names = NA 
+  )
+  
+  return(DA_results_df)
 }
 
-PStoCtrlStatusDA("ExpCtrl")
-PStoCtrlStatusDA("NegCtrl")
-PStoCtrlStatusDA("AllCtrl")
+#--------------------------------------------
+# Volcano Plotting
+#--------------------------------------------
+DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff) {
+  
+  #Subset to significant ASVs
+  sig_DA_results_df <- subset(DA_results_df,
+                              Significance == "Sig" & !is.na(padj))
+  
+  negLFC_DA_results_df <- subset(DA_results_df,
+                                 (log2FoldChange < 0))
+  
+  # Build ggplot object
+  p_volcano <- ggplot(DA_results_df,
+                      aes(x = log2FoldChange,
+                          y = -log10(padj),
+                          color = Significance)) +
+    theme_bw() +
+    geom_point(alpha = 0.6, size = 2) +
+    geom_vline(xintercept = 0) +
+    geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "darkred") +
+    geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "darkred") +
+    scale_color_manual(values = c("NotSig" = "grey70",
+                                  "Sig" = "deeppink4")) +
+    labs(title = paste("Volcano Plot: PatientSample vs", CtrlType),
+         x = "Effect size: log2(Fold Change)",
+         y = "-log10(adjusted p-value)")
+  
+  if (nrow(sig_DA_results_df) > 0) {
+    p_volcano <- p_volcano +
+      geom_point(data = sig_DA_results_df,
+                aes(x = log2FoldChange, y = -log10(padj)),
+                color = "deeppink4",
+                size = 2) +
+      geom_text_repel(data = sig_DA_results_df,
+                      aes(x = log2FoldChange, y = -log10(padj), label = Label),
+                      size = 3.2, 
+                      force = 3,
+                      max.overlaps = Inf,
+                      box.padding = 0.5,
+                      point.padding = 0.4,
+                      # segment(leader) line style
+                      segment.size = 0.3,
+                      segment.color = "grey40",
+                      segment.alpha = 0.9,
+                      min.segment.length = 0,
+                      )
+  if (nrow(negLFC_DA_results_df) > 0) {
+    p_volcano <- p_volcano +
+      geom_point(data = negLFC_DA_results_df,
+                 aes(x = log2FoldChange, y = -log10(padj)),
+                 color = "darkolivegreen",
+                 size = 2) +
+      geom_text_repel(data = negLFC_DA_results_df,
+                      aes(x = log2FoldChange, y = -log10(padj), label = Label),
+                      color = "darkolivegreen",
+                      size = 3.2, 
+                      force = 3,
+                      max.overlaps = Inf,
+                      box.padding = 0.5,
+                      point.padding = 0.4,
+                      # segment(leader) line style
+                      segment.size = 0.3,
+                      segment.color = "grey40",
+                      segment.alpha = 0.9,
+                      min.segment.length = 0,
+      )
+    }
+  }
+
+  
+  # Save plot
+  ggsave(
+    filename = paste0(args$out, '/', args$trialID, "_PSto", CtrlType, '/', 
+                      args$trialID, "_PSto", CtrlType,"_DA_volcano.png"),
+    plot = p_volcano,
+    width = 14,
+    height = 12,
+    units = "in",
+    dpi = 300
+  )
+}
+
+#--------------------------------------------
+# Violin Plotting
+#--------------------------------------------
+DA_ASV_violin_plotting <- function (Norm_phyloseq, DA_results_df, CtrlType) {
+  # DA_results_df: data.frame of DA results (rownames = ASV ids)
+  # PStoCtrl_phyloseq: phyloseq object used for DA (contains same taxa)
+  
+  # STEP 1: Subset DA-results to significant ASVs (extract significant ASVids)
+  sig_DA_results_df <- subset(DA_results_df,
+                              Significance == "Sig" & !is.na(padj))
+  if (nrow(sig_DA_results_df) == 0) {
+    message("No plotting rows (plot_df is empty) for CtrlType=", CtrlType, " — skipping violin output.")
+    return(invisible(NULL))
+  }
+  sig_ASVids <- rownames(sig_DA_results_df)
+  
+  # STEP 2: Group Normalized Phyloseq by Control Type
+  norm_PStoCtrl_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Norm_phyloseq,
+                                         CtrlType = CtrlType)
+
+  # STEP 3: Get Normalized Read Counts from Normalized Phyloseq (subset to significant ASVs)
+  otu_df <- as.data.frame(otu_table(norm_PStoCtrl_phyloseq)) # have to first extract as data frame
+  otu_mat <- as.matrix(otu_df) # otu_table() does not accept immediate matrix transformation
+  
+  if (taxa_are_rows(norm_PStoCtrl_phyloseq)) {
+    otu_mat <- t(otu_mat)  # ASV's are columns
+  }
+
+  common_ASVids <- intersect(sig_ASVids, as.character((colnames(otu_mat))))
+  missing_ASVids <- setdiff(sig_ASVids, common_ASVids)
+  if (length(missing_ASVids) > 0) {
+    message("Warning: ", length(missing_ASVids),
+            " significant ASVs not found in normalized OTU matrix and will be skipped. Examples: ",
+            paste(head(missing_ASVids, 10), collapse = ", "))
+  }
+  
+  sig_otu_mat <- otu_mat[, sig_ASVids, drop = FALSE]   # samples x sig_taxa
+  
+  # STEP 4: Extract Sample Metadata from Normalized Phyloseq Object
+  sample_data_df <- as(sample_data(norm_PStoCtrl_phyloseq), "data.frame")
+  sample_data_df$SampleID <- rownames(sample_data_df)
+  
+  # STEP 5: Join Normalized Read Counts, Sample Metadata, and Taxa Classification Labels (from Significant DA Results)
+  # pivot OTU to long form and join to sample data and significant DA results
+  # Resulting Data Frame: one row per read count value, Sample Meta Data and Taxa Classification duplicated as appropriate
+  plot_df <- as.data.frame(sig_otu_mat, stringsAsFactors = FALSE) %>%
+    mutate(SampleID = rownames(.)) %>%
+    pivot_longer(cols = -SampleID, names_to = "ASVid", values_to = "Count") %>%
+    left_join(sample_data_df %>% select(SampleID, CtrlStatus, SampleType, Replicate), by = "SampleID") %>%
+    left_join(sig_DA_results_df %>% select(ASVid, Genus, Label), by = "ASVid")
+  
+  # STEP 6: Format dataframe for plotting
+  # ensure CtrlStatus is factor
+  plot_df$CtrlStatus <- factor(plot_df$CtrlStatus, levels = unique(plot_df$CtrlStatus))
+  
+  # order ASVs by max mean count (faceting ends up in interpretable order)
+  asv_order <- plot_df %>%
+    group_by(ASVid) %>%
+    summarize(meanCount = mean(Count, na.rm = TRUE)) %>% 
+    arrange(desc(meanCount)) %>% 
+    pull(ASVid)
+  plot_df$ASVid <- factor(plot_df$ASVid, levels = asv_order)
+  
+  # In case where there a many significant ASVids, view only top N:
+  top_n <- 10
+  if (length(asv_order) > top_n) {
+    chosen <- asv_order[1:top_n]
+    plot_df <- filter(plot_df, ASVid %in% chosen)
+  }
+  
+  # Normalization Lab
+  norm_label_map <- c(
+    noNorm = "Un-normalized",
+    log2 = "Log2 Transformed",
+    rawTSS = "per Raw Read",
+    hostTSS = "per Host Read",
+    rawTSSlog2 = "log2(per Raw Reads)",
+    hostTSSlog2 = "log2(per Host Reads)",
+    rawTSSpM = "per 10^6 Raw Reads",
+    hostTSSpM = "per 10^6 Host Reads",
+    rawTSSpMlog2 = "log2(per 10^6 Raw Read)",
+    hostTSSpMlog2 = "log2(per 10^6 Host Reads)"              
+  )
+  norm_label <- norm_label_map[[args$norm_method]]
+  
+  # Building plot
+  p_violin <- ggplot(plot_df, aes(x = CtrlStatus, y = Count, fill = CtrlStatus)) +
+    geom_violin(trim = FALSE, alpha = 0.6, width = 0.9) +
+    stat_summary(fun = mean, geom = "point", color = "black", size = 2) +
+    facet_wrap(~ Label, scales = "free_y", ncol = 2) +
+    theme_bw() +
+    theme(strip.text = element_text(size = 8),
+          axis.text.x = element_text(angle = 0, vjust = 0.5),
+          axis.title.x = element_blank()) +
+    labs(title = paste0("Per-sample counts for significant ASVs (", length(sig_ASVids), " taxa)"),
+         y = paste0("Count (", norm_label, ")")) +
+    guides(fill = guide_legend(title = "Group"))
+  
+  # save
+  ggsave(
+    filename = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,  '/',
+                      args$trialID, "_PSto", CtrlType, "_sigASVs_violin.png"),
+    plot = p_violin,
+    width = 16, height = 10, units = "in", dpi = 300
+  )
+}
+
+DAxPlottingWrapper <- function(Raw_phyloseq, Norm_phyloseq, CtrlType,
+                               alpha = 0.01, lfc_cutoff = 2.5) {
+  DESeq_DA_results_df <- DESeq_PStoCtrl_DA(Raw_phyloseq = Raw_phyloseq,
+                                           CtrlType = CtrlType,
+                                           alpha = alpha,
+                                           lfc_cutoff = lfc_cutoff)
+  DA_volcano_plotting(DA_results_df = DESeq_DA_results_df,
+                      CtrlType = CtrlType,
+                      alpha = alpha,
+                      lfc_cutoff = lfc_cutoff)
+  DA_ASV_violin_plotting(Norm_phyloseq = Norm_phyloseq,
+                         DA_results_df = DESeq_DA_results_df,
+                         CtrlType = CtrlType)
+}
+
+
+#----------------------------------
+# Differential Abundance Execution
+#----------------------------------
+CtrlTypes <- c(
+  'AllCtrl'
+  # 'ExpCtrl',
+  # 'NegCtrl'
+)
+
+for (CtrlType in CtrlTypes) {
+  DAxPlottingWrapper(Raw_phyloseq = raw_kraken_phyloseq,
+                     Norm_phyloseq = norm_kraken_phyloseq,
+                     CtrlType = CtrlType)
+}
+
 
 #-------------------------------
 # R Session Cataloging
 #-------------------------------
 # allows for more accessible downstream exploratory data analysis
 save.image(file = paste0(args$out, '/', args$trialID, "_PhyloSeqSession.RData"))
+
+
 
 #------------------------------
 # Beta Diversity Plots
@@ -464,3 +733,311 @@ save.image(file = paste0(args$out, '/', args$trialID, "_PhyloSeqSession.RData"))
 # 
 # 
 # str(mothur_tax_matrix)
+
+# 
+# 
+# #------------------------------
+# # Differential Analysis
+# #------------------------------
+# PStoCtrlStatusDA <- function(CtrlType) {
+#   
+#   sample_df_orig <- as(sample_data(raw_kraken_phyloseq), "data.frame")
+#   
+#   if (CtrlType == "AllCtrl") {
+#     sample_df <- sample_df_orig %>%
+#       mutate(
+#         CtrlStatus = if_else(
+#           CtrlStatus %in% c("NegCtrl", "ExpCtrl"),
+#           "AllCtrl",
+#           as.character(CtrlStatus)
+#         )
+#       )
+#     #ensure sample_df is correctly formatted with rownames and factored CtrlStatus
+#     rownames(sample_df) <- rownames(sample_df_orig)
+#     sample_df$CtrlStatus <- factor(sample_df$CtrlStatus)
+#     
+#     PStoCtrl_phyloseq <- raw_kraken_phyloseq
+#     sample_data(PStoCtrl_phyloseq) <- sample_data(sample_df[ sample_names(PStoCtrl_phyloseq), , drop = FALSE ])
+#                                                   
+#   } else {
+#     sample_df <- sample_df_orig
+#     select_samples <- rownames(sample_df)[ sample_df$CtrlStatus %in% c("PatientSample", CtrlType) ]
+# 
+#     PStoCtrl_phyloseq <- prune_samples(select_samples, raw_kraken_phyloseq)
+#     
+#     # Checking if comparison is valid (i.e. we have at least one of each sample category)
+#     count_check <- as(sample_data(PStoCtrl_phyloseq), "data.frame")
+#     group_counts <- table(count_check$CtrlStatus)
+#     if (length(group_counts) < 2 || any(group_counts == 0)) {
+#       message("Skipping comparison PatientSample vs ", CtrlType,
+#               " because one or more groups have zero samples.")
+#       message("Group counts: ", paste(names(group_counts), group_counts, collapse = " | "))
+#       return(invisible(NULL))
+#     }
+#     
+#     #remove any taxa that now have zero count after filtering by sample type
+#     PStoCtrl_phyloseq <- prune_taxa(taxa_sums(PStoCtrl_phyloseq) > 0, PStoCtrl_phyloseq)
+#   }
+#   
+#   # convert phyloseq object to DESeqDataSet split by CtrlStatus label (i.e. PS, selected control type)
+#   PStoCtrl_DDS <- phyloseq_to_deseq2(PStoCtrl_phyloseq, ~ CtrlStatus)
+#   
+#   # Prepare normMatrix with host read normalization factors
+#   sample_order <- sample_names(PStoCtrl_phyloseq)
+#   
+#   chimera_filtered_vec <- as.numeric(read_counts_df[sample_order, "chimera.filtered"])
+#   host_unmapped_vec <- as.numeric(read_counts_df[sample_order, "HostUnmapped_reads"])
+#   host_reads_per_sample <- chimera_filtered_vec - host_unmapped_vec
+#   
+#   names(host_reads_per_sample) <- sample_order
+#   host_reads_per_sample[host_reads_per_sample <= 0] <- 1 # replacing any zeros with small number to avoid zero divisor problem
+#   
+#   n_features <- ntaxa(PStoCtrl_phyloseq) # number of taxa (ASVids) will dictate dimensions of normMatrix
+#   normMatrix <- matrix(rep(host_reads_per_sample, each = n_features),
+#                        nrow= n_features, ncol = length(host_reads_per_sample),
+#                        dimnames = list(taxa_names(PStoCtrl_phyloseq),
+#                                        names(host_reads_per_sample)))
+#   row_geom_mean <- apply(normMatrix, 1, function(row) exp(mean(log(row))))
+#   normMatrix <- normMatrix / row_geom_mean
+#   
+#   #check that normMatrix rows match DDS counts table
+#   dds_colnames <- colnames(counts(PStoCtrl_DDS))
+#   if (!identical(colnames(normMatrix), dds_colnames)) {
+#     normMatrix <- normMatrix[, dds_colnames, drop=FALSE]
+#   }
+#   # Final explicit matrix formatting (all should be redundant with previous steps)
+#   normMatrix <- apply(normMatrix, 2, as.numeric)
+#   rownames(normMatrix) <- taxa_names(PStoCtrl_phyloseq)
+#   colnames(normMatrix) <- dds_colnames
+# 
+#   # estimate size factors using positive counts (addresses sparse dataset issues, avoiding log 0 errors)
+#   PStoCtrl_DDS <- estimateSizeFactors(PStoCtrl_DDS, type="poscounts", normMatrix = normMatrix)
+#   
+#   # run DA analysis 
+#   PStoCtrl_DDS <- DESeq(PStoCtrl_DDS, test="Wald", fitType="parametric")
+#   
+#   # Get DA results and turn into data.frame
+#   DA_results <- results(PStoCtrl_DDS, cooksCutoff = FALSE)
+#   DA_df <- as.data.frame(DA_results, stringAsFactor = FALSE)
+#   
+#   # Filter significant rows
+#   alpha = 0.01
+#   sig_idx <- which(!is.na(DA_df$padj) & (DA_df$padj < alpha))
+#   if (length(sig_idx) == 0) {
+#     sig_DA_results <- DA_df[0, , drop = FALSE] #empty data.frame with the same columns as DA results
+#   } else {
+#     sig_DA_results <- DA_df[sig_idx, , drop = FALSE]
+#     
+#     #retrieve tax table
+#     tax_tab <- as.matrix(tax_table(PStoCtrl_phyloseq))
+#     
+#     # get canonical list of significant taxa (intersection of taxa that exist in taxa table and those found to be significant in DA)
+#     # should be the same with perfect overlap (simple safety measure for ordering purposes)
+#     sig_taxa <- intersect(rownames(sig_DA_results), rownames(tax_tab))
+#     
+#     # subset and reorder for perfect match between significant DA results and taxa table (subset to siginificant taxa)
+#     sig_DA_results <- sig_DA_results[sig_taxa, , drop = FALSE]
+#     sig_tax_tab <- tax_tab[sig_taxa, , drop = FALSE]
+#     
+#     # combine to final table
+#     sig_DA_results <- cbind(sig_DA_results, as.data.frame(sig_tax_tab, stringsAsFactors = FALSE))
+#   }
+#   
+#   write.table(
+#     sig_DA_results,
+#     file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,"_DA_results.tsv"),
+#     sep = "\t",
+#     quote = FALSE,
+#     row.names = TRUE,
+#     col.names = NA 
+#   )
+#   
+#   
+#   #------------------------------
+#   # Volcano Plotting
+#   #------------------------------
+#   lfc_cutoff <- 2.5
+#   
+#   # Create plotting dataframe
+#   DA_results_df <- as.data.frame(DA_results, stringsAsFactors = FALSE)
+#   DA_results_df$ASVid <- rownames(DA_results_df)
+#   
+#   # Remove NA padj rows
+#   DA_results_df <- DA_results_df[!is.na(DA_results_df$padj), ]
+#   
+#   # Construct dataframe from taxa table
+#   tax_df <- as.data.frame(tax_tab, stringsAsFactors = FALSE)
+#   tax_df$ASVid <- rownames(tax_df)
+#   
+#   # bind data from taxa table df to volcano_df
+#   DA_results_df <- DA_results_df %>%
+#     left_join(tax_df, by = "ASVid")
+#   
+#   # Create label that goes off of chosen taxa level (genus), if not present fill with ASV
+#   DA_results_df$Label <- ifelse(is.na(DA_results_df$Genus) | DA_results_df$Genus == "",
+#                              DA_results_df$ASVid,
+#                              DA_results_df$Genus)
+#   
+#   # Add significance category
+#   DA_results_df$Significance <- "NotSig"
+#   DA_results_df$Significance[
+#     DA_results_df$padj < alpha &
+#       abs(DA_results_df$log2FoldChange) > lfc_cutoff
+#   ] <- "Significant"
+#   
+#   # Build ggplot object
+#   p_volcano <- ggplot(DA_results_df,
+#                       aes(x = log2FoldChange,
+#                           y = -log10(padj),
+#                           color = Significance)) +
+#     geom_point(alpha = 0.6, size = 2) +
+#     geom_vline(xintercept = 0) +
+#     geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "brown") +
+#     geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "brown") +
+#     scale_color_manual(values = c("NotSig" = "grey70",
+#                                   "Significant" = "red")) +
+#     theme_bw() +
+#     labs(title = paste("Volcano Plot: PatientSample vs", CtrlType),
+#          x = "Effect size: log2(Fold Change)",
+#          y = "-log10(adjusted p-value)")
+#   
+#   # Add labels for highly significant taxa
+#   sig_DA_results_df <- subset(DA_results_df,
+#                               padj < alpha & abs(log2FoldChange) > lfc_cutoff)
+#   
+#   if (nrow(sig_DA_results_df) > 0) {
+#     p_volcano <- p_volcano +
+#       geom_text(data = sig_DA_results_df,
+#                 aes(label = Label),
+#                 size = 3,
+#                 vjust = -0.5,
+#                 check_overlap = TRUE)
+#   }
+#   
+#   # Save plot
+#   ggsave(
+#     filename = paste0(args$out, '/', args$trialID,
+#                       "_PSto", CtrlType, "_DA_volcano.png"),
+#     plot = p_volcano,
+#     width = 14,
+#     height = 12,
+#     units = "in",
+#     dpi = 300
+#   )
+#   
+#   
+#   #--------------------------------------
+#   # Significant ASV Read Count Plotting
+#   #--------------------------------------
+#   # sig_DA_results: data.frame of significant DA hits (rownames = ASV ids)
+#   # PStoCtrl_phyloseq: phyloseq object used for DA (contains same taxa)
+#   
+#   # get significant ASV ids
+#   sig_ASVids <- rownames(sig_DA_results)
+#   
+#   # handle case of no significant differential abundance ASVids
+#   if (length(sig_ASVids) == 0) stop("No significant taxa to plot.")
+#   
+#   # get read counts per ASV per Sample (Samples x Taxa)
+#   if (CtrlType == "AllCtrl") {
+#     norm_PStoCtrl_phyloseq <- kraken_phyloseq
+#   } else {
+#     norm_PStoCtrl_phyloseq <- prune_samples(select_samples, kraken_phyloseq)
+#     norm_PStoCtrl_phyloseq <- prune_taxa(taxa_sums(norm_PStoCtrl_phyloseq) > 0, norm_PStoCtrl_phyloseq)
+#   }
+#   otu_mat <- as.matrix(otu_table(norm_PStoCtrl_phyloseq))
+#   if (taxa_are_rows(norm_PStoCtrl_phyloseq)) {
+#     otu_mat <- t(otu_mat)  # ASV's are columns
+#   }
+# 
+#   
+#   # subset otu matrix to only significant ASV columns  
+#   sig_otu_mat <- otu_mat[, sig_ASVids, drop = FALSE]   # samples x sig_taxa
+#   
+#   # optional use of DESeq2 normalized count values (requires PStoCtrl_DDS present)
+#   # norm_counts <- t(as.data.frame(counts(PStoCtrl_DDS, normalized = TRUE)))
+#   # sig_otu_mat <- norm_counts[, sig_ASVids, drop = FALSE]
+#   
+#   # sample metadata from Phyloseq Object
+#   sample_data_df <- as(sample_data(norm_PStoCtrl_phyloseq), "data.frame")
+#   sample_data_df$SampleID <- rownames(sample_data_df)
+#   
+#   
+#   # pivot OTU to long form and join to sample data and significant DA results get sample data and taxa labels (one row per count value)
+#   plot_df <- as.data.frame(sig_otu_mat, stringsAsFactors = FALSE) %>%
+#     mutate(SampleID = rownames(.)) %>%
+#     pivot_longer(cols = -SampleID, names_to = "ASVid", values_to = "Count") %>%
+#     left_join(sample_data_df %>% select(SampleID, CtrlStatus, SampleType, Replicate), by = "SampleID") %>%
+#     left_join(sig_DA_results_df %>% select(ASVid, Genus, Label), by = "ASVid")
+#   
+#   # ensure CtrlStatus is factor
+#   plot_df$CtrlStatus <- factor(plot_df$CtrlStatus, levels = unique(plot_df$CtrlStatus))
+#   
+#   # order ASVs by max mean count (faceting ends up in interpretable order)
+#   asv_order <- plot_df %>%
+#     group_by(ASVid) %>%
+#     summarize(meanCount = mean(Count, na.rm = TRUE)) %>% 
+#     arrange(desc(meanCount)) %>% 
+#     pull(ASVid)
+#   plot_df$ASVid <- factor(plot_df$ASVid, levels = asv_order)
+#   
+#   # Create ASVid to Genus assignment mapp for plot labeling
+#   asv_levels <- levels(plot_df$ASVid)
+#   genus_for_levels <- tax_df$Genus[match(asv_levels, tax_df$ASVid)]
+#   
+#   label_vec <- ifelse(
+#     is.na(genus_for_levels) | genus_for_levels == "" | genus_for_levels == asv_levels,
+#     asv_levels,                               # fallback: just ASV
+#     paste0(genus_for_levels, " (", asv_levels, ")")  # preferred: "Genus (ASV)"
+#   )
+#   names(label_vec) <- asv_levels
+#   
+#   # In case where there a many significant ASVids, view only top N:
+#   top_n <- 10
+#   if (length(asv_order) > top_n) {
+#     chosen <- asv_order[1:top_n]
+#     plot_df <- filter(plot_df, ASVid %in% chosen)
+#     plot_df$ASVid <- factor(plot_df$ASVid, levels = chosen)
+#     label_vec <- label_vec[chosen]
+#   }
+#   
+#   # Normalization Lab
+#   norm_label_map <- c(
+#     noNorm = "Un-normalized",
+#     log2 = "Log2 Transformed",
+#     rawTSS = "per Raw Read",
+#     hostTSS = "per Host Read",
+#     rawTSSlog2 = "log2(per Raw Reads)",
+#     hostTSSlog2 = "log2(per Host Reads)",
+#     rawTSSpM = "per 10^6 Raw Reads",
+#     hostTSSpM = "per 10^6 Host Reads",
+#     rawTSSpMlog2 = "log2(per 10^6 Raw Read)",
+#     hostTSSpMlog2 = "log2(per 10^6 Host Reads)"              
+#   )
+#   norm_label <- norm_label_map[[args$norm_method]]
+# 
+#   # Building plot
+#   p_violin <- ggplot(plot_df, aes(x = CtrlStatus, y = Count, fill = CtrlStatus)) +
+#     geom_violin(trim = FALSE, alpha = 0.6, width = 0.9) +
+#     stat_summary(fun = mean, geom = "point", color = "black", size = 2) +
+#     facet_wrap(~ ASVid, scales = "free_y", ncol = 2, labeller = labeller(ASVid = label_vec)) +
+#     theme_bw() +
+#     theme(strip.text = element_text(size = 8),
+#           axis.text.x = element_text(angle = 0, vjust = 0.5),
+#           axis.title.x = element_blank()) +
+#     labs(title = paste0("Per-sample counts for significant ASVs (", length(sig_ASVids), " taxa)"),
+#          y = paste0("Count (", norm_label, ")")) +
+#     guides(fill = guide_legend(title = "Group"))
+#   
+#   # save
+#   ggsave(
+#     filename = paste0(args$out, '/', args$trialID, "_PSto", CtrlType, "_sigASVs_violin.png"),
+#     plot = p_violin,
+#     width = 16, height = 10, units = "in", dpi = 300
+#   )
+# 
+# }
+# 
+# PStoCtrlStatusDA("ExpCtrl")
+# PStoCtrlStatusDA("NegCtrl")
+# PStoCtrlStatusDA("AllCtrl")

@@ -82,7 +82,7 @@ tax_min_counts:
 # READ COUNT NORMALIZATION PARAMETERS
 #-------------------------------------
 #current options: [noNorm, rawTSS, hostTSS, log2, rawTSSlog2, hostTSSlog2]
-norm_method: "log2"
+norm_method: "rawTSSpMlog2"
 norm_offset: 1
 
 #-----------------------------

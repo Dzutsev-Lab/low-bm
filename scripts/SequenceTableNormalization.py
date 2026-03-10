@@ -67,6 +67,12 @@ def main():
         return count_df.div(host_count_df.sum(axis='columns').replace(0, 1), # replacing with 1 to reward samples of no host alignment
                             axis='index')
     
+    def rawTSSpM(count_df):
+        return (rawTSS(count_df) * 1000000)
+    
+    def hostTSSpM(count_df):
+        return (hostTSS(count_df) * 1000000)
+    
     def log2(count_df):
         return np.log2(count_df + args.offset)
 
@@ -76,13 +82,23 @@ def main():
     def hostTSSlog2(count_df):
         return log2(hostTSS(count_df))
     
+    def rawTSSpMlog2(count_df):
+        return log2(rawTSS(count_df) * 1000000)
+    
+    def hostTSSpMlog2(count_df):
+        return log2(hostTSS(count_df) * 1000000)
+    
     norm_methods_dict = {
         "noNorm" : noNorm,
         "rawTSS" : rawTSS,
         "hostTSS" : hostTSS,
+        "rawTSSpM" : rawTSSpM,
+        "hostTSSpM" : hostTSSpM,        
         "log2" : log2,
         "rawTSSlog2" : rawTSSlog2,
-        "hostTSSlog2" : hostTSSlog2
+        "hostTSSlog2" : hostTSSlog2,
+        "rawTSSpMlog2" : rawTSSpMlog2,
+        "hostTSSpMlog2" : hostTSSpMlog2,        
     }
 
 
