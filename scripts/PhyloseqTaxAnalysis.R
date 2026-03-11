@@ -7,6 +7,8 @@ library(dplyr)
 library(taxonomizr)
 library(DESeq2)
 library(tidyr)
+library(ANCOMBC)
+library(microbiome)
 
 # Keep ggplot from producing Rplots.pdf
 if(!interactive()) pdf(NULL)
@@ -316,12 +318,73 @@ CtrlGrouping <- function(Ungrouped_phyloseq, CtrlType) {
   return(CtrlGrouped_phyloseq)
 }
 
+
 #----------------------------------------------
-# DESeq2 Differential Abundance Anlysis
+# ANCOMBC Differential Abundance Anlysis
+#----------------------------------------------
+ANCOMBC_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
+  
+  #STEP 1: Group by Control Status
+  Grouped_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Raw_phyloseq, 
+                                   CtrlType = CtrlType)
+  
+  #STEP 2: Run ANCOM-BC Analysis
+  # TODO: parameterize tax_level
+  ancombc_output <- ancombc(data = Grouped_phyloseq, tax_level = "Genus",
+                            formula = "CtrlStatus",
+                            p_adj_method = "holm",
+                            group = "CtrlStatus",
+                            alpha = alpha)
+  
+  # STEP 3: Construct formatted ANCOM-BC results data frame
+  ancombc_select_cols <- c("taxon", "CtrlStatusPatientSample")
+  ancombc_lfc_df <- ancombc_output[["res"]][["lfc"]][, ancombc_select_cols]
+  colnames(ancombc_lfc_df) <- c("Genus", "log2FoldChange")
+  
+  ancombc_padj_df <- ancombc_output[["res"]][["q_val"]][, ancombc_select_cols]
+  colnames(ancombc_padj_df) <- c("Genus", "padj")
+  
+  ancombc_results_df <- left_join(ancombc_lfc_df, ancombc_padj_df, by = "Genus")
+  
+  # STEP 4: Add significant and plotting labels
+  ancombc_results_df$Significance <- "NotSig"
+  ancombc_results_df$Significance[
+    ancombc_results_df$padj < alpha &
+    abs(ancombc_results_df$log2FoldChange) > lfc_cutoff
+  ] <- "Sig"
+  
+  ancombc_results_df$Label <- ancombc_results_df$Genus
+  
+  # STEP 5: Export significant results
+  sig_ancombc_results_df <- subset(ancombc_results_df,
+                                   Significance == "Sig" & !is.na(padj))
+  
+  # TODO: shift this responsibility to snakemake
+  if (!dir.exists(paste0(args$out, '/ANCOMBC/', "PSto", CtrlType))) {
+    dir.create(paste0(args$out, '/ANCOMBC/', "PSto", CtrlType),
+               recursive = TRUE)
+  }
+  
+  write.table(
+    sig_ancombc_results_df,
+    file = paste0(args$out, '/ANCOMBC/', "PSto", CtrlType,'/', 
+                  args$trialID, "_PSto", CtrlType,"_ANCOMBCResults.tsv"),
+    sep = "\t",
+    quote = FALSE,
+    row.names = TRUE,
+    col.names = NA 
+  )
+  
+  return(ancombc_results_df)
+  
+}
+
+#----------------------------------------------
+# DESeq2 Differential Abundance Analysis
 #----------------------------------------------
 DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
   
-  # STEP 1: Group by Control Statans and convert phyloseq object to DESeqDataSet
+  # STEP 1: Group by Control Status and convert phyloseq object to DESeqDataSet
   Grouped_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Raw_phyloseq, 
                                    CtrlType = CtrlType)
   PStoCtrl_DDS <- phyloseq_to_deseq2(Grouped_phyloseq, ~ CtrlStatus)
@@ -396,14 +459,15 @@ DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
   
   # Create directory for specific comparison
   # TODO: shift this responsibility to snakemake
-  if (!dir.exists(paste0(args$out, '/', args$trialID, "_PSto", CtrlType))) {
-    dir.create(paste0(args$out, '/', args$trialID, "_PSto", CtrlType))
+  if (!dir.exists(paste0(args$out, '/DESeq/', "PSto", CtrlType))) {
+    dir.create(paste0(args$out, '/DESeq/', "PSto", CtrlType),
+               recursive = TRUE)
   }
   
   write.table(
     sig_DA_results_df,
-    file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,'/', 
-                  args$trialID, "_PSto", CtrlType,"_DA_results.tsv"),
+    file = paste0(args$out, '/DESeq/', "PSto", CtrlType,'/', 
+                  args$trialID, "_PSto", CtrlType,"_DESeqResults.tsv"),
     sep = "\t",
     quote = FALSE,
     row.names = TRUE,
@@ -415,7 +479,7 @@ DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
   sample_totals_vec <- colSums(DESeq_norm_counts)
   sample_totals_df <- as.data.frame(sample_totals_vec)
   write.table(sample_totals_df,
-              file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,'/', 
+              file = paste0(args$out, '/DESeq/', "PSto", CtrlType,'/', 
                             args$trialID, "_PSto", CtrlType,"_DESeqNormCountTotals.tsv"),
               sep = "\t",
               quote = FALSE,
@@ -428,7 +492,7 @@ DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
 #--------------------------------------------
 # Volcano Plotting
 #--------------------------------------------
-DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff) {
+DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff, DA_method) {
   
   #Subset to significant ASVs
   sig_DA_results_df <- subset(DA_results_df,
@@ -470,8 +534,8 @@ DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff) {
                       segment.size = 0.3,
                       segment.color = "grey40",
                       segment.alpha = 0.9,
-                      min.segment.length = 0,
-                      )
+                      min.segment.length = 0)
+  }
   if (nrow(negLFC_DA_results_df) > 0) {
     p_volcano <- p_volcano +
       geom_point(data = negLFC_DA_results_df,
@@ -490,16 +554,14 @@ DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff) {
                       segment.size = 0.3,
                       segment.color = "grey40",
                       segment.alpha = 0.9,
-                      min.segment.length = 0,
-      )
-    }
+                      min.segment.length = 0)
   }
 
   
   # Save plot
   ggsave(
-    filename = paste0(args$out, '/', args$trialID, "_PSto", CtrlType, '/', 
-                      args$trialID, "_PSto", CtrlType,"_DA_volcano.png"),
+    filename = paste0(args$out, '/', DA_method, '/', "PSto", CtrlType, '/', 
+                      args$trialID, "_PSto", CtrlType,"_", DA_method, "Volcano.png"),
     plot = p_volcano,
     width = 14,
     height = 12,
@@ -511,7 +573,7 @@ DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff) {
 #--------------------------------------------
 # Violin Plotting
 #--------------------------------------------
-DA_ASV_violin_plotting <- function (Norm_phyloseq, DA_results_df, CtrlType) {
+DA_violin_plotting <- function (Norm_phyloseq, DA_results_df, CtrlType, DA_method) {
   # DA_results_df: data.frame of DA results (rownames = ASV ids)
   # PStoCtrl_phyloseq: phyloseq object used for DA (contains same taxa)
   
@@ -608,26 +670,43 @@ DA_ASV_violin_plotting <- function (Norm_phyloseq, DA_results_df, CtrlType) {
   
   # save
   ggsave(
-    filename = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,  '/',
-                      args$trialID, "_PSto", CtrlType, "_sigASVs_violin.png"),
+    filename = paste0(args$out, '/', DA_method, '/', "PSto", CtrlType, '/', 
+                      args$trialID, "_PSto", CtrlType, "_", DA_method,"Violin.png"),
     plot = p_violin,
     width = 16, height = 10, units = "in", dpi = 300
   )
 }
 
 DAxPlottingWrapper <- function(Raw_phyloseq, Norm_phyloseq, CtrlType,
-                               alpha = 0.01, lfc_cutoff = 2.5) {
-  DESeq_DA_results_df <- DESeq_PStoCtrl_DA(Raw_phyloseq = Raw_phyloseq,
-                                           CtrlType = CtrlType,
-                                           alpha = alpha,
-                                           lfc_cutoff = lfc_cutoff)
-  DA_volcano_plotting(DA_results_df = DESeq_DA_results_df,
+                               alpha = 0.01, lfc_cutoff = 2.5,
+                               DA_method) {
+  if (DA_method == "DESeq") {
+    DA_results_df <- DESeq_PStoCtrl_DA(Raw_phyloseq = Raw_phyloseq,
+                                             CtrlType = CtrlType,
+                                             alpha = alpha,
+                                             lfc_cutoff = lfc_cutoff)
+  } else if (DA_method == "ANCOMBC") {
+    DA_results_df <- ANCOMBC_PStoCtrl_DA(Raw_phyloseq = Raw_phyloseq,
+                                         CtrlType = CtrlType,
+                                         alpha = alpha,
+                                         lfc_cutoff = lfc_cutoff)
+  }
+
+  DA_volcano_plotting(DA_results_df = DA_results_df,
                       CtrlType = CtrlType,
                       alpha = alpha,
-                      lfc_cutoff = lfc_cutoff)
-  DA_ASV_violin_plotting(Norm_phyloseq = Norm_phyloseq,
-                         DA_results_df = DESeq_DA_results_df,
-                         CtrlType = CtrlType)
+                      lfc_cutoff = lfc_cutoff,
+                      DA_method = DA_method)
+  
+  # Violin plotting currently only works with DESeq's results data frame because it contains ASVids
+  # ANCOM-BC collapses at the desired taxa level so need to consider how to reintegrate ASVid
+  # Alternative: make separate violin plot capability that facets by genus not asvid
+  if (DA_method == "DESeq") {
+    DA_violin_plotting(Norm_phyloseq = Norm_phyloseq,
+                       DA_results_df = DA_results_df,
+                       CtrlType = CtrlType,
+                       DA_method = DA_method)
+  }
 }
 
 
@@ -635,15 +714,16 @@ DAxPlottingWrapper <- function(Raw_phyloseq, Norm_phyloseq, CtrlType,
 # Differential Abundance Execution
 #----------------------------------
 CtrlTypes <- c(
-  'AllCtrl'
-  # 'ExpCtrl',
-  # 'NegCtrl'
+  'AllCtrl',
+  'ExpCtrl',
+  'NegCtrl'
 )
 
 for (CtrlType in CtrlTypes) {
   DAxPlottingWrapper(Raw_phyloseq = raw_kraken_phyloseq,
                      Norm_phyloseq = norm_kraken_phyloseq,
-                     CtrlType = CtrlType)
+                     CtrlType = CtrlType,
+                     DA_method = "ANCOMBC")
 }
 
 
@@ -733,311 +813,3 @@ save.image(file = paste0(args$out, '/', args$trialID, "_PhyloSeqSession.RData"))
 # 
 # 
 # str(mothur_tax_matrix)
-
-# 
-# 
-# #------------------------------
-# # Differential Analysis
-# #------------------------------
-# PStoCtrlStatusDA <- function(CtrlType) {
-#   
-#   sample_df_orig <- as(sample_data(raw_kraken_phyloseq), "data.frame")
-#   
-#   if (CtrlType == "AllCtrl") {
-#     sample_df <- sample_df_orig %>%
-#       mutate(
-#         CtrlStatus = if_else(
-#           CtrlStatus %in% c("NegCtrl", "ExpCtrl"),
-#           "AllCtrl",
-#           as.character(CtrlStatus)
-#         )
-#       )
-#     #ensure sample_df is correctly formatted with rownames and factored CtrlStatus
-#     rownames(sample_df) <- rownames(sample_df_orig)
-#     sample_df$CtrlStatus <- factor(sample_df$CtrlStatus)
-#     
-#     PStoCtrl_phyloseq <- raw_kraken_phyloseq
-#     sample_data(PStoCtrl_phyloseq) <- sample_data(sample_df[ sample_names(PStoCtrl_phyloseq), , drop = FALSE ])
-#                                                   
-#   } else {
-#     sample_df <- sample_df_orig
-#     select_samples <- rownames(sample_df)[ sample_df$CtrlStatus %in% c("PatientSample", CtrlType) ]
-# 
-#     PStoCtrl_phyloseq <- prune_samples(select_samples, raw_kraken_phyloseq)
-#     
-#     # Checking if comparison is valid (i.e. we have at least one of each sample category)
-#     count_check <- as(sample_data(PStoCtrl_phyloseq), "data.frame")
-#     group_counts <- table(count_check$CtrlStatus)
-#     if (length(group_counts) < 2 || any(group_counts == 0)) {
-#       message("Skipping comparison PatientSample vs ", CtrlType,
-#               " because one or more groups have zero samples.")
-#       message("Group counts: ", paste(names(group_counts), group_counts, collapse = " | "))
-#       return(invisible(NULL))
-#     }
-#     
-#     #remove any taxa that now have zero count after filtering by sample type
-#     PStoCtrl_phyloseq <- prune_taxa(taxa_sums(PStoCtrl_phyloseq) > 0, PStoCtrl_phyloseq)
-#   }
-#   
-#   # convert phyloseq object to DESeqDataSet split by CtrlStatus label (i.e. PS, selected control type)
-#   PStoCtrl_DDS <- phyloseq_to_deseq2(PStoCtrl_phyloseq, ~ CtrlStatus)
-#   
-#   # Prepare normMatrix with host read normalization factors
-#   sample_order <- sample_names(PStoCtrl_phyloseq)
-#   
-#   chimera_filtered_vec <- as.numeric(read_counts_df[sample_order, "chimera.filtered"])
-#   host_unmapped_vec <- as.numeric(read_counts_df[sample_order, "HostUnmapped_reads"])
-#   host_reads_per_sample <- chimera_filtered_vec - host_unmapped_vec
-#   
-#   names(host_reads_per_sample) <- sample_order
-#   host_reads_per_sample[host_reads_per_sample <= 0] <- 1 # replacing any zeros with small number to avoid zero divisor problem
-#   
-#   n_features <- ntaxa(PStoCtrl_phyloseq) # number of taxa (ASVids) will dictate dimensions of normMatrix
-#   normMatrix <- matrix(rep(host_reads_per_sample, each = n_features),
-#                        nrow= n_features, ncol = length(host_reads_per_sample),
-#                        dimnames = list(taxa_names(PStoCtrl_phyloseq),
-#                                        names(host_reads_per_sample)))
-#   row_geom_mean <- apply(normMatrix, 1, function(row) exp(mean(log(row))))
-#   normMatrix <- normMatrix / row_geom_mean
-#   
-#   #check that normMatrix rows match DDS counts table
-#   dds_colnames <- colnames(counts(PStoCtrl_DDS))
-#   if (!identical(colnames(normMatrix), dds_colnames)) {
-#     normMatrix <- normMatrix[, dds_colnames, drop=FALSE]
-#   }
-#   # Final explicit matrix formatting (all should be redundant with previous steps)
-#   normMatrix <- apply(normMatrix, 2, as.numeric)
-#   rownames(normMatrix) <- taxa_names(PStoCtrl_phyloseq)
-#   colnames(normMatrix) <- dds_colnames
-# 
-#   # estimate size factors using positive counts (addresses sparse dataset issues, avoiding log 0 errors)
-#   PStoCtrl_DDS <- estimateSizeFactors(PStoCtrl_DDS, type="poscounts", normMatrix = normMatrix)
-#   
-#   # run DA analysis 
-#   PStoCtrl_DDS <- DESeq(PStoCtrl_DDS, test="Wald", fitType="parametric")
-#   
-#   # Get DA results and turn into data.frame
-#   DA_results <- results(PStoCtrl_DDS, cooksCutoff = FALSE)
-#   DA_df <- as.data.frame(DA_results, stringAsFactor = FALSE)
-#   
-#   # Filter significant rows
-#   alpha = 0.01
-#   sig_idx <- which(!is.na(DA_df$padj) & (DA_df$padj < alpha))
-#   if (length(sig_idx) == 0) {
-#     sig_DA_results <- DA_df[0, , drop = FALSE] #empty data.frame with the same columns as DA results
-#   } else {
-#     sig_DA_results <- DA_df[sig_idx, , drop = FALSE]
-#     
-#     #retrieve tax table
-#     tax_tab <- as.matrix(tax_table(PStoCtrl_phyloseq))
-#     
-#     # get canonical list of significant taxa (intersection of taxa that exist in taxa table and those found to be significant in DA)
-#     # should be the same with perfect overlap (simple safety measure for ordering purposes)
-#     sig_taxa <- intersect(rownames(sig_DA_results), rownames(tax_tab))
-#     
-#     # subset and reorder for perfect match between significant DA results and taxa table (subset to siginificant taxa)
-#     sig_DA_results <- sig_DA_results[sig_taxa, , drop = FALSE]
-#     sig_tax_tab <- tax_tab[sig_taxa, , drop = FALSE]
-#     
-#     # combine to final table
-#     sig_DA_results <- cbind(sig_DA_results, as.data.frame(sig_tax_tab, stringsAsFactors = FALSE))
-#   }
-#   
-#   write.table(
-#     sig_DA_results,
-#     file = paste0(args$out, '/', args$trialID, "_PSto", CtrlType,"_DA_results.tsv"),
-#     sep = "\t",
-#     quote = FALSE,
-#     row.names = TRUE,
-#     col.names = NA 
-#   )
-#   
-#   
-#   #------------------------------
-#   # Volcano Plotting
-#   #------------------------------
-#   lfc_cutoff <- 2.5
-#   
-#   # Create plotting dataframe
-#   DA_results_df <- as.data.frame(DA_results, stringsAsFactors = FALSE)
-#   DA_results_df$ASVid <- rownames(DA_results_df)
-#   
-#   # Remove NA padj rows
-#   DA_results_df <- DA_results_df[!is.na(DA_results_df$padj), ]
-#   
-#   # Construct dataframe from taxa table
-#   tax_df <- as.data.frame(tax_tab, stringsAsFactors = FALSE)
-#   tax_df$ASVid <- rownames(tax_df)
-#   
-#   # bind data from taxa table df to volcano_df
-#   DA_results_df <- DA_results_df %>%
-#     left_join(tax_df, by = "ASVid")
-#   
-#   # Create label that goes off of chosen taxa level (genus), if not present fill with ASV
-#   DA_results_df$Label <- ifelse(is.na(DA_results_df$Genus) | DA_results_df$Genus == "",
-#                              DA_results_df$ASVid,
-#                              DA_results_df$Genus)
-#   
-#   # Add significance category
-#   DA_results_df$Significance <- "NotSig"
-#   DA_results_df$Significance[
-#     DA_results_df$padj < alpha &
-#       abs(DA_results_df$log2FoldChange) > lfc_cutoff
-#   ] <- "Significant"
-#   
-#   # Build ggplot object
-#   p_volcano <- ggplot(DA_results_df,
-#                       aes(x = log2FoldChange,
-#                           y = -log10(padj),
-#                           color = Significance)) +
-#     geom_point(alpha = 0.6, size = 2) +
-#     geom_vline(xintercept = 0) +
-#     geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "brown") +
-#     geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "brown") +
-#     scale_color_manual(values = c("NotSig" = "grey70",
-#                                   "Significant" = "red")) +
-#     theme_bw() +
-#     labs(title = paste("Volcano Plot: PatientSample vs", CtrlType),
-#          x = "Effect size: log2(Fold Change)",
-#          y = "-log10(adjusted p-value)")
-#   
-#   # Add labels for highly significant taxa
-#   sig_DA_results_df <- subset(DA_results_df,
-#                               padj < alpha & abs(log2FoldChange) > lfc_cutoff)
-#   
-#   if (nrow(sig_DA_results_df) > 0) {
-#     p_volcano <- p_volcano +
-#       geom_text(data = sig_DA_results_df,
-#                 aes(label = Label),
-#                 size = 3,
-#                 vjust = -0.5,
-#                 check_overlap = TRUE)
-#   }
-#   
-#   # Save plot
-#   ggsave(
-#     filename = paste0(args$out, '/', args$trialID,
-#                       "_PSto", CtrlType, "_DA_volcano.png"),
-#     plot = p_volcano,
-#     width = 14,
-#     height = 12,
-#     units = "in",
-#     dpi = 300
-#   )
-#   
-#   
-#   #--------------------------------------
-#   # Significant ASV Read Count Plotting
-#   #--------------------------------------
-#   # sig_DA_results: data.frame of significant DA hits (rownames = ASV ids)
-#   # PStoCtrl_phyloseq: phyloseq object used for DA (contains same taxa)
-#   
-#   # get significant ASV ids
-#   sig_ASVids <- rownames(sig_DA_results)
-#   
-#   # handle case of no significant differential abundance ASVids
-#   if (length(sig_ASVids) == 0) stop("No significant taxa to plot.")
-#   
-#   # get read counts per ASV per Sample (Samples x Taxa)
-#   if (CtrlType == "AllCtrl") {
-#     norm_PStoCtrl_phyloseq <- kraken_phyloseq
-#   } else {
-#     norm_PStoCtrl_phyloseq <- prune_samples(select_samples, kraken_phyloseq)
-#     norm_PStoCtrl_phyloseq <- prune_taxa(taxa_sums(norm_PStoCtrl_phyloseq) > 0, norm_PStoCtrl_phyloseq)
-#   }
-#   otu_mat <- as.matrix(otu_table(norm_PStoCtrl_phyloseq))
-#   if (taxa_are_rows(norm_PStoCtrl_phyloseq)) {
-#     otu_mat <- t(otu_mat)  # ASV's are columns
-#   }
-# 
-#   
-#   # subset otu matrix to only significant ASV columns  
-#   sig_otu_mat <- otu_mat[, sig_ASVids, drop = FALSE]   # samples x sig_taxa
-#   
-#   # optional use of DESeq2 normalized count values (requires PStoCtrl_DDS present)
-#   # norm_counts <- t(as.data.frame(counts(PStoCtrl_DDS, normalized = TRUE)))
-#   # sig_otu_mat <- norm_counts[, sig_ASVids, drop = FALSE]
-#   
-#   # sample metadata from Phyloseq Object
-#   sample_data_df <- as(sample_data(norm_PStoCtrl_phyloseq), "data.frame")
-#   sample_data_df$SampleID <- rownames(sample_data_df)
-#   
-#   
-#   # pivot OTU to long form and join to sample data and significant DA results get sample data and taxa labels (one row per count value)
-#   plot_df <- as.data.frame(sig_otu_mat, stringsAsFactors = FALSE) %>%
-#     mutate(SampleID = rownames(.)) %>%
-#     pivot_longer(cols = -SampleID, names_to = "ASVid", values_to = "Count") %>%
-#     left_join(sample_data_df %>% select(SampleID, CtrlStatus, SampleType, Replicate), by = "SampleID") %>%
-#     left_join(sig_DA_results_df %>% select(ASVid, Genus, Label), by = "ASVid")
-#   
-#   # ensure CtrlStatus is factor
-#   plot_df$CtrlStatus <- factor(plot_df$CtrlStatus, levels = unique(plot_df$CtrlStatus))
-#   
-#   # order ASVs by max mean count (faceting ends up in interpretable order)
-#   asv_order <- plot_df %>%
-#     group_by(ASVid) %>%
-#     summarize(meanCount = mean(Count, na.rm = TRUE)) %>% 
-#     arrange(desc(meanCount)) %>% 
-#     pull(ASVid)
-#   plot_df$ASVid <- factor(plot_df$ASVid, levels = asv_order)
-#   
-#   # Create ASVid to Genus assignment mapp for plot labeling
-#   asv_levels <- levels(plot_df$ASVid)
-#   genus_for_levels <- tax_df$Genus[match(asv_levels, tax_df$ASVid)]
-#   
-#   label_vec <- ifelse(
-#     is.na(genus_for_levels) | genus_for_levels == "" | genus_for_levels == asv_levels,
-#     asv_levels,                               # fallback: just ASV
-#     paste0(genus_for_levels, " (", asv_levels, ")")  # preferred: "Genus (ASV)"
-#   )
-#   names(label_vec) <- asv_levels
-#   
-#   # In case where there a many significant ASVids, view only top N:
-#   top_n <- 10
-#   if (length(asv_order) > top_n) {
-#     chosen <- asv_order[1:top_n]
-#     plot_df <- filter(plot_df, ASVid %in% chosen)
-#     plot_df$ASVid <- factor(plot_df$ASVid, levels = chosen)
-#     label_vec <- label_vec[chosen]
-#   }
-#   
-#   # Normalization Lab
-#   norm_label_map <- c(
-#     noNorm = "Un-normalized",
-#     log2 = "Log2 Transformed",
-#     rawTSS = "per Raw Read",
-#     hostTSS = "per Host Read",
-#     rawTSSlog2 = "log2(per Raw Reads)",
-#     hostTSSlog2 = "log2(per Host Reads)",
-#     rawTSSpM = "per 10^6 Raw Reads",
-#     hostTSSpM = "per 10^6 Host Reads",
-#     rawTSSpMlog2 = "log2(per 10^6 Raw Read)",
-#     hostTSSpMlog2 = "log2(per 10^6 Host Reads)"              
-#   )
-#   norm_label <- norm_label_map[[args$norm_method]]
-# 
-#   # Building plot
-#   p_violin <- ggplot(plot_df, aes(x = CtrlStatus, y = Count, fill = CtrlStatus)) +
-#     geom_violin(trim = FALSE, alpha = 0.6, width = 0.9) +
-#     stat_summary(fun = mean, geom = "point", color = "black", size = 2) +
-#     facet_wrap(~ ASVid, scales = "free_y", ncol = 2, labeller = labeller(ASVid = label_vec)) +
-#     theme_bw() +
-#     theme(strip.text = element_text(size = 8),
-#           axis.text.x = element_text(angle = 0, vjust = 0.5),
-#           axis.title.x = element_blank()) +
-#     labs(title = paste0("Per-sample counts for significant ASVs (", length(sig_ASVids), " taxa)"),
-#          y = paste0("Count (", norm_label, ")")) +
-#     guides(fill = guide_legend(title = "Group"))
-#   
-#   # save
-#   ggsave(
-#     filename = paste0(args$out, '/', args$trialID, "_PSto", CtrlType, "_sigASVs_violin.png"),
-#     plot = p_violin,
-#     width = 16, height = 10, units = "in", dpi = 300
-#   )
-# 
-# }
-# 
-# PStoCtrlStatusDA("ExpCtrl")
-# PStoCtrlStatusDA("NegCtrl")
-# PStoCtrlStatusDA("AllCtrl")

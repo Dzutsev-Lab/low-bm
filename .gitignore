@@ -7,3 +7,4 @@ IP_Data/
 Exp_Output/
 .snakemake/
 .vscode/
+.Rhistory
