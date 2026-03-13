@@ -9,6 +9,7 @@ library(DESeq2)
 library(tidyr)
 library(ANCOMBC)
 library(microbiome)
+library(readr)
 
 # Keep ggplot from producing Rplots.pdf
 if(!interactive()) pdf(NULL)
@@ -79,25 +80,27 @@ sample_meta_data_df <- data.frame(
   stringsAsFactors = FALSE
 )
 
-sample_meta_data_df <- sample_meta_data_df %>% 
+sample_meta_data_df <- sample_meta_data_df %>%
   mutate(
     SampleType = case_when(
       (is.na(SampleType) | SampleType == "") & (grepl("NT$", Replicate) | grepl("N$", Replicate)) ~ "NormalTissue", #check before tumor otherwise all would be labeled tumor (ending with T)
       (is.na(SampleType) | SampleType == "") & grepl("T$", Replicate) ~ "Tumor",
-      TRUE ~ SampleType
-    )
-  )
-
-sample_meta_data_df <- sample_meta_data_df %>%
-  mutate(
+      TRUE ~ SampleType),
+    SampleType = factor(SampleType),
     CtrlStatus = case_when(
       SampleType %in% c("Tumor", "NormalTissue") ~ "PatientSample",
       SampleType == "expcontrol" ~ "ExpCtrl",
       SampleType == "NEGATIVECONTROL" ~ "NegCtrl",
-      TRUE ~ as.character(SampleType)
-    ),
-    CtrlStatus = factor(CtrlStatus)
+      TRUE ~ as.character(SampleType)),
+    CtrlStatus = factor(CtrlStatus),
+    Replicate = as.character(Replicate),
+    PatientID = case_when(
+      CtrlStatus == "PatientSample" ~ parse_number(Replicate),
+      TRUE ~ NA),
+    PatientID = factor(PatientID)
   )
+
+sample_meta_data_df
 
 #------------------------------------
 # Kraken Taxonomy Table Construction
@@ -318,63 +321,118 @@ CtrlGrouping <- function(Ungrouped_phyloseq, CtrlType) {
   return(CtrlGrouped_phyloseq)
 }
 
+PtSmplGrouping <- function(Ungrouped_phyloseq) {
+  sample_df <- as(sample_data(Ungrouped_phyloseq), "data.frame")
+  patient_samples <- rownames(sample_df)[ sample_df$CtrlStatus == "PatientSample" ]
+  
+  
+  PatientGrouped_phyloseq <- prune_samples(patient_samples, Ungrouped_phyloseq)
+  PatientGrouped_phyloseq <- prune_taxa(taxa_sums(PatientGrouped_phyloseq) > 0, PatientGrouped_phyloseq)
+  
+  return(PatientGrouped_phyloseq)
+}
+
 
 #----------------------------------------------
-# ANCOMBC Differential Abundance Anlysis
+# ANCOMBC Differential Abundance Analysis
 #----------------------------------------------
-ANCOMBC_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
-  
-  #STEP 1: Group by Control Status
-  Grouped_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Raw_phyloseq, 
-                                   CtrlType = CtrlType)
-  
-  #STEP 2: Run ANCOM-BC Analysis
-  # TODO: parameterize tax_level
-  ancombc_output <- ancombc(data = Grouped_phyloseq, tax_level = "Genus",
-                            formula = "CtrlStatus",
+ANCOMBC_DA <- function(Raw_phyloseq, GroupingType, tax_agg_level = NULL, tax_label_level = "Genus", alpha, lfc_cutoff) {
+  if (GroupingType %in% c("ExpCtrl", "NegCtrl", "AllCtrl")) {
+    CtrlType <- GroupingType
+    #STEP 1: Group by Control Status
+    Grouped_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Raw_phyloseq, 
+                                     CtrlType = CtrlType)
+    
+    #STEP 2: Set formula and grouping for ANCOM-BC Run
+    formula <- "CtrlStatus"
+    group <- "CtrlStatus"
+
+    
+    
+    # STEP 3: Select solumns of interest from ANCOM-BC output
+    ancombc_select_cols <- c("taxon", "CtrlStatusPatientSample")
+    
+  } else if (GroupingType == "PtSmpl") {
+    #STEP 1: Subset to Patient Samples (grouped by Tumor/Normal Tissue)
+    Grouped_phyloseq <- PtSmplGrouping(Ungrouped_phyloseq = Raw_phyloseq)
+    
+    #STEP 2: Set formula and grouping for ANCOM-BC Run
+    formula <- "SampleType + PatientID"
+    group <- "SampleType"
+
+    # STEP 3: Select columns of interest from ANCOM-BC output
+    ancombc_select_cols <- c("taxon", "SampleTypeTumor")
+  }
+
+  # STEP 4: Run ANCOM-BC analysis
+  ancombc_output <- ancombc(data = Grouped_phyloseq, 
+                            tax_level = tax_agg_level,
+                            formula = formula,
                             p_adj_method = "holm",
-                            group = "CtrlStatus",
+                            group = group,
+                            struc_zero = FALSE,
                             alpha = alpha)
+
   
-  # STEP 3: Construct formatted ANCOM-BC results data frame
-  ancombc_select_cols <- c("taxon", "CtrlStatusPatientSample")
+  # STEP 5: Construct formatted ANCOM-BC results data frame
   ancombc_lfc_df <- ancombc_output[["res"]][["lfc"]][, ancombc_select_cols]
-  colnames(ancombc_lfc_df) <- c("Genus", "log2FoldChange")
+  colnames(ancombc_lfc_df) <- c("taxon", "log2FoldChange")
   
   ancombc_padj_df <- ancombc_output[["res"]][["q_val"]][, ancombc_select_cols]
-  colnames(ancombc_padj_df) <- c("Genus", "padj")
+  colnames(ancombc_padj_df) <- c("taxon", "padj")
   
-  ancombc_results_df <- left_join(ancombc_lfc_df, ancombc_padj_df, by = "Genus")
+  ancombc_results_df <- left_join(ancombc_lfc_df, ancombc_padj_df, by = "taxon")
+
+  # STEP 6: Add taxon assignments labels ANCOM-BC results data frame 
+  #         only needed if no taxa level aggregation done in ANCOM-BC (otherwise just tax_level used)
+  if (is.null(tax_agg_level)) {
+    ancombc_results_df$ASVid <- ancombc_results_df$taxon
+    
+    tax_df <- as.data.frame(tax_table(Grouped_phyloseq))
+    tax_df$ASVid <- rownames(tax_df)
+
+    ancombc_results_df <- left_join(ancombc_results_df, tax_df, by = "ASVid")
+
+    ancombc_results_df$Label <- ifelse(is.na(ancombc_results_df[[tax_label_level]]) | ancombc_results_df[[tax_label_level]] == "",
+                                       ancombc_results_df$ASVid,
+                                       paste0(ancombc_results_df[[tax_label_level]], '(', ancombc_results_df$ASVid, ')'))
+  } else {
+    ancombc_results_df$Label <- ancombc_results_df$taxon
+  }
   
-  # STEP 4: Add significant and plotting labels
+  # STEP 7: Add significance labels
   ancombc_results_df$Significance <- "NotSig"
   ancombc_results_df$Significance[
     ancombc_results_df$padj < alpha &
     abs(ancombc_results_df$log2FoldChange) > lfc_cutoff
   ] <- "Sig"
   
-  ancombc_results_df$Label <- ancombc_results_df$Genus
   
-  # STEP 5: Export significant results
+  # STEP 7: Export significant results
   sig_ancombc_results_df <- subset(ancombc_results_df,
                                    Significance == "Sig" & !is.na(padj))
-  
+  if (GroupingType %in% c("ExpCtrl", "NegCtrl", "AllCtrl")) {
+    comp_file_label <- paste0(CtrlType, "toPS")
+  } else if (GroupingType == "PtSmpl"){
+    comp_file_label <- "NTtoT"
+  }
   # TODO: shift this responsibility to snakemake
-  if (!dir.exists(paste0(args$out, '/ANCOMBC/', "PSto", CtrlType))) {
-    dir.create(paste0(args$out, '/ANCOMBC/', "PSto", CtrlType),
+  if (!dir.exists(paste0(args$out, '/ANCOMBC/', comp_file_label))) {
+    dir.create(paste0(args$out, '/ANCOMBC/', comp_file_label),
                recursive = TRUE)
   }
   
   write.table(
     sig_ancombc_results_df,
-    file = paste0(args$out, '/ANCOMBC/', "PSto", CtrlType,'/', 
-                  args$trialID, "_PSto", CtrlType,"_ANCOMBCResults.tsv"),
+    file = paste0(args$out, '/ANCOMBC/', comp_file_label,'/', 
+                  args$trialID, '_', comp_file_label, "_ANCOMBCResults.tsv"),
     sep = "\t",
     quote = FALSE,
     row.names = TRUE,
     col.names = NA 
   )
   
+  # STEP 6: Return all ANCOM-BC results
   return(ancombc_results_df)
   
 }
@@ -486,46 +544,58 @@ DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
               col.names = NA 
   )
   
+  #STEP 9: Return all DESeq differential abundance results
   return(DA_results_df)
 }
 
 #--------------------------------------------
 # Volcano Plotting
 #--------------------------------------------
-DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff, DA_method) {
+DA_volcano_plotting <- function(DA_results_df, GroupingType, alpha, lfc_cutoff, DA_method) {
   
   #Subset to significant ASVs
   sig_DA_results_df <- subset(DA_results_df,
                               Significance == "Sig" & !is.na(padj))
-  
-  negLFC_DA_results_df <- subset(DA_results_df,
-                                 (log2FoldChange < 0))
+  if (nrow(sig_DA_results_df) > 0) {
+    pos_sig_DA_results_df <- subset(sig_DA_results_df,
+                                    log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
+    neg_sig_DA_results_df <- subset(sig_DA_results_df,
+                                    log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
+  }
+
+
+  #Create plot title and file labels depending on comparison
+  if (GroupingType %in% c("ExpCtrl", "NegCtrl", "AllCtrl")) {
+    comp_file_label <- paste0(GroupingType, "toPS")
+    plot_title_label <- paste(GroupingType, "vs Patient Samples")
+  } else if (GroupingType == "PtSmpl"){
+    comp_file_label <- "NTtoT"
+    plot_title_label <- paste("Normal Tissue vs Tumor")
+  }
   
   # Build ggplot object
   p_volcano <- ggplot(DA_results_df,
                       aes(x = log2FoldChange,
-                          y = -log10(padj),
-                          color = Significance)) +
+                          y = -log10(padj))) +
     theme_bw() +
-    geom_point(alpha = 0.6, size = 2) +
+    geom_point(alpha = 0.6, size = 2, color = "grey40") +
     geom_vline(xintercept = 0) +
     geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "darkred") +
     geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "darkred") +
-    scale_color_manual(values = c("NotSig" = "grey70",
-                                  "Sig" = "deeppink4")) +
-    labs(title = paste("Volcano Plot: PatientSample vs", CtrlType),
+    labs(title = paste("Volcano Plot:", plot_title_label),
          x = "Effect size: log2(Fold Change)",
          y = "-log10(adjusted p-value)")
   
-  if (nrow(sig_DA_results_df) > 0) {
+  if (nrow(pos_sig_DA_results_df) > 0) {
     p_volcano <- p_volcano +
-      geom_point(data = sig_DA_results_df,
+      geom_point(data = pos_sig_DA_results_df,
                 aes(x = log2FoldChange, y = -log10(padj)),
-                color = "deeppink4",
+                color = "firebrick1",
                 size = 2) +
-      geom_text_repel(data = sig_DA_results_df,
+      geom_text_repel(data = pos_sig_DA_results_df,
                       aes(x = log2FoldChange, y = -log10(padj), label = Label),
                       size = 3.2, 
+                      color = "firebrick1",
                       force = 3,
                       max.overlaps = Inf,
                       box.padding = 0.5,
@@ -536,16 +606,17 @@ DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff, DA_m
                       segment.alpha = 0.9,
                       min.segment.length = 0)
   }
-  if (nrow(negLFC_DA_results_df) > 0) {
+
+  if (nrow(neg_sig_DA_results_df) > 0) {
     p_volcano <- p_volcano +
-      geom_point(data = negLFC_DA_results_df,
-                 aes(x = log2FoldChange, y = -log10(padj)),
-                 color = "darkolivegreen",
-                 size = 2) +
-      geom_text_repel(data = negLFC_DA_results_df,
+      geom_point(data = neg_sig_DA_results_df,
+                aes(x = log2FoldChange, y = -log10(padj)),
+                color = "dodgerblue1",
+                size = 2) +
+      geom_text_repel(data = neg_sig_DA_results_df,
                       aes(x = log2FoldChange, y = -log10(padj), label = Label),
-                      color = "darkolivegreen",
-                      size = 3.2, 
+                      size = 3.2,
+                      color = "dodgerblue1", 
                       force = 3,
                       max.overlaps = Inf,
                       box.padding = 0.5,
@@ -560,8 +631,8 @@ DA_volcano_plotting <- function(DA_results_df, CtrlType, alpha, lfc_cutoff, DA_m
   
   # Save plot
   ggsave(
-    filename = paste0(args$out, '/', DA_method, '/', "PSto", CtrlType, '/', 
-                      args$trialID, "_PSto", CtrlType,"_", DA_method, "Volcano.png"),
+    filename = paste0(args$out, '/', DA_method, '/', comp_file_label, '/', 
+                      args$trialID, '_', comp_file_label,'_', DA_method, "Volcano.png"),
     plot = p_volcano,
     width = 14,
     height = 12,
@@ -677,23 +748,26 @@ DA_violin_plotting <- function (Norm_phyloseq, DA_results_df, CtrlType, DA_metho
   )
 }
 
-DAxPlottingWrapper <- function(Raw_phyloseq, Norm_phyloseq, CtrlType,
-                               alpha = 0.01, lfc_cutoff = 2.5,
+DAxPlottingWrapper <- function(Raw_phyloseq, Norm_phyloseq, 
+                               GroupingType, tax_agg_level = NULL, tax_label_level = "Genus",
+                               alpha = 0.01, lfc_cutoff = 1,
                                DA_method) {
   if (DA_method == "DESeq") {
     DA_results_df <- DESeq_PStoCtrl_DA(Raw_phyloseq = Raw_phyloseq,
-                                             CtrlType = CtrlType,
-                                             alpha = alpha,
-                                             lfc_cutoff = lfc_cutoff)
+                                      CtrlType = GroupingType,
+                                      alpha = alpha,
+                                      lfc_cutoff = lfc_cutoff)
   } else if (DA_method == "ANCOMBC") {
-    DA_results_df <- ANCOMBC_PStoCtrl_DA(Raw_phyloseq = Raw_phyloseq,
-                                         CtrlType = CtrlType,
-                                         alpha = alpha,
-                                         lfc_cutoff = lfc_cutoff)
+    DA_results_df <- ANCOMBC_DA(Raw_phyloseq = Raw_phyloseq,
+                                GroupingType = GroupingType,
+                                tax_agg_level = tax_agg_level,
+                                tax_label_level = tax_label_level,
+                                alpha = alpha,
+                                lfc_cutoff = lfc_cutoff)
   }
 
   DA_volcano_plotting(DA_results_df = DA_results_df,
-                      CtrlType = CtrlType,
+                      GroupingType = GroupingType,
                       alpha = alpha,
                       lfc_cutoff = lfc_cutoff,
                       DA_method = DA_method)
@@ -713,20 +787,32 @@ DAxPlottingWrapper <- function(Raw_phyloseq, Norm_phyloseq, CtrlType,
 #----------------------------------
 # Differential Abundance Execution
 #----------------------------------
-CtrlTypes <- c(
-  'AllCtrl',
-  'ExpCtrl',
-  'NegCtrl'
-)
+all_DA_analysis <- function(DA_method, tax_agg_level = NULL, tax_label_level = "Genus") {
+  CtrlTypes <- c(
+    'AllCtrl',
+    'ExpCtrl',
+    'NegCtrl'
+  )
 
-for (CtrlType in CtrlTypes) {
+  for (CtrlType in CtrlTypes) {
+    DAxPlottingWrapper(Raw_phyloseq = raw_kraken_phyloseq,
+                      Norm_phyloseq = norm_kraken_phyloseq,
+                      tax_agg_level = tax_agg_level,
+                      tax_label_level = tax_label_level,
+                      GroupingType = CtrlType,
+                      DA_method = DA_method)
+  }
+
   DAxPlottingWrapper(Raw_phyloseq = raw_kraken_phyloseq,
-                     Norm_phyloseq = norm_kraken_phyloseq,
-                     CtrlType = CtrlType,
-                     DA_method = "ANCOMBC")
+                    Norm_phyloseq = norm_kraken_phyloseq,
+                    tax_agg_level = tax_agg_level,
+                    tax_label_level = tax_label_level,
+                    GroupingType = "PtSmpl",
+                    DA_method = DA_method)
 }
 
-
+all_DA_analysis(DA_method = "ANCOMBC",
+                tax_agg_level = NULL)
 #-------------------------------
 # R Session Cataloging
 #-------------------------------

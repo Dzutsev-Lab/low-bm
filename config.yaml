@@ -67,7 +67,7 @@ mothur_method: "wang"
 # KRAKEN PARAMETERS
 #------------------------
 #current options: [silva, greengenes, ncbi20_k2]
-kraken_db: "greengenes"
+kraken_db: "ncbi20_k2"
 
 #---------------------------
 # TAXONOMY COUNT PARAMETERS
