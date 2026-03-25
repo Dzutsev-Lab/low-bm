@@ -1,7 +1,7 @@
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "031326.2"
-trial_descript: "ItalyLungExp1_CustomDB"
+trialID:        "032526.1"
+trial_descript: "ItalyLungExp1_micRocleanTrial"
 exp_name:       "240308_VH01090_210_AACCY2YHV"
 raw_dir:        "Exp_Data/240308_VH01090_210_AACCY2YHV_Data/OUTPUT/Data/fastq"
 host:           "human"

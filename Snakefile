@@ -22,9 +22,10 @@ DADA_DENOISE_DIR = f"{IP_DIR}/03_Dada_Denoising"
 NEG_ALIGNMENT_DIR = f"{IP_DIR}/04_Neg_Alignment"
 NEG_ALIGN_FILT_DIR = f"{IP_DIR}/05_Neg_Alignment_Filter"
 POS_ALIGNMENT_DIR = f"{IP_DIR}/06_Pos_Alignment"
-MOTHUR_TAX_DIR = f"{IP_DIR}/07.1_Mothur_Taxonomy"
-KRAKEN_TAX_DIR = f"{IP_DIR}/07.2_Kraken_Taxonomy"
-NORM_COUNT_DIR = f"{IP_DIR}/08_CountNormalization"
+MICROCLEAN_DECONTAM_DIR = f"{IP_DIR}/07_micRoclean_Decontam"
+MOTHUR_TAX_DIR = f"{IP_DIR}/08.1_Mothur_Taxonomy"
+KRAKEN_TAX_DIR = f"{IP_DIR}/08.2_Kraken_Taxonomy"
+NORM_COUNT_DIR = f"{IP_DIR}/09_CountNormalization"
 PHYLOSEQ_DIR = f"{OUT_DIR}"
 
 TRACK_DIR = f"{OUT_DIR}/Tracking"
@@ -146,6 +147,9 @@ rule all:
         kraken_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
         combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+
+
+rule copy_config:
     output:
         config_copy = f"{OUT_DIR}/config.yaml"
     shell:
@@ -153,7 +157,6 @@ rule all:
         set -euo pipefail
         cp config.yaml {output.config_copy}
         """
-
 
 
 
@@ -430,9 +433,42 @@ rule bacterial_alignment:
         samtools view -F 4 "{output.bacterial_alignment}" | cut -f1 | sort -u > "{output.bacterial_names}"
         seqtk subseq "{input.nonhost_nonviral_ASVs}" "{output.bacterial_names}" > "{output.bacterial_ASVs}" 2> "{log}"
         """
-        
+
+
+
+#-------------------------------------
+# 07 micRoclean Decontamination
+#------------------------------------- 
+rule micRoclean_decontamination:
+    input:
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+        metadata_sheet = f"{RAW}/../../../{EXP_NAME}_metadata.xlsx",
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
+    output:
+        decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
+        decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names",
+        filtering_report = f"{MICROCLEAN_DECONTAM_DIR}/DecontamFilterReport.tsv",
+        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+    threads: 8
+    log:    f"{LOG_DIR}/7_micRoclean_decontam.log"
+    conda:  f"{CONDA_ENV_DIR}/micRoclean-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        Rscript scripts/Decontamination.R \
+            --seq-table {input.seq_table} \
+            --bacterial-names {input.bacterial_names} \
+            --metadata {input.metadata_sheet} \
+            --trialID {TRIAL_ID} \
+            --out {MICROCLEAN_DECONTAM_DIR}
+        seqtk subseq "{input.bacterial_ASV_fa}" "{output.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
+        """
+
+
 #------------------------------
-# 07.1 Mothur Taxa Classifcation 
+# 08.1 Mothur Taxa Classifcation 
 #------------------------------
 rule mothur_classify:
     input:
@@ -443,7 +479,7 @@ rule mothur_classify:
         taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         tax_summary = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
     threads: 8
-    log:    f"{LOG_DIR}/07.1_mothur_class.log"
+    log:    f"{LOG_DIR}/08.1_mothur_class.log"
     conda:  f"{CONDA_ENV_DIR}/mothur-env"
     shell:
         r"""
@@ -467,17 +503,17 @@ rule mothur_classify:
         """
 
 #--------------------------------------
-# 07.2 Kraken2 Taxanomic Classifcation 
+# 08.2 Kraken2 Taxanomic Classifcation 
 #--------------------------------------
 rule kraken_classification:
     input:
-        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
+        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta",
         kraken_database = f"{REF_DIR}/{KRAKEN_DB}"
     output:
         kraken_class_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         kraken_report_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report",
     threads: 16
-    log:    f"{LOG_DIR}/07.2_kraken_class.log"
+    log:    f"{LOG_DIR}/08.2_kraken_class.log"
     conda:  f"{CONDA_ENV_DIR}/kraken-env"
     shell:
         r"""
@@ -487,12 +523,12 @@ rule kraken_classification:
                 --db {input.kraken_database} \
                 --report {output.kraken_report_file} \
                 --output {output.kraken_class_file} \
-                {input.bacterial_ASV_fa}
+                {input.decontaminated_ASV_fa}
         """
 
 
 #--------------------------
-# 08 Count Normalization
+# 09 Count Normalization
 #--------------------------
 rule count_normalization:
     input:
@@ -504,7 +540,7 @@ rule count_normalization:
         method = NORM_METHOD,
         offset = NORM_OFFSET
     threads: 1
-    log:    f"{LOG_DIR}/08_normalization.log"
+    log:    f"{LOG_DIR}/09_normalization.log"
     conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
@@ -519,7 +555,7 @@ rule count_normalization:
         """
 
 #-------------------------------
-# 09 Phyloseq Taxonomy Analysis
+# 10 Phyloseq Taxonomy Analysis
 #-------------------------------
 rule phyloseq_analysis:
     input:
@@ -540,7 +576,7 @@ rule phyloseq_analysis:
         unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else "",
         norm_method = NORM_METHOD
     threads: 4
-    log:    f"{LOG_DIR}/09_phyloseq.log"
+    log:    f"{LOG_DIR}/10_phyloseq.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
 
     shell:
