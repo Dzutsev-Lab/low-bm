@@ -13,6 +13,7 @@ OUT_DIR = os.path.join(config["out_root"], TRIAL_NAME)
 SCRIPTS = config["script_dir"]
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
+DATA_DIR = config["data_dir"]
 REF_DIR = "Ref_Data"
 
 NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
@@ -102,42 +103,73 @@ TAX_FIELDS = {
 #------------------------------------
 
 # Sample Discovery
-def discover_samples():
+#     Returns a list of all sample base names found in a given sequencing run directory
+def discover_samples(run_dir):
+
     pats = [
-        os.path.join(RAW, "*_R1_001.fastq"),
-        os.path.join(RAW, "*_R1_001.fastq.gz"),
+        os.path.join(run_dir, "*_R1_001.fastq"),
+        os.path.join(run_dir, "*_R1_001.fastq.gz"),
     ]
+
     r1s = []
     for p in pats:
         r1s.extend(glob.glob(p))
+
     samples = []
     for r1 in sorted(r1s):
         name = os.path.basename(r1)
         base = name.replace("_R1_001.fastq.gz", "").replace("_R1_001.fastq", "")
+
         # skip undertermined fastq
         if "Undetermined" in base:
             continue
+
         # require matching R2 (either gz or not)
-        r2a = os.path.join(RAW, f"{base}_R2_001.fastq")
-        r2b = os.path.join(RAW, f"{base}_R2_001.fastq.gz")
+        r2a = os.path.join(run_dir, f"{base}_R2_001.fastq")
+        r2b = os.path.join(run_dir, f"{base}_R2_001.fastq.gz")
+
         if os.path.exists(r2a) or os.path.exists(r2b):
             samples.append(base)
+
     if not samples:
-        raise ValueError(f"No samples found in {RAW} matching *_R1_001.fastq(.gz) with paired R2.")
+        raise ValueError(f"No samples found in {run_dir} matching *_R1_001.fastq(.gz) with paired R2.")
+
     return samples
 
+# Run Discovery
+#      Retruns a list of the run directories found within a dataset parent directory
+def discover_runs(parent_dir):
+    run_dirs = []
+    for entry in os.scandir(parent_dir):
+        if entry.is_dir():
+            run_dirs.append(entry.name)
+    
+    if not run_dirs:
+        raise ValueError(f"No sequencing run direcotries found in {parent_dir}.")
+    
+    return sorted(run_dirs)
+
+# Run and Sample Discovery
+#       Reutrns a dictionary with keys being run names and values being a list of sample names found within that run
+def discover_runs_and_samples(parent_dir):
+    runs = {}
+    for run in disover_runs(parent_dir):
+        run_path = os.path.join(parent_dir, run)
+        runs[run] = discover_samples(run_path)
+    
+    return runs
 
 # Input FASTQ Compression check
 #   checks if the input raw fastq need to be unzipped for input to raw normalization
 def pick_raw_fastq(wc, read):
-    fastq_path = os.path.join(RAW, f"{wc.s}_R{read}_001.fastq")
+    fastq_path = os.path.join(DATA_DIR, wc.r, f"{wc.s}_R{read}_001.fastq")
     gz_path = fastq_path + ".gz"
     if os.path.exists(fastq_path):
         return fastq_path
     elif os.path.exists(gz_path):
         return gz_path
     else:
-        raise (ValueError(f"Missing raw FASTQ for sample {wc.s} read R{read}: {fastq_path}(.gz)"))
+        raise (ValueError(f"Missing raw FASTQ for run {wc.r} sample {wc.s} read R{read}: {fastq_path}(.gz)"))
 
 #----------------------------
 # All Rule
@@ -164,14 +196,24 @@ rule copy_config:
 # Record Sample Names
 #----------------------------
 #Construct global variable of all samples based on available fastq's
-SAMPLES = discover_samples()
-#makes samples list into an format that works better with bash for-loop in read counts rule
-SAMPLES_STR = " ".join(SAMPLES)
+RUNS = discover_runs_and_samples(DATA_DIR)
+
+# List of all sample base names across all available runs
+ALL_SAMPLES = [sample for samples in RUNS.values() for sample in samples]
+ALL_SAMPLE_STR = " ".join(ALL_SAMPLES)
+
+RUN_NAMES = sorted(RUNS.keys())
+
 rule sample_names:
     output:
-        f"{OUT_DIR}/sample.names"
+        all_sample_names = f"{OUT_DIR}/all.sample.names",
+        run_sample_names = expand(f"{OUT_DIR}/{{r}}.sample.names", r=RUN_NAMES)
     run:
-        Path(output[0]).write_text("\n".join(SAMPLES) + "\n")
+        Path(output.all_sample_names).write_text("\n".join(ALL_SAMPLES) + "\n")
+
+        for run_name, out_file in zip(RUN_NAMES, output.run_sample_sames):
+            samples = RUNS[run_name]
+            PATH(out_file).write_text("\n".join(samples) + "\n")
 
 #----------------------------
 # Reference Indexing
@@ -226,10 +268,10 @@ rule norm_fastq:
         r1_raw = lambda wc: pick_raw_fastq(wc, 1),
         r2_raw = lambda wc: pick_raw_fastq(wc, 2),
     output:
-        r1_norm = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
-        r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
+        r1_norm = f"{NORM_RAW_DIR}/{{r}}/{{s}}_R1_001.fastq",
+        r2_norm = f"{NORM_RAW_DIR}/{{r}}/{{s}}_R2_001.fastq"
     threads: 2
-    log: f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
+    log: f"{LOG_DIR}/00_norm/{{r}}/00_norm.{{s}}.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
@@ -259,17 +301,17 @@ rule norm_fastq:
 #-----------------------------------------------
 rule umi_selection:
     input:
-        r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
-        r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
+        r1 = f'{NORM_RAW_DIR}/{{r}}/{{s}}_R1_001.fastq',
+        r2 = f'{NORM_RAW_DIR}/{{r}}/{{s}}_R2_001.fastq',
     output:
-        sel_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
-        count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
+        sel_umi_r1 = f"{UMI_SELECT_DIR}/{{r}}/Selected.{{s}}.UMI_R1.fastq",
+        count_summary = f"{UMI_SELECT_DIR}/{{r}}/CountSummary.{{s}}.tsv"
     params:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
         r2_primer_skip_flag = "--r2-primer-skip" if R2_PRIMER_SKIP else "",
         poly_G_threshold = POLY_G_THRESHOLD
     threads: 1
-    log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
+    log: f"{LOG_DIR}/01_umi_select/{{r}}/01_umi_select.{{s}}.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
     shell:
         r"""
@@ -295,13 +337,13 @@ rule umi_selection:
 #----------------------------
 rule umi_dedup:
     input:
-        selected_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
+        selected_umi_r1 = f"{UMI_SELECT_DIR}/{{r}}/Selected.{{s}}.UMI_R1.fastq",
     output:
-        umi_dedup_reads = f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq",
+        umi_dedup_reads = f"{UMI_DEDUP_DIR}/{{r}}/Deduped.{{s}}.fastq",
     params:
         AmpUMI_regex = "^" + ("I" * UMI_LEN)
     threads: 8
-    log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.{{s}}.log"
+    log:    f"{LOG_DIR}/02_umi_dedup/{{r}}/02_umi_dedup.{{s}}.log"
     conda:  f"{CONDA_ENV_DIR}/AmpUMI-env"
     shell:
         r"""
@@ -329,13 +371,12 @@ rule umi_dedup:
 rule dada_denoising:
     input: 
         sample_names = f"{OUT_DIR}/sample.names",
-        umi_dedup_reads = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
+        umi_dedup_reads = lambda wc: expand(f"{UMI_DEDUP_DIR}/{wc.r}/Deduped.{{s}}.fastq", s=RUNS[wc.r])
     output:
-        filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
-        seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
-        filter_stage_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
+        filtered_reads = lambda wc: expand(f"{DADA_DENOISE_DIR}/{wc.r}/filteredAndTrimmed/filtered.{{s}}.fastq", s=RUNS[wc.r]),
+        seq_err_plot = f"{DADA_DENOISE_DIR}/{{r}}/dada_error_plot.png",
+        seq_table = f"{DADA_DENOISE_DIR}/{{r}}/SeqTable.tsv",
+        filter_stage_counts = f"{DADA_DENOISE_DIR}/{{r}}/dada_read_counts.tsv",
     params:
         # Processign Params
         chunk_size = CHUNK_SIZE,
@@ -346,8 +387,9 @@ rule dada_denoising:
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
     threads: 16
-    log:    f"{LOG_DIR}/03_dada.log"
+    log:    f"{LOG_DIR}/{{r}}/03_dada{{r}}.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    # TODO: simplify output management
     shell:
         r"""
         set -euo pipefail
@@ -356,10 +398,10 @@ rule dada_denoising:
         Rscript scripts/DadaASVFilter.R \
             --fqs {input.umi_dedup_reads} \
             --sample-names {input.sample_names} \
+            --run {wildcards.r} \
             --filtered-fqs {output.filtered_reads} \
             --err-plt {output.seq_err_plot} \
             --filt-counts {output.filter_stage_counts} \
-            --asv-fa {output.rep_asv_fasta} \
             --seq-table {output.seq_table} \
             --chunk-size {params.chunk_size} \
             --truncLen {params.truncLen} \
@@ -369,6 +411,25 @@ rule dada_denoising:
             --truncQ {params.truncQ} 
         """
 
+rule run_concatenation:
+    input:
+        seq_tables = expand(f"{DADA_DENOISE_DIR}/{{r}}/SeqTable.tsv", r=RUN_NAMES)
+    output:
+        all_run_rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
+        all_run_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv"
+    threads: 2
+    log:    f"{LOG_DIR}/04_run_concat.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    shell:
+        r"""
+            set -euo pipefail
+            exec > "{log}" 2>&1 
+        
+            Rscript scripts/SequenceTableConcatenation.R \
+                --seqtables {input.seq_tables} \
+                --out {DADA_DENOISE_DIR}
+        """
+    
 #--------------------------------------------------------
 # 04 Host and Viral Mapping Selection
 #--------------------------------------------------------
@@ -443,8 +504,8 @@ rule micRoclean_decontamination:
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        metadata_sheet = f"{RAW}/../../../{EXP_NAME}_metadata.xlsx",
-        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
+        metadata_sheet = f"{DATA_DIR}/metadata.xlsx"
     output:
         decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
         decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names",
@@ -461,7 +522,6 @@ rule micRoclean_decontamination:
             --seq-table {input.seq_table} \
             --bacterial-names {input.bacterial_names} \
             --metadata {input.metadata_sheet} \
-            --trialID {TRIAL_ID} \
             --out {MICROCLEAN_DECONTAM_DIR}
         seqtk subseq "{input.bacterial_ASV_fa}" "{output.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
         """
@@ -530,6 +590,7 @@ rule kraken_classification:
 #--------------------------
 # 09 Count Normalization
 #--------------------------
+#TODO: fold this functionality into Phyloseq analysis
 rule count_normalization:
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
@@ -557,12 +618,11 @@ rule count_normalization:
 #-------------------------------
 # 10 Phyloseq Taxonomy Analysis
 #-------------------------------
+# TODO: fold count normalization into phyloseq analysis
 rule phyloseq_analysis:
     input:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        mothur_file = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
         nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp",
@@ -584,13 +644,11 @@ rule phyloseq_analysis:
         set -euo pipefail
         exec > "{log}" 2>&1
         Rscript scripts/PhyloseqTaxAnalysis.R \
-            --mothur-file {input.mothur_file} \
             --kraken-file {input.kraken_file} \
             --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
             --norm-method {params.norm_method} \
             --norm-seq-table {input.norm_seq_table} \
             --raw-seq-table {input.raw_seq_table} \
-            --bacterial-names {input.bacterial_names} \
             --trialID {TRIAL_ID} \
             {params.unclassified_prefix_flag} \
             --read-count-file {input.combined_read_counts} \

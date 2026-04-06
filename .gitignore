@@ -8,3 +8,4 @@ Exp_Output/
 .snakemake/
 .vscode/
 .Rhistory
+.DS_Store

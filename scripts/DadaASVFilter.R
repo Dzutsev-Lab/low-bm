@@ -1,23 +1,8 @@
 #!/usr/bin/env Rscript
 
-#----------------------------
-# Log Construction (no longer needed becuase running via shell directive with std err and std out taken care of)
-#----------------------------  
-# logfile <- snakemake@log[[1]]
-# if (!is.null(logfile) && nzchar(logfile)) {
-#   logcon <- file(logfile, open = "wt")
-#   sink(logcon, type = "output")
-#   sink(logcon, type = "message")
-#   cat("----- R script started -----\n")
-#   cat("Working dir:", getwd(), "\n")
-#   cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
-#   flush.console()
-# }
-
 library(dada2)
 library(Biostrings)
 library(ggplot2)
-#library(DECIPHER)
 library(argparse)
 
 #---------------------------------
@@ -28,12 +13,12 @@ parser <- ArgumentParser()
 #input files
 parser$add_argument("--fqs", type="character", nargs='+', help="List of fastq file pathes to be used in denoising") # nargs='+' tells it to look for one or more arguments
 parser$add_argument("--sample-names", type="character", help="File path to .names file with sample names, one per line")
+parser$add_argument("--run", type="character", help="Name of sequencing run fastq taken from.")
 
 #output files
 parser$add_argument("--filtered-fqs", type="character", nargs='+', help="List of fastq file pathes to store filtered reads.")
 parser$add_argument("--err-plt", type="character", help="File path to store error modeling plot.")
 parser$add_argument("--filt-counts", type="character", help="File path to store filter stage read counts tsv.")
-parser$add_argument("--asv-fa", type="character", help="File path to store stable ASV IDs")
 parser$add_argument("--seq-table", type="character", help="File path to store sequence table")
 
 #trimAndFilerter Paramters
@@ -203,31 +188,13 @@ write.table(tracker_df,
             row.names = FALSE,
             col.names = TRUE)
 
-#----------------------------
-# Classification FASTA Prep
-#----------------------------
-#stable ASV IDs (not just DNA sequence)
-ASV_IDs <- paste0("ASV", seq_len(ncol(seqtab.nochim)))
-dna_strings <- DNAStringSet(colnames((seqtab.nochim)))
-names(dna_strings) <- ASV_IDs
-writeXStringSet(dna_strings, 
-                filepath = args$asv_fa,
-                format = "fasta")
 
 #----------------------------------------------
 # Export Sequence Table Relabeled with ASV IDs
 #----------------------------------------------
-colnames(seqtab.nochim) <- ASV_IDs
+#colnames(seqtab.nochim) <- ASV_IDs
 write.table(seqtab.nochim, 
             file = args$seq_table, 
             sep = '\t', 
             quote = FALSE, 
             col.names = NA) #check to see if this is not mutating the matrix
-
-# #----------------------------
-# # Log Close
-# #----------------------------
-# if (!is.null(logfile) && nzchar(logfile)) {
-#   sink(type = "message"); sink(type = "output")
-#   close(logcon)
-# }
