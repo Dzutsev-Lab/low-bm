@@ -7,14 +7,16 @@ configfile: "config.yaml"
 TRIAL_ID = config["trialID"]
 TRIAL_NAME = TRIAL_ID + "_" + config["trial_descript"]
 EXP_NAME = config["exp_name"]
-RAW = config["raw_dir"]
+DATA_DIR = config["data_dir"]
+METADATA = config["metadata_file"]
+REF_DIR = "Ref_Data"
 IP_DIR = os.path.join(config["ip_root"], EXP_NAME)
 OUT_DIR = os.path.join(config["out_root"], TRIAL_NAME)
 SCRIPTS = config["script_dir"]
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
-DATA_DIR = config["data_dir"]
-REF_DIR = "Ref_Data"
+
+
 
 NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
 UMI_SELECT_DIR = f"{IP_DIR}/01_UMISelection"
@@ -153,7 +155,7 @@ def discover_runs(parent_dir):
 #       Reutrns a dictionary with keys being run names and values being a list of sample names found within that run
 def discover_runs_and_samples(parent_dir):
     runs = {}
-    for run in disover_runs(parent_dir):
+    for run in discover_runs(parent_dir):
         run_path = os.path.join(parent_dir, run)
         runs[run] = discover_samples(run_path)
     
@@ -178,7 +180,7 @@ rule all:
     input:
         kraken_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
-        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        #combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
 
 
 rule copy_config:
@@ -211,9 +213,9 @@ rule sample_names:
     run:
         Path(output.all_sample_names).write_text("\n".join(ALL_SAMPLES) + "\n")
 
-        for run_name, out_file in zip(RUN_NAMES, output.run_sample_sames):
+        for run_name, out_file in zip(RUN_NAMES, output.run_sample_names):
             samples = RUNS[run_name]
-            PATH(out_file).write_text("\n".join(samples) + "\n")
+            Path(out_file).write_text("\n".join(samples) + "\n")
 
 #----------------------------
 # Reference Indexing
@@ -268,8 +270,8 @@ rule norm_fastq:
         r1_raw = lambda wc: pick_raw_fastq(wc, 1),
         r2_raw = lambda wc: pick_raw_fastq(wc, 2),
     output:
-        r1_norm = f"{NORM_RAW_DIR}/{{r}}/{{s}}_R1_001.fastq",
-        r2_norm = f"{NORM_RAW_DIR}/{{r}}/{{s}}_R2_001.fastq"
+        r1_norm = temp(f"{NORM_RAW_DIR}/{{r}}/{{s}}_R1_001.fastq"),
+        r2_norm = temp(f"{NORM_RAW_DIR}/{{r}}/{{s}}_R2_001.fastq")
     threads: 2
     log: f"{LOG_DIR}/00_norm/{{r}}/00_norm.{{s}}.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
@@ -304,7 +306,7 @@ rule umi_selection:
         r1 = f'{NORM_RAW_DIR}/{{r}}/{{s}}_R1_001.fastq',
         r2 = f'{NORM_RAW_DIR}/{{r}}/{{s}}_R2_001.fastq',
     output:
-        sel_umi_r1 = f"{UMI_SELECT_DIR}/{{r}}/Selected.{{s}}.UMI_R1.fastq",
+        sel_umi_r1 = temp(f"{UMI_SELECT_DIR}/{{r}}/Selected.{{s}}.UMI_R1.fastq"),
         count_summary = f"{UMI_SELECT_DIR}/{{r}}/CountSummary.{{s}}.tsv"
     params:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
@@ -339,7 +341,7 @@ rule umi_dedup:
     input:
         selected_umi_r1 = f"{UMI_SELECT_DIR}/{{r}}/Selected.{{s}}.UMI_R1.fastq",
     output:
-        umi_dedup_reads = f"{UMI_DEDUP_DIR}/{{r}}/Deduped.{{s}}.fastq",
+        umi_dedup_reads = temp(f"{UMI_DEDUP_DIR}/{{r}}/Deduped.{{s}}.fastq"),
     params:
         AmpUMI_regex = "^" + ("I" * UMI_LEN)
     threads: 8
@@ -370,10 +372,10 @@ rule umi_dedup:
 #---------------------------- 
 rule dada_denoising:
     input: 
-        sample_names = f"{OUT_DIR}/sample.names",
+        sample_names = f"{OUT_DIR}/{{r}}.sample.names",
         umi_dedup_reads = lambda wc: expand(f"{UMI_DEDUP_DIR}/{wc.r}/Deduped.{{s}}.fastq", s=RUNS[wc.r])
     output:
-        filtered_reads = lambda wc: expand(f"{DADA_DENOISE_DIR}/{wc.r}/filteredAndTrimmed/filtered.{{s}}.fastq", s=RUNS[wc.r]),
+        filtered_fq_dir =  directory(f"{DADA_DENOISE_DIR}/{{r}}/filteredAndTrimmed/"),
         seq_err_plot = f"{DADA_DENOISE_DIR}/{{r}}/dada_error_plot.png",
         seq_table = f"{DADA_DENOISE_DIR}/{{r}}/SeqTable.tsv",
         filter_stage_counts = f"{DADA_DENOISE_DIR}/{{r}}/dada_read_counts.tsv",
@@ -387,7 +389,7 @@ rule dada_denoising:
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
     threads: 16
-    log:    f"{LOG_DIR}/{{r}}/03_dada{{r}}.log"
+    log:    f"{LOG_DIR}/03_dada/03_dada.{{r}}.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
     # TODO: simplify output management
     shell:
@@ -399,7 +401,7 @@ rule dada_denoising:
             --fqs {input.umi_dedup_reads} \
             --sample-names {input.sample_names} \
             --run {wildcards.r} \
-            --filtered-fqs {output.filtered_reads} \
+            --filtered-fq-dir {output.filtered_fq_dir} \
             --err-plt {output.seq_err_plot} \
             --filt-counts {output.filter_stage_counts} \
             --seq-table {output.seq_table} \
@@ -426,7 +428,7 @@ rule run_concatenation:
             exec > "{log}" 2>&1 
         
             Rscript scripts/SequenceTableConcatenation.R \
-                --seqtables {input.seq_tables} \
+                --seq-tables {input.seq_tables} \
                 --out {DADA_DENOISE_DIR}
         """
     
@@ -500,20 +502,18 @@ rule bacterial_alignment:
 #-------------------------------------
 # 07 micRoclean Decontamination
 #------------------------------------- 
-rule micRoclean_decontamination:
+rule micRoclean_contaminant_detection:
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
-        metadata_sheet = f"{DATA_DIR}/metadata.xlsx"
+        metadata_sheet = METADATA
     output:
         decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
         decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names",
-        filtering_report = f"{MICROCLEAN_DECONTAM_DIR}/DecontamFilterReport.tsv",
-        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+        filtering_report = f"{MICROCLEAN_DECONTAM_DIR}/DecontamFilterReport.tsv"
     threads: 8
-    log:    f"{LOG_DIR}/7_micRoclean_decontam.log"
-    conda:  f"{CONDA_ENV_DIR}/micRoclean-env"
+    log:    f"{LOG_DIR}/07.1_micRoclean_decontam_detection.log"
+    conda:  f"{CONDA_ENV_DIR}/micRoclean-env-new"
     shell:
         r"""
         set -euo pipefail
@@ -523,9 +523,23 @@ rule micRoclean_decontamination:
             --bacterial-names {input.bacterial_names} \
             --metadata {input.metadata_sheet} \
             --out {MICROCLEAN_DECONTAM_DIR}
-        seqtk subseq "{input.bacterial_ASV_fa}" "{output.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
         """
 
+rule contamination_filtering:
+    input:
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
+        decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names"
+    output:
+        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+    threads: 4
+    log:    f"{LOG_DIR}/07.2_micRoclean_decontam_filter.log"
+    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        seqtk subseq "{input.bacterial_ASV_fa}" "{input.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
+        """
 
 #------------------------------
 # 08.1 Mothur Taxa Classifcation 
@@ -625,8 +639,7 @@ rule phyloseq_analysis:
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
-        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp",
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
 
     output:
         kraken_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
@@ -649,50 +662,51 @@ rule phyloseq_analysis:
             --norm-method {params.norm_method} \
             --norm-seq-table {input.norm_seq_table} \
             --raw-seq-table {input.raw_seq_table} \
+            --metadata {METADATA} \
             --trialID {TRIAL_ID} \
             {params.unclassified_prefix_flag} \
-            --read-count-file {input.combined_read_counts} \
             --out {PHYLOSEQ_DIR}
         """
 
 #-----------------------------
 # -01 Read Count Calculations
 #-----------------------------
-rule read_counts:
-    input:
-        sample_names = f"{OUT_DIR}/sample.names",
+# TODO: refeactor to accomodate combined run approach for technical replicates
+# rule read_counts:
+#     input:
+#         sample_names = f"{OUT_DIR}/sample.names",
         
-        umi_selection_count_summary_tsv = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES),
+#         umi_selection_count_summary_tsv = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES),
 
-        dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+#         dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
+#         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         
-        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
-        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-    output:
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
-    params:
-        selected = UMI_SELECT_DIR,
-    threads: 8
-    log:    f"{LOG_DIR}/-01_read_count.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+#         host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
+#         viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
+#         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+#     output:
+#         combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+#     params:
+#         selected = UMI_SELECT_DIR,
+#     threads: 8
+#     log:    f"{LOG_DIR}/-01_read_count.log"
+#     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
 
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
+#     shell:
+#         r"""
+#         set -euo pipefail
+#         exec > "{log}" 2>&1
 
-        Rscript scripts/ReadCountCompilation.R \
-            --sample-name-file {input.sample_names} \
-            --selected-dir {params.selected} \
-            --dada-filter-counts {input.dada_read_counts} \
-            --seq-table {input.seq_table} \
-            --host-names {input.host_unmapped_names} \
-            --viral-names {input.viral_unmapped_names} \
-            --bacterial-names {input.bacterial_names} \
-            --combined-counts {output.combined_read_counts}
-        """
+#         Rscript scripts/ReadCountCompilation.R \
+#             --sample-name-file {input.sample_names} \
+#             --selected-dir {params.selected} \
+#             --dada-filter-counts {input.dada_read_counts} \
+#             --seq-table {input.seq_table} \
+#             --host-names {input.host_unmapped_names} \
+#             --viral-names {input.viral_unmapped_names} \
+#             --bacterial-names {input.bacterial_names} \
+#             --combined-counts {output.combined_read_counts}
+#         """
 
         
 

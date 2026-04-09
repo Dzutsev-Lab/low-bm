@@ -39,38 +39,44 @@ counts_df <- raw_seq_table[, bacterial_ASVids]
 #---------------------------
 # Construct sample metadata
 #---------------------------
-# sample_names <- rownames(counts_df)
-# sample_info <- sapply(strsplit(sample_names, "_"), `[`, 3)
-
-# # Sample Type
-# sample_type <- sub("\\d+[A-Za-z]*$", "", sample_info)
-
-# # Technical Rep (Will also denote patient ID for patient samples)
-# tech_rep <- sub(".*?(\\d+[A-Za-z]*)$", "\\1", sample_info)
-
-metadata_sheet_df <- read_excel(args$metadata)
-metadata_df <- metadata_sheet_df |> 
+metadata_df <- read_excel(args$metadata)
+metadata_df <- metadata_df |> 
   rename(batch = "ProcessingBatch",
-         sample_type = "SampleType",
-         Sample_ID = "SampleName") |>
+         sample_type = "SampleType") |>
   mutate(
     is_control = ifelse(str_detect(sample_type, "Control"),
                         TRUE,
                         FALSE),
-    batch = factor(batch),
-    sample_type = factor(sample_type)) |>
-  column_to_rownames(var = "Sample_ID")
+    sample_type = as.factor(sample_type),
+    is_control = as.logical(is_control),
+    batch = as.factor(batch),
+    SequencingBatch = as.factor(SequencingBatch),
+    SampleID = as.factor(SampleID),
+    SampleName = as.character(SampleName)) |>
+    as.data.frame()
+
 
 #------------------------------------------
 # Construct Technical Replicate Data Frame
 #------------------------------------------
-technical_replicate_df <- metadata_sheet_df[!str_detect(metadata_sheet_df$SampleType, "Control"), 
-                                            c("SampleID", "SampleName", "SequencingBatch"), drop = FALSE] |>
-  pivot_wider(names_from = "SequencingBatch",
-              values_from = "SampleName") |> 
-  na.omit() |>
-  select(-SampleID)
+technical_replicate_df <- metadata_df[!metadata_df$is_control, c("SampleID", "SampleName", "SequencingBatch"), drop = FALSE] |>
+  pivot_wider(id_cols = SampleID,
+              names_from = SequencingBatch,
+              values_from = SampleName) |> 
+  mutate(n_non_na = rowSums(!is.na(across(-SampleID)))) |>
+  filter(n_non_na == 2) |>
+  select(-SampleID, -n_non_na) |>
+  as.data.frame()
 
+# Set sample file names to row names to fit micRoclean input format
+metadata_df <- metadata_df |> 
+  column_to_rownames(var = "SampleName") |>
+  select(is_control, sample_type, batch) |>
+  as.data.frame()
+
+summary(metadata_df)
+summary(technical_replicate_df)
+print(technical_replicate_df)
 
 #---------------------------
 # Run micRoclean
@@ -83,6 +89,8 @@ biomarkerID_results <- micRoclean(counts = counts_df,
                                   control_name = "Control",
                                   blocklist = bl,
                                   technical_replicates = technical_replicate_df)
+
+
 
 write.table(
   biomarkerID_results$decontaminated_count,

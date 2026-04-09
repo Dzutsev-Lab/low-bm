@@ -1,9 +1,10 @@
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "032526.1"
-trial_descript: "ItalyLungExp1_micRocleanTrial"
-exp_name:       "240308_VH01090_210_AACCY2YHV"
-raw_dir:        "Exp_Data/240308_VH01090_210_AACCY2YHV_Data/OUTPUT/Data/fastq"
+trialID:        "040726.1"
+trial_descript: "ItalyLungExpComp_TechnicalReps"
+exp_name:       "ItalyLungExpComp"
+data_dir:       "Exp_Data/ItalyLungExpComp"
+metadata_file:  "Exp_Data/ItalyLungExpComp/metadata.xlsx"
 host:           "human"
 
 ip_root:        "IP_Data/"

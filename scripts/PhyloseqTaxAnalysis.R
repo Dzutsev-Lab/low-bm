@@ -12,6 +12,7 @@ library(microbiome)
 library(readr)
 library(readxl)
 library(stringr)
+library(tibble)
 
 library(ComplexHeatmap)
 library(circlize)
@@ -48,9 +49,6 @@ parser$add_argument("--add-unclassified-prefix",
                     help = "Whether to add prefix to unclassified taxa based on lowest assigned taxonomic level",
                     action = "store_true",
                     default = FALSE)
-parser$add_argument("--read-count-file",
-                    type = "character",
-                    help = "combined read count file path")
 parser$add_argument("--metadata",
                     type = "character",
                     help = "standardized metadata sheet as .xslx file")
@@ -61,10 +59,6 @@ parser$add_argument("--out",
 
 args <- parser$parse_args()
 
-#-----------------------------------
-# Read Count Extraction
-#-----------------------------------
-read_counts_df <- read.delim(args$read_count_file, header = TRUE, row.names = 1)
 
 #-----------------------------------------
 # Sequence Table Construction
@@ -92,14 +86,14 @@ raw_seq_table <- read.delim(args$raw_seq_table,
 # # Technical Rep (Will also denote patient ID for patient samples)
 # tech_rep <- sub(".*?(\\d+[A-Za-z]*)$", "\\1", sample_info)
 
-# sample_meta_data_df <- data.frame(
+# sample_metadata_df <- data.frame(
 #   SampleType = factor(sample_type),
 #   Replicate = factor(tech_rep),
 #   row.names = rownames(norm_seq_table),
 #   stringsAsFactors = FALSE
 # )
 
-# sample_meta_data_df <- sample_meta_data_df |>
+# sample_metadata_df <- sample_metadata_df |>
 #   mutate(
 #     SampleType = case_when(
 #                            (is.na(SampleType) | SampleType == "") &
@@ -119,15 +113,15 @@ raw_seq_table <- read.delim(args$raw_seq_table,
 #                           TRUE ~ NA),
 #     PatientID = factor(PatientID)
 #   )
-sample_data_df <- read_excel(args$metadata)
-sample_data_df <- sample_data_df |>
+sample_metadata_df <- read_excel(args$metadata)
+sample_metadata_df <- sample_metadata_df |>
+  as.data.frame() |>
   mutate(
     SampleID = as.character(SampleID),
     PatientID = ifelse(!str_detect(SampleType, "Control"),
-                       parse_number(Sample_ID),
+                       parse_number(SampleID),
                        NA)) |>
-  column_to_rownames(var = "SampleName")
-sample_meta_data_df
+  column_to_rownames("SampleName")
 
 #------------------------------------
 # Kraken Taxonomy Table Construction
@@ -241,16 +235,16 @@ kraken_tax_matrix <- if (isTRUE(args$add_unclassified_prefix)) {
   unclassified_label_progigation(kraken_tax_matrix)
 }
 
-
+save.image(file = paste0(args$out, "/PhyloseqTaxAnalysis.RData"))
 #--------------------------------------
 # Kraken Phyloseq Objects Construction
 #--------------------------------------
 norm_kraken_phyloseq <- phyloseq(otu_table(norm_seq_table, taxa_are_rows = FALSE),
-                                 sample_data(sample_meta_data_df),
+                                 sample_data(sample_metadata_df),
                                  tax_table(kraken_tax_matrix))
 
 raw_kraken_phyloseq <- phyloseq(otu_table(raw_seq_table, taxa_are_rows = FALSE),
-                                sample_data(sample_meta_data_df),
+                                sample_data(sample_metadata_df),
                                 tax_table(kraken_tax_matrix))
 
 #--------------------------------------
@@ -294,7 +288,7 @@ GenusAbundance_tableXplot <- function(norm_phyloseq) {
   # STEP 3: Count Plot
   theme_set(theme_bw())
 
-  abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "SampleName", fill = "Genus")
+  abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "SampleID", fill = "Genus")
   abunXtypeXsample_plot +
     theme(
       legend.position = "bottom",
@@ -307,7 +301,7 @@ GenusAbundance_tableXplot <- function(norm_phyloseq) {
   ggsave(paste0(args$out, "/", args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
 }
 
-GenusAbundance_tableXplot(norm_kraken_phyloseq)
+
 
 
 
@@ -497,12 +491,12 @@ DA_volcano_plotting <- function(DA_results_df,
   #Subset to significant ASVs
   sig_DA_results_df <- subset(DA_results_df,
                               Significance == "Sig" & !is.na(padj))
-  if (nrow(sig_DA_results_df) > 0) {
-    pos_sig_DA_results_df <- subset(sig_DA_results_df,
-                                    log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
-    neg_sig_DA_results_df <- subset(sig_DA_results_df,
-                                    log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
-  }
+ 
+  pos_sig_DA_results_df <- subset(sig_DA_results_df,
+                                  log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
+  neg_sig_DA_results_df <- subset(sig_DA_results_df,
+                                  log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
+
 
 
   #Create plot title and file labels depending on comparison
@@ -620,7 +614,8 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   #Subset to significant ASVs
   sig_DA_results_df <- DA_results_df[DA_results_df$Significance == "Sig", , drop = FALSE]
   if (nrow(sig_DA_results_df) == 0) {
-    stop("No siginifcant differnetially abundant taxa found, skipping heatmap plotting.")
+    warning("No siginifcant differnetially abundant taxa found, skipping heatmap plotting.")
+    return(NULL)
   }
   sig_DA_taxa <- unique(as.character(sig_DA_results_df$taxon))
   
@@ -657,8 +652,6 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   META_df <- META_df[order(META_df$SampleType,
                            META_df$PatientID), , drop = FALSE]
 
-  heatmap_column_order <- META_df$PatientID
-  log_relative_OTU_mat <- log_relative_OTU_mat[, heatmap_column_order, drop = FALSE]
 
   
   # STEP ??: Get row labels
@@ -747,7 +740,6 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
     top_annotation = top_heatmap_anno,
     left_annotation = left_heatmap_anno,
     column_split = META_df$SampleType,
-    column_order = heatmap_column_order,
     cluster_columns = FALSE,
     cluster_column_slices = FALSE,
     show_column_names = TRUE,
@@ -814,6 +806,9 @@ DAxPlottingWrapper <- function(Raw_phyloseq,
 # Differential Abundance Execution
 #----------------------------------
 all_DA_analysis <- function(DA_method, tax_agg_level = NULL, tax_label_level = "Genus") {
+
+  GenusAbundance_tableXplot(norm_kraken_phyloseq)
+  
   CtrlTypes <- c(
     "AllControl",
     "CellControl",

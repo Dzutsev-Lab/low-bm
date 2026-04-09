@@ -16,7 +16,7 @@ parser$add_argument("--sample-names", type="character", help="File path to .name
 parser$add_argument("--run", type="character", help="Name of sequencing run fastq taken from.")
 
 #output files
-parser$add_argument("--filtered-fqs", type="character", nargs='+', help="List of fastq file pathes to store filtered reads.")
+parser$add_argument("--filtered-fq-dir", type="character", nargs='+', help="List of fastq file pathes to store filtered reads.")
 parser$add_argument("--err-plt", type="character", help="File path to store error modeling plot.")
 parser$add_argument("--filt-counts", type="character", help="File path to store filter stage read counts tsv.")
 parser$add_argument("--seq-table", type="character", help="File path to store sequence table")
@@ -56,7 +56,7 @@ sample.names <- sample.names[nzchar(sample.names)] # removes empty lines
 
 
 # --- import outpaths for filtered fastqs ----
-filtered.fq.files <- args$filtered_fqs
+filtered.fq.files <- paste0(args$filtered_fq_dir, "/filtered.", sample.names, ".fastq")
 
 #check correct number of filtered fastq compared to input fastqs
 if (length(fq.files) != length(filtered.fq.files)) {
