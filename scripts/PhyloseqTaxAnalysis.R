@@ -10,6 +10,9 @@ library(tidyr)
 library(ANCOMBC)
 library(microbiome)
 library(readr)
+library(tibble)
+library(readxl)
+library(stringr)
 
 library(ComplexHeatmap)
 library(circlize)
@@ -20,9 +23,6 @@ if (!interactive()) pdf(NULL)
 
 parser <- ArgumentParser()
 
-parser$add_argument("--mothur-file",
-                    type = "character",
-                    help = "taxonomy classification file path")
 parser$add_argument("--kraken-file",
                     type = "character",
                     help = "kraken taxonomy classification file path")
@@ -52,6 +52,9 @@ parser$add_argument("--add-unclassified-prefix",
 parser$add_argument("--read-count-file",
                     type = "character",
                     help = "combined read count file path")
+parser$add_argument("--metadata",
+                    type = "character",
+                    help = "standardized metadata sheet as .xlsx file")
 parser$add_argument("--out",
                     type = "character",
                     help = "directory to store output abundance plots")
@@ -74,60 +77,46 @@ read_counts_df <- read.delim(args$read_count_file, header = TRUE, row.names = 1)
 #-----------------------------------------
 # Sequence Table Construction
 #-----------------------------------------
+# Need to remove S## label from sample names in the sequence table to match with metadata sample names
+# TODO: shift this reponsibility to snakemake by having snakemake handle the renaming of sample names in the sequence table to match with metadata sample names
 # NORMALIZED
 norm_seq_table <- read.delim(args$norm_seq_table,
                              header = TRUE,
                              row.names = 1)
-norm_seq_table <- norm_seq_table[, bacterial_IDs]
+norm_seq_table <- norm_seq_table[, bacterial_IDs] |>
+  rownames_to_column(var = "Sample_ID") |>
+  mutate(Sample_ID = sub("_S\\d+$", "", Sample_ID)) |>
+  column_to_rownames(var = "Sample_ID")
 
 # UN-NORMALIZED
 raw_seq_table <- read.delim(args$raw_seq_table,
                             header = TRUE,
                             row.names = 1)
-raw_seq_table <- raw_seq_table[, bacterial_IDs]
+raw_seq_table <- raw_seq_table[, bacterial_IDs] |>
+  rownames_to_column(var = "Sample_ID") |>
+  mutate(Sample_ID = sub("_S\\d+$", "", Sample_ID)) |>
+  column_to_rownames(var = "Sample_ID")
 
 
 #--------------------------------
 # Sample Data Table Construction
 #--------------------------------
-sample_names <- rownames(norm_seq_table)
-sample_info <- sapply(strsplit(sample_names, "_"), `[`, 3)
-
-# Sample Type
-sample_type <- sub("\\d+[A-Za-z]*$", "", sample_info)
-
-# Technical Rep (Will also denote patient ID for patient samples)
-tech_rep <- sub(".*?(\\d+[A-Za-z]*)$", "\\1", sample_info)
-
-sample_meta_data_df <- data.frame(
-  SampleType = factor(sample_type),
-  Replicate = factor(tech_rep),
-  row.names = rownames(norm_seq_table),
-  stringsAsFactors = FALSE
-)
-
+sample_meta_data_df <- read_excel(args$metadata)
 sample_meta_data_df <- sample_meta_data_df |>
+  rename(Batch = "ProcessingBatch") |>
   mutate(
-    SampleType = case_when(
-                           (is.na(SampleType) | SampleType == "") &
-                             (grepl("NT$", Replicate) | grepl("N$", Replicate))
-                           ~ "NormalTissue", #check before tumor otherwise all would be labeled tumor (ending with T)
-                           (is.na(SampleType) | SampleType == "") &
-                             grepl("T$", Replicate) ~ "Tumor",
-                           TRUE ~ SampleType),
-    SampleType = case_when(
-                           SampleType == "expcontrol" ~ "ExpCtrl",
-                           SampleType == "NEGATIVECONTROL" ~ "NegCtrl",
-                           TRUE ~ as.character(SampleType)),
-    SampleType = factor(SampleType),
-    Replicate = as.character(Replicate),
-    PatientID = case_when(
-                          SampleType %in% c("Tumor", "NormalTissue") ~ parse_number(Replicate),
-                          TRUE ~ NA),
-    PatientID = factor(PatientID)
-  )
-
-sample_meta_data_df
+    IsControl = str_detect(SampleType, "Control"),
+    IsControl = as.logical(IsControl),
+    PatientID = ifelse(IsControl,
+                       NA,
+                       parse_number(SampleID)),
+    ControlStatus = ifelse(IsControl,
+                           "Control",
+                           "PatientSample"),
+    SampleType = as.factor(SampleType),
+    Batch = as.factor(Batch),
+    PatientID = as.factor(PatientID)) |>
+  column_to_rownames(var = "SampleName")
 
 #------------------------------------
 # Kraken Taxonomy Table Construction
@@ -294,7 +283,7 @@ GenusAbundance_tableXplot <- function(norm_phyloseq) {
   # STEP 3: Count Plot
   theme_set(theme_bw())
 
-  abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "Replicate", fill = "Genus")
+  abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "SampleID", fill = "Genus")
   abunXtypeXsample_plot +
     theme(
       legend.position = "bottom",
@@ -316,37 +305,15 @@ GenusAbundance_tableXplot(norm_kraken_phyloseq)
 #---------------------------------------
 SampleGrouping <- function(Ungrouped_phyloseq, 
                            GroupingType) {
-  
-  sample_df <- as(sample_data(Ungrouped_phyloseq), "data.frame")
-  
-  if (GroupingType %in% c("AllCtrl", "NegCtrl", "ExpCtrl")) {
-    sample_df <- sample_df |>
-      mutate(SampleType = ifelse(SampleType %in% c("NormalTissue", "Tumor"),
-                                 "PatientSample",
-                                 as.character(SampleType)))
-
-    if (GroupingType == "AllCtrl") {
-      sample_df <- sample_df |>
-        mutate(SampleType = ifelse(SampleType %in% c("NegCtrl", "ExpCtrl"),
-                                   "AllCtrl",
-                                   as.character(SampleType)))
-    }
-
-    GroupingLevels <- c(GroupingType, "PatientSample")
-
-  } else if (GroupingType == "PtSmpl") {
-    GroupingLevels <- c("NormalTissue", "Tumor")
+  if (GroupingType == "AllControl") {
+    Grouped_phyloseq <- Ungrouped_phyloseq
+  } else if (GroupingType == "NegativeControl") {
+    Grouped_phyloseq <- subset_samples(Ungrouped_phyloseq, SampleType %in% c("NegativeControl", "Tumor", "NormalTissue"))
+  } else if (GroupingType == "CellControl") {
+    Grouped_phyloseq <- subset_samples(Ungrouped_phyloseq, SampleType %in% c("CellControl", "Tumor", "NormalTissue"))
+  } else if (GroupingType == "PatientSample") {
+    Grouped_phyloseq <- subset_samples(Ungrouped_phyloseq, SampleType %in% c("Tumor", "NormalTissue"))
   }
-  #ensure SampleType is correctly factored
-  sample_df$SampleType <- factor(sample_df$SampleType)
-
-  #prune samples not included in current comparison
-  sample_df <- sample_df[sample_df$SampleType %in% GroupingLevels, ]
-  select_samples <- rownames(sample_df)
-  Grouped_phyloseq <- prune_samples(select_samples, Ungrouped_phyloseq)
-  
-  #update phyloseq object with refactored sample meta data
-  sample_data(Grouped_phyloseq) <- sample_data(sample_df)
 
   #Remove any taxa that now have total zero count after subsetting
   Grouped_phyloseq <- prune_taxa(taxa_sums(Grouped_phyloseq) > 0, Grouped_phyloseq)
@@ -367,18 +334,21 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
 
   #STEP 1: Set formula for ANCOM-BC run, desired columns from ANCOM-BC output, and fomatted output file label
   #         based on comparison
-  if (GroupingType %in% c("ExpCtrl", "NegCtrl", "AllCtrl")) {
-    formula <- "SampleType"
-    lfc_adjp_groups <- c("taxon", "SampleTypePatientSample")
+  # TODO: simplify handling of control comparisons versus patient sample comparison (single grouping variable)
+  if (GroupingType %in% c("CellControl", "NegativeControl", "AllControl")) {
+    formula <- "ControlStatus"
+    grouping_variable <- "ControlStatus"
+    lfc_adjp_groups <- c("taxon", "ControlStatusPatientSample")
     default_struc0_groups <- c("taxon", 
-                               paste0("structural_zero (SampleType = ", GroupingType, ")"), 
-                               "structural_zero (SampleType = PatientSample)")
+                               "structural_zero (ControlStatus = Control)", 
+                               "structural_zero (ControlStatus = PatientSample)")
     struc0_group1_label <- GroupingType
     struc0_group2_label <- "PatientSample"
     comp_file_label <- paste0(GroupingType, "toPS")
     
-  } else if (GroupingType == "PtSmpl") {
+  } else if (GroupingType == "PatientSample") {
     formula <- "SampleType + PatientID"
+    grouping_variable <- "SampleType"
     lfc_adjp_groups <- c("taxon", "SampleTypeTumor")
     default_struc0_groups <- c("taxon", 
                                "structural_zero (SampleType = NormalTissue)", 
@@ -393,7 +363,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
                             tax_level = tax_agg_level,
                             formula = formula,
                             p_adj_method = "holm",
-                            group = "SampleType",
+                            group = grouping_variable,
                             struc_zero = TRUE,
                             alpha = alpha)
 
@@ -444,11 +414,10 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
   if (is.null(tax_agg_level)) {
     ancombc_results_df$ASVid <- ancombc_results_df$taxon
 
-    tax_df <- as(tax_table(Grouped_phyloseq), "data.frame")
-    if (!taxa_are_rows(Grouped_phyloseq)) {
-      tax_df <- t(tax_df)
-    }
-    tax_df$ASVid <- rownames(tax_df)
+    tax_df <- as(tax_table(Grouped_phyloseq), "matrix")
+    tax_df <- as.data.frame(tax_df, stringsAsFactors = FALSE)
+    tax_df <- tax_df |> rownames_to_column(var = "ASVid")
+    str(tax_df)
 
     ancombc_results_df <- left_join(ancombc_results_df, tax_df, by = "ASVid")
 
@@ -461,9 +430,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
     ancombc_results_df$Label <- ancombc_results_df$taxon
   }
 
-  # STEP 6: Export significant results
-  sig_ancombc_results_df <- subset(ancombc_results_df,
-                                   Significance == "Sig")
+  # STEP 6: Export results
 
   # TODO: shift this responsibility to snakemake
   if (!dir.exists(paste0(args$out, "/ANCOMBC/", comp_file_label))) {
@@ -472,7 +439,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
   }
   
   write.table(
-    sig_ancombc_results_df,
+    ancombc_results_df,
     file = paste0(args$out, "/ANCOMBC/", comp_file_label, "/", 
                   args$trialID, "_", comp_file_label, "_ANCOMBCResults.tsv"),
     sep = "\t",
@@ -497,19 +464,17 @@ DA_volcano_plotting <- function(DA_results_df,
   #Subset to significant ASVs
   sig_DA_results_df <- subset(DA_results_df,
                               Significance == "Sig" & !is.na(padj))
-  if (nrow(sig_DA_results_df) > 0) {
-    pos_sig_DA_results_df <- subset(sig_DA_results_df,
-                                    log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
-    neg_sig_DA_results_df <- subset(sig_DA_results_df,
-                                    log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
-  }
+  pos_sig_DA_results_df <- subset(sig_DA_results_df,
+                                  log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
+  neg_sig_DA_results_df <- subset(sig_DA_results_df,
+                                  log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
 
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("ExpCtrl", "NegCtrl", "AllCtrl")) {
+  if (GroupingType %in% c("CellControl", "NegativeControl", "AllControl")) {
     comp_file_label <- paste0(GroupingType, "toPS")
     plot_title_label <- paste(GroupingType, "vs Patient Samples")
-  } else if (GroupingType == "PtSmpl"){
+  } else if (GroupingType == "PatientSample"){
     comp_file_label <- "NTtoT"
     plot_title_label <- paste("Normal Tissue vs Tumor")
   }
@@ -596,181 +561,242 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
                                 DA_results_df,
                                 GroupingType,
                                 tax_agg_level,
+                                tax_label_level,
                                 alpha,
                                 lfc_cutoff,
                                 pseudocount = 1) {
-
-
+  
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("ExpCtrl", "NegCtrl", "AllCtrl")) {
-    sample_type_order <- c(GroupingType, "PatientSample")
+  if (GroupingType %in% c("CellControl", "NegativeControl", "AllControl")) {
     comp_file_label <- paste0(GroupingType, "toPS")
     plot_title_label <- paste(GroupingType, "vs Patient Samples")
-    group_var = "CtrlStatus"
-  } else if (GroupingType == "PtSmpl") {
-    sample_type_order <- c("NormalTissue", "Tumor")
+  } else if (GroupingType == "PatientSample"){
     comp_file_label <- "NTtoT"
-    plot_title_label <- "Normal Tissue vs Tumor"
-    group_var = "SampleType"
+    plot_title_label <- paste("Normal Tissue vs Tumor")
   }
-  plot_title_label <- paste0(plot_title_label,
-                             " (alpha = ", alpha,
-                             ", |LFC| > ", lfc_cutoff, ")")
 
-  #Subset to significant ASVs
-  sig_DA_results_df <- DA_results_df[DA_results_df$Significance == "Sig", , drop = FALSE]
-  if (nrow(sig_DA_results_df) == 0) {
-    stop("No siginifcant differnetially abundant taxa found, skipping heatmap plotting.")
-  }
-  sig_DA_taxa <- unique(as.character(sig_DA_results_df$taxon))
-  
-  # STEP ??: Get OTU table glommed at the specificed taxa aggregation level
-  if (!(is.null(tax_agg_level))) {
+  sig_DA_results_df <- subset(DA_results_df, Significance == "Sig")                              
+  sig_taxa <- sig_DA_results_df[, "taxon"]
+  if (!is.null(tax_agg_level)) {
     Glommed_phyloseq <- tax_glom(Grouped_phyloseq,
                                  taxrank = tax_agg_level, 
                                  NArm = FALSE)
-
   } else {
     Glommed_phyloseq <- Grouped_phyloseq
   }
-  OTU_mat <- t(as(otu_table(Glommed_phyloseq), "matrix"))
-  genus_names <- as.character(tax_table(Glommed_phyloseq)[, "Genus"])
-  rownames(OTU_mat) <- make.unique(genus_names)
+  Pruned_phyloseq <- prune_taxa(sig_taxa, Glommed_phyloseq)
 
-  # STEP ??: Subset OTU table to significant 
-  OTU_mat <- OTU_mat[sig_DA_taxa, , drop = FALSE]
+  row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange)]
+
+  column_order <- rownames(sample_data(Pruned_phyloseq))[order(sample_data(Pruned_phyloseq)$SampleType,
+                                                               sample_data(Pruned_phyloseq)$PatientID)]
+
+  p_heatmap <- plot_heatmap(Pruned_phyloseq,
+                            method = NULL,
+                            sample.order = column_order,
+                            sample.label = "SampleID",
+                            taxa.order = row_order,
+                            taxa.label = tax_label_level,
+                            low="#000033", high="#FF3300", na.value = "black")
   
-  # STEP ??: Normalize pseudocount values to column sums with log transfrom
-  libsizes <- sample_sums(Glommed_phyloseq)
-  relative_OTU_mat <- sweep(OTU_mat, 2, libsizes, FUN = "/")
-  log_relative_OTU_mat <- log2(relative_OTU_mat * 1e6 + pseudocount)
+  # Adding vertical lines to heatmap to separate sample types
+  type_ordered <- sample_data(Pruned_phyloseq)[column_order, "SampleType"]
+  type_block_sizes <- table(type_ordered)
+  type_block_cuts <- cumsum(type_block_sizes)
+
+  p_heatmap <- p_heatmap + geom_vline(xintercept = type_block_cuts+0.5, linewidth = 1, color = "white")
+
+  # Adding horizontal lines to heatmap to separate taxa by direction of differential abundance
+  lfc_ordered <- sig_DA_results_df[match(row_order, sig_DA_results_df$taxon), "log2FoldChange"]
+  neg_lfc_block_size <- sum(lfc_ordered < 0)
+
+  print("Row length check:")
+  print(paste("Number of rows in heatmap:", length(row_order)))
 
 
-  # STEP ??: Get sample metadata 
-  META_df <- as(sample_data(Glommed_phyloseq), "data.frame")
-  META_df$SampleID <- rownames(META_df)
-  META_df$SampleType <- factor(META_df$SampleType, levels = sample_type_order)
-  META_df$PatientID <- factor(META_df$PatientID)
+  # Needs to be annotation segment instead of geom_hline to work with ComplexHeatmap output
+  p_heatmap <- p_heatmap + geom_hline(yintercept = neg_lfc_block_size + 0.5, linewidth = 1, color = "white", linetype = "dashed")
 
-
-  # STEP ??: Order Samples by SampleType followed by PatientID
-  META_df <- META_df[order(META_df$SampleType,
-                           META_df$PatientID), , drop = FALSE]
-
-  heatmap_column_order <- META_df$SampleID
-  log_relative_OTU_mat <- log_relative_OTU_mat[, heatmap_column_order, drop = FALSE]
-
-  
-  # STEP ??: Get row labels
-  da_label <- if_else(
-    sig_DA_results_df$log2FoldChange >= 0,
-    paste0("DA Up (LFC = ", sprintf("%.2f", sig_DA_results_df$log2FoldChange), ")"),
-    paste0("DA Down (LFC = ", sprintf("%.2f", sig_DA_results_df$log2FoldChange), ")")
-  )
-
-
-  struc0_label <- case_when(
-    is.na(sig_DA_results_df$struc0) ~ "",
-    sig_DA_results_df$struc0 == sample_type_order[1] ~ paste0("Structural Zero: ", sample_type_order[1]),
-    TRUE ~ paste0("Structural Zero: ", sample_type_order[2])
-  )
-
-
-  row_label <- ifelse(struc0_label != "", struc0_label, da_label)
-
-
-  row_class_levels <- c(
-    paste0("Struc0 ", sample_type_order[1]),
-    paste0("Struc0 ", sample_type_order[2]),
-    paste0("DA ", sample_type_order[1]),
-    paste0("DA ", sample_type_order[2])
-  )
-  row_class <- ifelse(struc0_label != "",
-                      ifelse(sig_DA_results_df$struc0 == sample_type_order[1], 
-                             row_class_levels[1], 
-                             row_class_levels[2]),
-                      ifelse(sig_DA_results_df$log2FoldChange < 0, 
-                             row_class_levels[3], 
-                             row_class_levels[4]))
-
-  # STEP ??: Ordering rows by DA
-  row_order <- order(row_class, -abs(sig_DA_results_df$log2FoldChange), rownames(log_relative_OTU_mat))
-  log_relative_OTU_mat <- log_relative_OTU_mat[row_order, , drop = FALSE]
-  sig_DA_results_df <- sig_DA_results_df[row_order, , drop = FALSE]
-  row_label <- row_label[row_order]
-  row_class <- row_class[row_order]
-
-  
-  # STEP ??: Setting Colors
-  # TODO: adjust to be able to handle more than two sample types
-  sample_type_colors <- setNames(c("orchid", 
-                                   "darkorange"), 
-                                 sample_type_order)
-  row_class_colors <- setNames(c("steelblue4",
-                                 "firebrick4",
-                                 "steelblue", 
-                                 "firebrick"),
-                               row_class_levels)
-
-  # STEP ??: Heatmap Cell Coloring
-  quantile_stat <- quantile(log_relative_OTU_mat,
-                            probs = c(0.05, 0.5, 0.95),
-                            na.rm = TRUE,
-                            names = FALSE)
-  if (diff(range(quantile_stat)) == 0) {
-    quantile_stat <- c(min(log_relative_OTU_mat, na.rm = TRUE) - 1, 0, max(log_relative_OTU_mat) + 1)
-  }
-
-  color_function <- colorRamp2(quantile_stat,
-                               c("steelblue", "white", "firebrick"))
-
-
-  top_heatmap_anno <- ComplexHeatmap::HeatmapAnnotation(
-    SampleType = META_df$SampleType,
-    col = list(SampleType = sample_type_colors),
-    annotation_name_gp = grid::gpar(fontsize = 9)
-  )
-
-  left_heatmap_anno <- ComplexHeatmap::HeatmapAnnotation(
-    Class = row_class,
-    Status = row_label,
-    col = list(Class = row_class_colors),
-    annotation_name_gp = grid::gpar(fontsize = 9),
-    which = "row"
-  )
-
-  htmap <- ComplexHeatmap::Heatmap(
-    log_relative_OTU_mat,
-    name = "log2 Reads per Million",
-    col = color_function,
-    na_col = "grey90",
-    top_annotation = top_heatmap_anno,
-    left_annotation = left_heatmap_anno,
-    column_split = META_df$SampleType,
-    column_order = heatmap_column_order,
-    cluster_columns = FALSE,
-    cluster_column_slices = FALSE,
-    show_column_names = TRUE,
-    column_names_rot = 90,
-    row_names_side = "left",
-    column_title = plot_title_label,
-    use_raster = TRUE
-  )
-
-  png(
-    file = paste0(args$out, "/ANCOMBC/", comp_file_label, "/", 
+  ggsave(
+    filename = paste0(args$out, "/ANCOMBC/", comp_file_label, "/", 
                   args$trialID, "_", comp_file_label, "_", "ANCOMBCHeatmap.png"),
-    width = 10,
-    height = 8,
+    plot = p_heatmap,
+    width = 14,
+    height = 12,
     units = "in",
-    res = 300
+    dpi = 300
   )
+  # #Create plot title and file labels depending on comparison
+  # if (GroupingType %in% c("CellControl", "NegativeControl", "AllControl")) {
+  #   sample_type_order <- c(GroupingType, "PatientSample")
+  #   comp_file_label <- paste0(GroupingType, "toPS")
+  #   plot_title_label <- paste(GroupingType, "vs Patient Samples")
+  #   group_var = "IsControl"
+  # } else if (GroupingType == "PatientSample") {
+  #   sample_type_order <- c("NormalTissue", "Tumor")
+  #   comp_file_label <- "NTtoT"
+  #   plot_title_label <- "Normal Tissue vs Tumor"
+  #   group_var = "SampleType"
+  # }
+  # plot_title_label <- paste0(plot_title_label,
+  #                            " (alpha = ", alpha,
+  #                            ", |LFC| > ", lfc_cutoff, ")")
 
-  ComplexHeatmap::draw(htmap,
-                       heatmap_legend_side = "right",
-                       annotation_legend_side = "right")
+  # #Subset to significant ASVs
+  # sig_DA_results_df <- DA_results_df[DA_results_df$Significance == "Sig", , drop = FALSE]
+  # if (nrow(sig_DA_results_df) == 0) {
+  #   message("Grouping Type: ", GroupingType, " - No siginifcant differnetially abundant taxa found, skipping heatmap plotting.")
+  #   return(invisible())
+  # }
+  # sig_DA_taxa <- sig_DA_results_df$Label #using Label column as taxon identifier for subsetting OTU table to ensure proper labeling in heatmap
   
-  dev.off()
+  # # STEP ??: Get OTU table glommed at the specificed taxa aggregation level
+  # if (!(is.null(tax_agg_level))) {
+  #   Glommed_phyloseq <- tax_glom(Grouped_phyloseq,
+  #                                taxrank = tax_agg_level, 
+  #                                NArm = FALSE)
+
+  # } else {
+  #   Glommed_phyloseq <- Grouped_phyloseq
+  # }
+  # OTU_mat <- as.data.frame(t(as(otu_table(Glommed_phyloseq), "matrix")))
+  # #rownames(OTU_mat) <- DA_results_df$Label[match(rownames(OTU_mat), DA_results_df$Label)] # setting row names of OTU matrix to taxon labels for subsetting and heatmap labeling
+  # str(OTU_mat)
+  # print(head(rownames(OTU_mat)))
+  # # STEP ??: Subset OTU table to significant 
+  # OTU_mat <- OTU_mat[sig_DA_taxa, , drop = FALSE]
+  
+  # # STEP ??: Normalize pseudocount values to column sums with log transfrom
+  # libsizes <- sample_sums(Glommed_phyloseq)
+  # relative_OTU_mat <- sweep(OTU_mat, 2, libsizes, FUN = "/")
+  # log_relative_OTU_mat <- log2(relative_OTU_mat * 1e6 + pseudocount)
+
+
+  # # STEP ??: Get sample metadata 
+  # META_df <- as(sample_data(Glommed_phyloseq), "data.frame")
+  # META_df$SampleID <- rownames(META_df)
+  # META_df$SampleType <- factor(META_df$SampleType, levels = sample_type_order)
+  # META_df$PatientID <- factor(META_df$PatientID)
+
+
+  # # STEP ??: Order Samples by SampleType followed by PatientID
+  # META_df <- META_df[order(META_df$SampleType,
+  #                          META_df$PatientID), , drop = FALSE]
+
+  # heatmap_column_order <- META_df$SampleID
+  # log_relative_OTU_mat <- log_relative_OTU_mat[, heatmap_column_order, drop = FALSE]
+
+  
+  # # STEP ??: Get row labels
+  # da_label <- if_else(
+  #   sig_DA_results_df$log2FoldChange >= 0,
+  #   paste0("DA Up (LFC = ", sprintf("%.2f", sig_DA_results_df$log2FoldChange), ")"),
+  #   paste0("DA Down (LFC = ", sprintf("%.2f", sig_DA_results_df$log2FoldChange), ")")
+  # )
+
+
+  # struc0_label <- case_when(
+  #   is.na(sig_DA_results_df$struc0) ~ "",
+  #   sig_DA_results_df$struc0 == sample_type_order[1] ~ paste0("Structural Zero: ", sample_type_order[1]),
+  #   TRUE ~ paste0("Structural Zero: ", sample_type_order[2])
+  # )
+
+
+  # row_label <- ifelse(struc0_label != "", struc0_label, da_label)
+
+
+  # row_class_levels <- c(
+  #   paste0("Struc0 ", sample_type_order[1]),
+  #   paste0("Struc0 ", sample_type_order[2]),
+  #   paste0("DA ", sample_type_order[1]),
+  #   paste0("DA ", sample_type_order[2])
+  # )
+  # row_class <- ifelse(struc0_label != "",
+  #                     ifelse(sig_DA_results_df$struc0 == sample_type_order[1], 
+  #                            row_class_levels[1], 
+  #                            row_class_levels[2]),
+  #                     ifelse(sig_DA_results_df$log2FoldChange < 0, 
+  #                            row_class_levels[3], 
+  #                            row_class_levels[4]))
+
+  # # STEP ??: Ordering rows by DA
+  # row_order <- order(row_class, -abs(sig_DA_results_df$log2FoldChange), sig_DA_results_df$Label)
+  # log_relative_OTU_mat <- log_relative_OTU_mat[row_order, , drop = FALSE]
+  # sig_DA_results_df <- sig_DA_results_df[row_order, , drop = FALSE]
+  # row_label <- row_label[row_order]
+  # row_class <- row_class[row_order]
+
+  
+  # # STEP ??: Setting Colors
+  # # TODO: adjust to be able to handle more than two sample types
+  # sample_type_colors <- setNames(c("orchid", 
+  #                                  "darkorange"), 
+  #                                sample_type_order)
+  # row_class_colors <- setNames(c("steelblue4",
+  #                                "firebrick4",
+  #                                "steelblue", 
+  #                                "firebrick"),
+  #                              row_class_levels)
+
+  # # STEP ??: Heatmap Cell Coloring
+  # quantile_stat <- quantile(log_relative_OTU_mat,
+  #                           probs = c(0.05, 0.5, 0.95),
+  #                           na.rm = TRUE,
+  #                           names = FALSE)
+  # if (diff(range(quantile_stat)) == 0) {
+  #   quantile_stat <- c(min(log_relative_OTU_mat, na.rm = TRUE) - 1, 0, max(log_relative_OTU_mat) + 1)
+  # }
+
+  # color_function <- colorRamp2(quantile_stat,
+  #                              c("steelblue", "white", "firebrick"))
+
+
+  # top_heatmap_anno <- ComplexHeatmap::HeatmapAnnotation(
+  #   SampleType = META_df$SampleType,
+  #   col = list(SampleType = sample_type_colors),
+  #   annotation_name_gp = grid::gpar(fontsize = 9)
+  # )
+
+  # left_heatmap_anno <- ComplexHeatmap::HeatmapAnnotation(
+  #   Class = row_class,
+  #   Status = row_label,
+  #   col = list(Class = row_class_colors),
+  #   annotation_name_gp = grid::gpar(fontsize = 9),
+  #   which = "row"
+  # )
+
+  # htmap <- ComplexHeatmap::Heatmap(
+  #   log_relative_OTU_mat,
+  #   name = "log2 Reads per Million",
+  #   col = color_function,
+  #   na_col = "grey90",
+  #   top_annotation = top_heatmap_anno,
+  #   left_annotation = left_heatmap_anno,
+  #   column_split = META_df$SampleType,
+  #   column_order = heatmap_column_order,
+  #   cluster_columns = FALSE,
+  #   cluster_column_slices = FALSE,
+  #   show_column_names = TRUE,
+  #   column_names_rot = 90,
+  #   row_names_side = "left",
+  #   column_title = plot_title_label,
+  #   use_raster = TRUE
+  # )
+
+  # png(
+  #   file = paste0(args$out, "/ANCOMBC/", comp_file_label, "/", 
+  #                 args$trialID, "_", comp_file_label, "_", "ANCOMBCHeatmap.png"),
+  #   width = 10,
+  #   height = 8,
+  #   units = "in",
+  #   res = 300
+  # )
+
+  # ComplexHeatmap::draw(htmap,
+  #                      heatmap_legend_side = "right",
+  #                      annotation_legend_side = "right")
+  
+  # dev.off()
 }
 
 
@@ -793,12 +819,6 @@ DAxPlottingWrapper <- function(Raw_phyloseq,
                               tax_label_level = tax_label_level,
                               alpha = alpha,
                               lfc_cutoff = lfc_cutoff)
-    
-  DA_heatmap_plotting(Grouped_phyloseq = Grouped_phyloseq,
-                      DA_results_df = DA_results_df,
-                      GroupingType = GroupingType,
-                      tax_agg_level = tax_agg_level,
-                      alpha = alpha, lfc_cutoff = lfc_cutoff)
 
   DA_volcano_plotting(DA_results_df = DA_results_df,
                       GroupingType = GroupingType,
@@ -806,6 +826,12 @@ DAxPlottingWrapper <- function(Raw_phyloseq,
                       lfc_cutoff = lfc_cutoff,
                       DA_method = "ANCOMBC")
   
+  DA_heatmap_plotting(Grouped_phyloseq = Grouped_phyloseq,
+                    DA_results_df = DA_results_df,
+                    GroupingType = GroupingType,
+                    tax_agg_level = tax_agg_level,
+                    tax_label_level = tax_label_level,
+                    alpha = alpha, lfc_cutoff = lfc_cutoff)
 
 }
 
@@ -813,330 +839,23 @@ DAxPlottingWrapper <- function(Raw_phyloseq,
 #----------------------------------
 # Differential Abundance Execution
 #----------------------------------
-all_DA_analysis <- function(DA_method, tax_agg_level = NULL, tax_label_level = "Genus") {
-  CtrlTypes <- c(
-    "AllCtrl",
-    "ExpCtrl",
-    "NegCtrl"
-  )
-
-  for (CtrlType in CtrlTypes) {
+all_DA_analysis <- function(DA_method,
+                            Comparisons,
+                            tax_agg_level = NULL, tax_label_level = "Genus") {
+  for (Comparison in Comparisons) {
     DAxPlottingWrapper(Raw_phyloseq = raw_kraken_phyloseq,
                        tax_agg_level = tax_agg_level,
                        tax_label_level = tax_label_level,
-                       GroupingType = CtrlType)
+                       GroupingType = Comparison)
   }
-
-  DAxPlottingWrapper(Raw_phyloseq = raw_kraken_phyloseq,
-                     tax_agg_level = tax_agg_level,
-                     tax_label_level = tax_label_level,
-                     GroupingType = "PtSmpl")
 }
 
 all_DA_analysis(DA_method = "ANCOMBC",
-                tax_agg_level = "Genus")
+                Comparisons = c("NegativeControl", "PatientSample"),
+                tax_agg_level = NULL)
 #-------------------------------
 # R Session Cataloging
 #-------------------------------
 # allows for more accessible downstream exploratory data analysis
 save.image(file = paste0(args$out, "/", args$trialID, "_PhyloSeqSession.RData"))
 
-
-
-#------------------------------
-# Beta Diversity Plots
-#------------------------------
-# distance_methods <- unlist(distanceMethodList)
-# # Remove distance metrics that require trees as a part of the phyloseq object
-# distance_methods <- distance_methods[-(1:3)]
-
-# # Remove user-defined method (we havent defined it)
-# distance_methods <- distance_methods[-which(distance_methods=='ANY')]
-
-# head(distance_methods)
-# #construct plot list for distance panel
-# plist <- vector("list", length(distance_methods))
-# names(plist) = distance_methods
- # for( i in distance_methods ){
- #   dist_matrix <- distance(kraken_phyloseq, method = i)
- #   ordination_matrix <- ordinate(kraken_phyloseq, "MDS", distance = dist_matrix)
- #  
- #   #PLOTTING
- #   # clear previous plot
- #   p <- NULL
- #  
- #   p <- plot_ordination(kraken_phyloseq, ordination_matrix, color="SampleType")
- #   p <- p + ggtitle(paste("MDS using ditance method ", i, sep=""))
- #   plist[[i]] = p
- # }
-# p_df = ldply(plist, function(x) x$data)
-# names(p_df)[1] <- "distance"
-# p = ggplot(p_df, aes(Axis.1, Axis.2, color=SampleType))
-# p = p + geom_point(size=3, alpha=0.5)
-# p = p + facet_wrap(~distance, scales = "free")
-# p = p + ggtitle("MDS on various distance metrics for Kraken Classification")
-# p
-
-# ggsave(paste0(args$out, '/', args$trialID, "_kraken_beta.png"), width = 8, height = 6, units = "in")
-
-
-
-# #------------------------------------
-# # Mothur Taxonomy Table Construction
-# #------------------------------------
-# #read in taxonomy file
-# mothur_file <- args$mothur_file
-# mothur_tax_lines <- readLines(mothur_file) # split records by line
-# mothur_tax_lines <- mothur_tax_lines[nzchar(mothur_tax_lines)] # removes empty lines
-# 
-# 
-# # convert to simple data frame
-# mothur_tax_df <- do.call(rbind, strsplit(unlist(mothur_tax_lines), "\t")) # splits ASV ID and taxonomy record
-# colnames(mothur_tax_df) <- c("ASVid", "taxonomy_record")
-# mothur_tax_df <- as.data.frame(mothur_tax_df, stringsAsFactors = FALSE)
-# str(mothur_tax_df)
-# 
-# # split taxonomical levels
-# mothur_split_tax_df <- strsplit(sub(";+$", "", mothur_tax_df$taxonomy_record), ";") # removes trailing and ";" and splits record field per level at ";"
-# 
-# maxranks <- 9 #hardset maximum number of rank assignment (down to sub-strain)
-# 
-# # function for removing confidence score from level entry
-# clean_confidence_score <- function(x) sub("\\(.*\\)$", "", x) 
-# 
-# 
-# # construct taxonomy matrix via matrix transposition of split taxonomy records
-# mothur_tax_matrix <- t(vapply(mothur_split_tax_df, function(tax_entry) {
-#   tax_entry <- sapply(tax_entry, clean_confidence_score)
-#   # pad unassigned lower levels with NA
-#   if (length(tax_entry) < maxranks) {
-#     tax_entry <- c(tax_entry, rep(NA, maxranks - length(tax_entry)))
-#   }
-#   tax_entry
-# }, FUN.VALUE = character(maxranks)))
-# 
-# rownames(mothur_tax_matrix) <- mothur_tax_df$ASVid
-# colnames(mothur_tax_matrix) <- c("Domain","Phylum","Class","Order","Family","Genus","Species","Strain","Substrain")
-# mothur_tax_matrix <- as.matrix(mothur_tax_matrix) #convert to matrix for ease of use with phyloseq
-# 
-# 
-# str(mothur_tax_matrix)
-
-# #----------------------------------------------
-# # DESeq2 Differential Abundance Analysis
-# #----------------------------------------------
-# DESeq_PStoCtrl_DA <- function(Raw_phyloseq, CtrlType, alpha, lfc_cutoff) {
-  
-#   # STEP 1: Group by Control Status and convert phyloseq object to DESeqDataSet
-#   Grouped_phyloseq <- CtrlGrouping(Ungrouped_phyloseq = Raw_phyloseq, 
-#                                    CtrlType = CtrlType)
-#   PStoCtrl_DDS <- phyloseq_to_deseq2(Grouped_phyloseq, ~ CtrlStatus)
-  
-#   # STEP 2: Prepare normMatrix with host read normalization factors
-#   sample_order <- sample_names(Grouped_phyloseq)
-  
-#   chimera_filtered_vec <- as.numeric(read_counts_df[sample_order, "chimera.filtered"])
-#   host_unmapped_vec <- as.numeric(read_counts_df[sample_order, "HostUnmapped_reads"])
-#   host_reads_per_sample <- chimera_filtered_vec - host_unmapped_vec
-  
-#   names(host_reads_per_sample) <- sample_order
-#   host_reads_per_sample[host_reads_per_sample <= 0] <- 1 # replacing any zeros with small number to avoid zero divisor problem
-  
-#   n_features <- ntaxa(Grouped_phyloseq) # number of taxa (ASVids) will dictate dimensions of normMatrix
-#   normMatrix <- matrix(rep(host_reads_per_sample, each = n_features),
-#                        nrow= n_features, ncol = length(host_reads_per_sample),
-#                        dimnames = list(taxa_names(Grouped_phyloseq),
-#                                        names(host_reads_per_sample)))
-#   row_geom_mean <- apply(normMatrix, 1, function(row) exp(mean(log(row))))
-#   normMatrix <- normMatrix / row_geom_mean
-  
-#   #check that normMatrix rows match DDS counts table
-#   dds_colnames <- colnames(counts(PStoCtrl_DDS))
-#   if (!identical(colnames(normMatrix), dds_colnames)) {
-#     normMatrix <- normMatrix[, dds_colnames, drop=FALSE]
-#   }
-#   # Final explicit matrix formatting (all should be redundant with previous steps)
-#   normMatrix <- apply(normMatrix, 2, as.numeric)
-#   rownames(normMatrix) <- taxa_names(Grouped_phyloseq)
-#   colnames(normMatrix) <- dds_colnames
-  
-#   # STEP 3: estimate size factors 
-#   # using Positive Counts Method (addresses sparse data set issues, avoiding log 0 errors) 
-#   # and Host Reac Count Normalization Matrix
-#   PStoCtrl_DDS <- estimateSizeFactors(PStoCtrl_DDS, type="poscounts", normMatrix = normMatrix)
-  
-#   # STEP 4: Run DA Analysis
-#   PStoCtrl_DDS <- DESeq(PStoCtrl_DDS, test="Wald", fitType="parametric")
-#   DA_results_df <- as.data.frame(results(PStoCtrl_DDS, cooksCutoff = FALSE), stringAsFactor = FALSE)
-#   DA_results_df$ASVid <- rownames(DA_results_df)
-  
-#   # STEP 5: Attach Taxa Classifications
-#   tax_df <- as.data.frame(tax_table(Grouped_phyloseq))
-#   tax_df$ASVid <- rownames(tax_df)
-  
-#   # combine to final table
-#   DA_results_df <- left_join(DA_results_df, tax_df, by="ASVid")
-  
-#   # STEP 6: Add additional label fields 
-#   # Taxa label with ASVid (with just ASVid fallback when no classification available)
-#   DA_results_df$Label <- ifelse(is.na(DA_results_df$Genus) | DA_results_df$Genus == "",
-#                                 DA_results_df$ASVid,
-#                                 paste0(DA_results_df$Genus, '(', DA_results_df$ASVid, ')'))
-  
-#   # Significance label by alpha and lfc cutoff
-#   DA_results_df$Significance <- "NotSig"
-#   DA_results_df$Significance[
-#     DA_results_df$padj < alpha &
-#     abs(DA_results_df$log2FoldChange) > lfc_cutoff
-#   ] <- "Sig"
-  
-#   rownames(DA_results_df) <- DA_results_df$ASVid
-  
-#   # STEP 7: Export Significant Results
-#   sig_idx <- which(DA_results_df$Significance == "Sig")
-#   if (length(sig_idx) == 0) {
-#     sig_DA_results_df <- DA_results_df[0, , drop = FALSE] #empty data.frame with the same columns as DA results
-#   } else {
-#     sig_DA_results_df <- DA_results_df[sig_idx, , drop = FALSE]
-#   }
-  
-#   # Create directory for specific comparison
-#   # TODO: shift this responsibility to snakemake
-#   if (!dir.exists(paste0(args$out, '/DESeq/', "PSto", CtrlType))) {
-#     dir.create(paste0(args$out, '/DESeq/', "PSto", CtrlType),
-#                recursive = TRUE)
-#   }
-  
-#   write.table(
-#     sig_DA_results_df,
-#     file = paste0(args$out, '/DESeq/', "PSto", CtrlType,'/', 
-#                   args$trialID, "_PSto", CtrlType,"_DESeqResults.tsv"),
-#     sep = "\t",
-#     quote = FALSE,
-#     row.names = TRUE,
-#     col.names = NA 
-#   )
-  
-#   # STEP 8: Export DESeq Normalized Counts with per-sample sums
-#   DESeq_norm_counts <- counts(PStoCtrl_DDS, normalized = TRUE)
-#   sample_totals_vec <- colSums(DESeq_norm_counts)
-#   sample_totals_df <- as.data.frame(sample_totals_vec)
-#   write.table(sample_totals_df,
-#               file = paste0(args$out, '/DESeq/', "PSto", CtrlType,'/', 
-#                             args$trialID, "_PSto", CtrlType,"_DESeqNormCountTotals.tsv"),
-#               sep = "\t",
-#               quote = FALSE,
-#               col.names = NA 
-#   )
-  
-#   #STEP 9: Return all DESeq differential abundance results
-#   return(DA_results_df)
-# }
-
-
-# #--------------------------------------------
-# # Violin Plotting
-# #--------------------------------------------
-# DA_violin_plotting <- function (Norm_phyloseq, DA_results_df, CtrlType, DA_method) {
-#   # DA_results_df: data.frame of DA results (rownames = ASV ids)
-#   # PStoCtrl_phyloseq: phyloseq object used for DA (contains same taxa)
-  
-#   # STEP 1: Subset DA-results to significant ASVs (extract significant ASVids)
-#   sig_DA_results_df <- subset(DA_results_df,
-#                               Significance == "Sig" & !is.na(padj))
-#   if (nrow(sig_DA_results_df) == 0) {
-#     message("No plotting rows (plot_df is empty) for CtrlType=", CtrlType, " — skipping violin output.")
-#     return(invisible(NULL))
-#   }
-#   sig_ASVids <- rownames(sig_DA_results_df)
-  
-#   # STEP 2: Group Normalized Phyloseq by Control Type
-#   norm_PStoCtrl_phyloseq <- SampleGrouping(Ungrouped_phyloseq = Norm_phyloseq,
-#                                            CtrlType = CtrlType)
-
-#   # STEP 3: Get Normalized Read Counts from Normalized Phyloseq (subset to significant ASVs)
-#   otu_df <- as.data.frame(otu_table(norm_PStoCtrl_phyloseq)) # have to first extract as data frame
-#   otu_mat <- as.matrix(otu_df) # otu_table() does not accept immediate matrix transformation
-  
-#   if (taxa_are_rows(norm_PStoCtrl_phyloseq)) {
-#     otu_mat <- t(otu_mat)  # ASV's are columns
-#   }
-
-#   common_ASVids <- intersect(sig_ASVids, as.character((colnames(otu_mat))))
-#   missing_ASVids <- setdiff(sig_ASVids, common_ASVids)
-#   if (length(missing_ASVids) > 0) {
-#     message("Warning: ", length(missing_ASVids),
-#             " significant ASVs not found in normalized OTU matrix and will be skipped. Examples: ",
-#             paste(head(missing_ASVids, 10), collapse = ", "))
-#   }
-  
-#   sig_otu_mat <- otu_mat[, sig_ASVids, drop = FALSE]   # samples x sig_taxa
-  
-#   # STEP 4: Extract Sample Metadata from Normalized Phyloseq Object
-#   sample_data_df <- as(sample_data(norm_PStoCtrl_phyloseq), "data.frame")
-#   sample_data_df$SampleID <- rownames(sample_data_df)
-  
-#   # STEP 5: Join Normalized Read Counts, Sample Metadata, and Taxa Classification Labels (from Significant DA Results)
-#   # pivot OTU to long form and join to sample data and significant DA results
-#   # Resulting Data Frame: one row per read count value, Sample Meta Data and Taxa Classification duplicated as appropriate
-#   plot_df <- as.data.frame(sig_otu_mat, stringsAsFactors = FALSE) %>%
-#     mutate(SampleID = rownames(.)) %>%
-#     pivot_longer(cols = -SampleID, names_to = "ASVid", values_to = "Count") %>%
-#     left_join(sample_data_df %>% select(SampleID, CtrlStatus, SampleType, Replicate), by = "SampleID") %>%
-#     left_join(sig_DA_results_df %>% select(ASVid, Genus, Label), by = "ASVid")
-  
-#   # STEP 6: Format dataframe for plotting
-#   # ensure CtrlStatus is factor
-#   plot_df$CtrlStatus <- factor(plot_df$CtrlStatus, levels = unique(plot_df$CtrlStatus))
-  
-#   # order ASVs by max mean count (faceting ends up in interpretable order)
-#   asv_order <- plot_df %>%
-#     group_by(ASVid) %>%
-#     summarize(meanCount = mean(Count, na.rm = TRUE)) %>% 
-#     arrange(desc(meanCount)) %>% 
-#     pull(ASVid)
-#   plot_df$ASVid <- factor(plot_df$ASVid, levels = asv_order)
-  
-#   # In case where there a many significant ASVids, view only top N:
-#   top_n <- 10
-#   if (length(asv_order) > top_n) {
-#     chosen <- asv_order[1:top_n]
-#     plot_df <- filter(plot_df, ASVid %in% chosen)
-#   }
-  
-#   # Normalization Lab
-#   norm_label_map <- c(
-#     noNorm = "Un-normalized",
-#     log2 = "Log2 Transformed",
-#     rawTSS = "per Raw Read",
-#     hostTSS = "per Host Read",
-#     rawTSSlog2 = "log2(per Raw Reads)",
-#     hostTSSlog2 = "log2(per Host Reads)",
-#     rawTSSpM = "per 10^6 Raw Reads",
-#     hostTSSpM = "per 10^6 Host Reads",
-#     rawTSSpMlog2 = "log2(per 10^6 Raw Read)",
-#     hostTSSpMlog2 = "log2(per 10^6 Host Reads)"              
-#   )
-#   norm_label <- norm_label_map[[args$norm_method]]
-  
-#   # Building plot
-#   p_violin <- ggplot(plot_df, aes(x = CtrlStatus, y = Count, fill = CtrlStatus)) +
-#     geom_violin(trim = FALSE, alpha = 0.6, width = 0.9) +
-#     stat_summary(fun = mean, geom = "point", color = "black", size = 2) +
-#     facet_wrap(~ Label, scales = "free_y", ncol = 2) +
-#     theme_bw() +
-#     theme(strip.text = element_text(size = 8),
-#           axis.text.x = element_text(angle = 0, vjust = 0.5),
-#           axis.title.x = element_blank()) +
-#     labs(title = paste0("Per-sample counts for significant ASVs (", length(sig_ASVids), " taxa)"),
-#          y = paste0("Count (", norm_label, ")")) +
-#     guides(fill = guide_legend(title = "Group"))
-  
-#   # save
-#   ggsave(
-#     filename = paste0(args$out, '/', DA_method, '/', "PSto", CtrlType, '/', 
-#                       args$trialID, "_PSto", CtrlType, "_", DA_method,"Violin.png"),
-#     plot = p_violin,
-#     width = 16, height = 10, units = "in", dpi = 300
-#   )
-# }

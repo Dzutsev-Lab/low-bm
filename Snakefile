@@ -7,14 +7,18 @@ configfile: "config.yaml"
 TRIAL_ID = config["trialID"]
 TRIAL_NAME = TRIAL_ID + "_" + config["trial_descript"]
 EXP_NAME = config["exp_name"]
-RAW = config["raw_dir"]
+
+IN_DIR = os.path.join(config["in_root"], f"{EXP_NAME}_Data")
 IP_DIR = os.path.join(config["ip_root"], EXP_NAME)
 OUT_DIR = os.path.join(config["out_root"], TRIAL_NAME)
+
 SCRIPTS = config["script_dir"]
+REF_DIR = "Ref_Data"
+METADATA = f"{IN_DIR}/{EXP_NAME}_metadata.xlsx"
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
-REF_DIR = "Ref_Data"
 
+RAW = f"{IN_DIR}/OUTPUT/Data/fastq"
 NORM_RAW_DIR = f"{IP_DIR}/00_RawNorm"
 UMI_SELECT_DIR = f"{IP_DIR}/01_UMISelection"
 UMI_DEDUP_DIR = f"{IP_DIR}/02_UMIDeduplication"
@@ -145,8 +149,7 @@ def pick_raw_fastq(wc, read):
 rule all:
     input:
         kraken_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
-        kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv",
-        combined_read_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
+        kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
 
 
 rule copy_config:
@@ -226,8 +229,8 @@ rule norm_fastq:
         r1_raw = lambda wc: pick_raw_fastq(wc, 1),
         r2_raw = lambda wc: pick_raw_fastq(wc, 2),
     output:
-        r1_norm = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
-        r2_norm = f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq"
+        r1_norm = temp(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq"),
+        r2_norm = temp(f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq")
     threads: 2
     log: f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
     conda: f"{CONDA_ENV_DIR}/bio-tools-env"
@@ -262,7 +265,7 @@ rule umi_selection:
         r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
         r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
     output:
-        sel_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
+        sel_umi_r1 = temp(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq"),
         count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
     params:
         r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
@@ -297,7 +300,7 @@ rule umi_dedup:
     input:
         selected_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
     output:
-        umi_dedup_reads = f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq",
+        umi_dedup_reads = temp(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq"),
     params:
         AmpUMI_regex = "^" + ("I" * UMI_LEN)
     threads: 8
@@ -331,7 +334,7 @@ rule dada_denoising:
         sample_names = f"{OUT_DIR}/sample.names",
         umi_dedup_reads = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
     output:
-        filtered_reads = expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES),
+        filtered_reads = temp(expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES)),
         seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
@@ -439,20 +442,19 @@ rule bacterial_alignment:
 #-------------------------------------
 # 07 micRoclean Decontamination
 #------------------------------------- 
-rule micRoclean_decontamination:
+rule micRoclean_decontamination_detection:
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        metadata_sheet = f"{RAW}/../../../{EXP_NAME}_metadata.xlsx",
-        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
+        metadata_sheet = METADATA
     output:
         decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
         decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names",
         filtering_report = f"{MICROCLEAN_DECONTAM_DIR}/DecontamFilterReport.tsv",
-        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+        
     threads: 8
-    log:    f"{LOG_DIR}/7_micRoclean_decontam.log"
-    conda:  f"{CONDA_ENV_DIR}/micRoclean-env"
+    log:    f"{LOG_DIR}/07.1_micRoclean_decontam.log"
+    conda:  f"{CONDA_ENV_DIR}/micRoclean-env-new"
     shell:
         r"""
         set -euo pipefail
@@ -463,7 +465,22 @@ rule micRoclean_decontamination:
             --metadata {input.metadata_sheet} \
             --trialID {TRIAL_ID} \
             --out {MICROCLEAN_DECONTAM_DIR}
-        seqtk subseq "{input.bacterial_ASV_fa}" "{output.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
+        """
+
+rule decontamination_filter:
+    input:
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
+        decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names"
+    output:
+        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+    threads: 8
+    log:    f"{LOG_DIR}/07.2_decontam_filter.log"
+    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        seqtk subseq "{input.bacterial_ASV_fa}" "{input.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
         """
 
 
@@ -562,12 +579,11 @@ rule phyloseq_analysis:
         norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        mothur_file = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
         nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp",
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
-
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv',
+        metadata_sheet = METADATA
     output:
         kraken_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
         kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
@@ -575,7 +591,7 @@ rule phyloseq_analysis:
         kraken_db = KRAKEN_DB,
         unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else "",
         norm_method = NORM_METHOD
-    threads: 4
+    threads: 8
     log:    f"{LOG_DIR}/10_phyloseq.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
 
@@ -584,7 +600,6 @@ rule phyloseq_analysis:
         set -euo pipefail
         exec > "{log}" 2>&1
         Rscript scripts/PhyloseqTaxAnalysis.R \
-            --mothur-file {input.mothur_file} \
             --kraken-file {input.kraken_file} \
             --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
             --norm-method {params.norm_method} \
@@ -594,6 +609,7 @@ rule phyloseq_analysis:
             --trialID {TRIAL_ID} \
             {params.unclassified_prefix_flag} \
             --read-count-file {input.combined_read_counts} \
+            --metadata {input.metadata_sheet} \
             --out {PHYLOSEQ_DIR}
         """
 
