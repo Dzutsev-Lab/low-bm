@@ -97,9 +97,9 @@ def rewrite_fasta(fasta_in, fasta_out, seqID2taxID):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--tax', required=True)
-    parser.add_argument('--fasta', required=True)
-    parser.add_argument('--data-dir', required=True)
-    parser.add_argument('--out', required=True)
+    parser.add_argument('--fasta-in', required=True)
+    parser.add_argument('--dump-dir', required=True)
+    parser.add_argument('--fasta-out', required=True)
     parser.add_argument('--faulty-out', required=True)
     args = parser.parse_args()
 
@@ -110,7 +110,7 @@ if __name__ == "__main__":
     print(f"{len(unique_names)} unique names to resolve")
 
     print("Resolving names with taxonkit...")
-    name2taxID = name2taxID_mapping(unique_names, args.data_dir, args.faulty_out)
+    name2taxID = name2taxID_mapping(unique_names, args.dump_dir, args.faulty_out)
 
     seqID2taxID = {}
     failed = []
@@ -124,6 +124,6 @@ if __name__ == "__main__":
     
     print(f"{len(failed)} sequences failed taxid resolution")
     print("Writing Kraken-formatted FASTA...")
-    rewrite_fasta(args.fasta, args.out, seqID2taxID)
+    rewrite_fasta(args.fasta_in, args.fasta_out, seqID2taxID)
 
     

@@ -30,12 +30,6 @@ parser$add_argument("--dump-dir",
                     type = "character",
                     help = "directory containing nodes.dmp and names.dmp 
                             to be used in database construction")
-parser$add_argument("--norm-method",
-                    type = "character",
-                    help = "normalization method used to produce norm SeqTable")
-parser$add_argument("--norm-seq-table",
-                    type = "character",
-                    help = "normalized seq table tsv file path")
 parser$add_argument("--raw-seq-table",
                     type = "character",
                     help = "un-normalized seq table tsv file path")
@@ -49,12 +43,15 @@ parser$add_argument("--add-unclassified-prefix",
                     help = "Whether to add prefix to unclassified taxa based on lowest assigned taxonomic level",
                     action = "store_true",
                     default = FALSE)
-parser$add_argument("--read-count-file",
-                    type = "character",
-                    help = "combined read count file path")
 parser$add_argument("--metadata",
                     type = "character",
                     help = "standardized metadata sheet as .xlsx file")
+parser$add_argument("--tax-agg-level",
+                    type = "character",
+                    help = "taxonomic level to agglomerate to for DA analysis (e.g. Genus, Family, etc.)")
+parser$add_argument("--tax-label-level",
+                    type = "character",
+                    help = "taxonomic level to use for taxon labels in plots (e.g. Genus, Family, etc.)")
 parser$add_argument("--out",
                     type = "character",
                     help = "directory to store output abundance plots")
@@ -69,25 +66,11 @@ args <- parser$parse_args()
 bacterial_IDs <- readLines(args$bacterial_names) # split IDs by line # nolint
 bacterial_IDs <- bacterial_IDs[nzchar(bacterial_IDs)] # removes empty lines # nolint
 
-#-----------------------------------
-# Read Count Extraction
-#-----------------------------------
-read_counts_df <- read.delim(args$read_count_file, header = TRUE, row.names = 1)
 
 #-----------------------------------------
 # Sequence Table Construction
 #-----------------------------------------
 # Need to remove S## label from sample names in the sequence table to match with metadata sample names
-# TODO: shift this reponsibility to snakemake by having snakemake handle the renaming of sample names in the sequence table to match with metadata sample names
-# NORMALIZED
-norm_seq_table <- read.delim(args$norm_seq_table,
-                             header = TRUE,
-                             row.names = 1)
-norm_seq_table <- norm_seq_table[, bacterial_IDs] |>
-  rownames_to_column(var = "Sample_ID") |>
-  mutate(Sample_ID = sub("_S\\d+$", "", Sample_ID)) |>
-  column_to_rownames(var = "Sample_ID")
-
 # UN-NORMALIZED
 raw_seq_table <- read.delim(args$raw_seq_table,
                             header = TRUE,
@@ -234,69 +217,66 @@ kraken_tax_matrix <- if (isTRUE(args$add_unclassified_prefix)) {
 #--------------------------------------
 # Kraken Phyloseq Objects Construction
 #--------------------------------------
-norm_kraken_phyloseq <- phyloseq(otu_table(norm_seq_table, taxa_are_rows = FALSE),
-                                 sample_data(sample_meta_data_df),
-                                 tax_table(kraken_tax_matrix))
-
 raw_kraken_phyloseq <- phyloseq(otu_table(raw_seq_table, taxa_are_rows = FALSE),
                                 sample_data(sample_meta_data_df),
                                 tax_table(kraken_tax_matrix))
+save(raw_kraken_phyloseq, file = paste0(args$out, "/", args$trialID, "_raw_kraken_phyloseq.RData"))
 
 #--------------------------------------
 # Abundance Table and Plot
 #--------------------------------------
-GenusAbundance_tableXplot <- function(norm_phyloseq) {
-  # STEP 1: Genus Glomming
-  genusGlom_phyloseq <- tax_glom(norm_phyloseq,
-                                 taxrank = "Genus",
-                                 NArm = TRUE)
-  top10genus_phyloseq <- prune_taxa(names(sort(taxa_sums(genusGlom_phyloseq),
-                                               decreasing = TRUE))[1:10],
-                                    genusGlom_phyloseq)
+# GenusAbundance_tableXplot <- function(norm_phyloseq) {
+#   # STEP 1: Genus Glomming
+#   genusGlom_phyloseq <- tax_glom(norm_phyloseq,
+#                                  taxrank = "Genus",
+#                                  NArm = TRUE)
+#   top10genus_phyloseq <- prune_taxa(names(sort(taxa_sums(genusGlom_phyloseq),
+#                                                decreasing = TRUE))[1:10],
+#                                     genusGlom_phyloseq)
 
-  # STEP 2: Genus Table Construction
-  # constructing genus name matrix from tax table of genus glommed phyloseq object
-  genus_name_matrix <- as(tax_table(genusGlom_phyloseq), "matrix")[, "Genus"]
+#   # STEP 2: Genus Table Construction
+#   # constructing genus name matrix from tax table of genus glommed phyloseq object
+#   genus_name_matrix <- as(tax_table(genusGlom_phyloseq), "matrix")[, "Genus"]
 
-  # setting taxa names in phyloseq object to genus level name matrix
-  taxa_names(genusGlom_phyloseq) <- genus_name_matrix
+#   # setting taxa names in phyloseq object to genus level name matrix
+#   taxa_names(genusGlom_phyloseq) <- genus_name_matrix
 
-  # Constructing genus count table from glommed OTU table
-  genus_matrix <- as.matrix(otu_table(genusGlom_phyloseq))
+#   # Constructing genus count table from glommed OTU table
+#   genus_matrix <- as.matrix(otu_table(genusGlom_phyloseq))
 
-  if (taxa_are_rows(genusGlom_phyloseq)) {
-    genus_matrix <- t(genus_matrix)
-  }
+#   if (taxa_are_rows(genusGlom_phyloseq)) {
+#     genus_matrix <- t(genus_matrix)
+#   }
 
-  # Add total row
-  genus_matrix <- rbind(genus_matrix, Total = colSums(genus_matrix))
+#   # Add total row
+#   genus_matrix <- rbind(genus_matrix, Total = colSums(genus_matrix))
 
-  write.table(
-    genus_matrix,
-    file = paste0(args$out, "/", args$trialID, "_kraken_genus_table.tsv"),
-    sep = "\t",
-    quote = FALSE,
-    row.names = TRUE,
-    col.names = NA
-  )
+#   write.table(
+#     genus_matrix,
+#     file = paste0(args$out, "/", args$trialID, "_kraken_genus_table.tsv"),
+#     sep = "\t",
+#     quote = FALSE,
+#     row.names = TRUE,
+#     col.names = NA
+#   )
 
-  # STEP 3: Count Plot
-  theme_set(theme_bw())
+#   # STEP 3: Count Plot
+#   theme_set(theme_bw())
 
-  abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "SampleID", fill = "Genus")
-  abunXtypeXsample_plot +
-    theme(
-      legend.position = "bottom",
-      legend.text = element_text(size = 6)
-    ) +
-    facet_wrap(~SampleType, scales = "free_x") +
-    labs(title = "Read Counts per Sample by Sample Type",
-         x = "Sample",
-         y = "Read Count")
-  ggsave(paste0(args$out, "/", args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
-}
+#   abunXtypeXsample_plot <- plot_bar(top10genus_phyloseq, "SampleID", fill = "Genus")
+#   abunXtypeXsample_plot +
+#     theme(
+#       legend.position = "bottom",
+#       legend.text = element_text(size = 6)
+#     ) +
+#     facet_wrap(~SampleType, scales = "free_x") +
+#     labs(title = "Read Counts per Sample by Sample Type",
+#          x = "Sample",
+#          y = "Read Count")
+#   ggsave(paste0(args$out, "/", args$trialID, "_kraken_countXtypeXsample.png"), width = 14, height = 12, units = "in")
+# }
 
-GenusAbundance_tableXplot(norm_kraken_phyloseq)
+# GenusAbundance_tableXplot(norm_kraken_phyloseq)
 
 
 
@@ -342,8 +322,6 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
     default_struc0_groups <- c("taxon", 
                                "structural_zero (ControlStatus = Control)", 
                                "structural_zero (ControlStatus = PatientSample)")
-    struc0_group1_label <- GroupingType
-    struc0_group2_label <- "PatientSample"
     comp_file_label <- paste0(GroupingType, "toPS")
     
   } else if (GroupingType == "PatientSample") {
@@ -353,8 +331,6 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
     default_struc0_groups <- c("taxon", 
                                "structural_zero (SampleType = NormalTissue)", 
                                "structural_zero (SampleType = Tumor)")
-    struc0_group1_label <- "NormalTissue"
-    struc0_group2_label <- "Tumor"
     comp_file_label <- "NTtoT"
   }
 
@@ -382,8 +358,8 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
       struc0_group1 = as.logical(struc0_group1),
       struc0_group2 = as.logical(struc0_group2),
       struc0 = case_when(
-        struc0_group1 & !struc0_group2 ~ struc0_group1_label,
-        !struc0_group1 & struc0_group2 ~ struc0_group2_label,
+        struc0_group1 & !struc0_group2 ~ "group1",
+        !struc0_group1 & struc0_group2 ~ "group2",
         TRUE ~ NA
       )
     )
@@ -579,14 +555,14 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   sig_taxa <- sig_DA_results_df[, "taxon"]
   if (!is.null(tax_agg_level)) {
     Glommed_phyloseq <- tax_glom(Grouped_phyloseq,
-                                 taxrank = tax_agg_level, 
-                                 NArm = FALSE)
+                                 taxrank = tax_agg_level)
+    taxa_names(Glommed_phyloseq) <- as.character(tax_table(Glommed_phyloseq)[, tax_agg_level])
   } else {
     Glommed_phyloseq <- Grouped_phyloseq
   }
   Pruned_phyloseq <- prune_taxa(sig_taxa, Glommed_phyloseq)
 
-  row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange)]
+  row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange, sig_DA_results_df$struc0)]
 
   column_order <- rownames(sample_data(Pruned_phyloseq))[order(sample_data(Pruned_phyloseq)$SampleType,
                                                                sample_data(Pruned_phyloseq)$PatientID)]
@@ -607,15 +583,17 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   p_heatmap <- p_heatmap + geom_vline(xintercept = type_block_cuts+0.5, linewidth = 1, color = "white")
 
   # Adding horizontal lines to heatmap to separate taxa by direction of differential abundance
-  lfc_ordered <- sig_DA_results_df[match(row_order, sig_DA_results_df$taxon), "log2FoldChange"]
-  neg_lfc_block_size <- sum(lfc_ordered < 0)
-
-  print("Row length check:")
-  print(paste("Number of rows in heatmap:", length(row_order)))
-
-
-  # Needs to be annotation segment instead of geom_hline to work with ComplexHeatmap output
-  p_heatmap <- p_heatmap + geom_hline(yintercept = neg_lfc_block_size + 0.5, linewidth = 1, color = "white", linetype = "dashed")
+  ordered_taxa_df <- sig_DA_results_df[match(row_order, sig_DA_results_df$taxon), ] |> select("log2FoldChange", "struc0") 
+  ordered_taxa_df <- ordered_taxa_df |> mutate(direction = case_when(
+    log2FoldChange > 0 | struc0 == "group1" ~ "pos",
+    log2FoldChange < 0 | struc0 == "group2" ~ "neg",
+    TRUE ~ "none"
+  ))
+  neg_lfc_block_size <- sum(ordered_taxa_df$direction == "neg")
+  
+  if (neg_lfc_block_size > 0 & neg_lfc_block_size < length(row_order)) {
+    p_heatmap <- p_heatmap + geom_hline(yintercept = neg_lfc_block_size + 0.5, linewidth = 1, color = "white", linetype = "dashed")
+  }
 
   ggsave(
     filename = paste0(args$out, "/ANCOMBC/", comp_file_label, "/", 
@@ -626,177 +604,6 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
     units = "in",
     dpi = 300
   )
-  # #Create plot title and file labels depending on comparison
-  # if (GroupingType %in% c("CellControl", "NegativeControl", "AllControl")) {
-  #   sample_type_order <- c(GroupingType, "PatientSample")
-  #   comp_file_label <- paste0(GroupingType, "toPS")
-  #   plot_title_label <- paste(GroupingType, "vs Patient Samples")
-  #   group_var = "IsControl"
-  # } else if (GroupingType == "PatientSample") {
-  #   sample_type_order <- c("NormalTissue", "Tumor")
-  #   comp_file_label <- "NTtoT"
-  #   plot_title_label <- "Normal Tissue vs Tumor"
-  #   group_var = "SampleType"
-  # }
-  # plot_title_label <- paste0(plot_title_label,
-  #                            " (alpha = ", alpha,
-  #                            ", |LFC| > ", lfc_cutoff, ")")
-
-  # #Subset to significant ASVs
-  # sig_DA_results_df <- DA_results_df[DA_results_df$Significance == "Sig", , drop = FALSE]
-  # if (nrow(sig_DA_results_df) == 0) {
-  #   message("Grouping Type: ", GroupingType, " - No siginifcant differnetially abundant taxa found, skipping heatmap plotting.")
-  #   return(invisible())
-  # }
-  # sig_DA_taxa <- sig_DA_results_df$Label #using Label column as taxon identifier for subsetting OTU table to ensure proper labeling in heatmap
-  
-  # # STEP ??: Get OTU table glommed at the specificed taxa aggregation level
-  # if (!(is.null(tax_agg_level))) {
-  #   Glommed_phyloseq <- tax_glom(Grouped_phyloseq,
-  #                                taxrank = tax_agg_level, 
-  #                                NArm = FALSE)
-
-  # } else {
-  #   Glommed_phyloseq <- Grouped_phyloseq
-  # }
-  # OTU_mat <- as.data.frame(t(as(otu_table(Glommed_phyloseq), "matrix")))
-  # #rownames(OTU_mat) <- DA_results_df$Label[match(rownames(OTU_mat), DA_results_df$Label)] # setting row names of OTU matrix to taxon labels for subsetting and heatmap labeling
-  # str(OTU_mat)
-  # print(head(rownames(OTU_mat)))
-  # # STEP ??: Subset OTU table to significant 
-  # OTU_mat <- OTU_mat[sig_DA_taxa, , drop = FALSE]
-  
-  # # STEP ??: Normalize pseudocount values to column sums with log transfrom
-  # libsizes <- sample_sums(Glommed_phyloseq)
-  # relative_OTU_mat <- sweep(OTU_mat, 2, libsizes, FUN = "/")
-  # log_relative_OTU_mat <- log2(relative_OTU_mat * 1e6 + pseudocount)
-
-
-  # # STEP ??: Get sample metadata 
-  # META_df <- as(sample_data(Glommed_phyloseq), "data.frame")
-  # META_df$SampleID <- rownames(META_df)
-  # META_df$SampleType <- factor(META_df$SampleType, levels = sample_type_order)
-  # META_df$PatientID <- factor(META_df$PatientID)
-
-
-  # # STEP ??: Order Samples by SampleType followed by PatientID
-  # META_df <- META_df[order(META_df$SampleType,
-  #                          META_df$PatientID), , drop = FALSE]
-
-  # heatmap_column_order <- META_df$SampleID
-  # log_relative_OTU_mat <- log_relative_OTU_mat[, heatmap_column_order, drop = FALSE]
-
-  
-  # # STEP ??: Get row labels
-  # da_label <- if_else(
-  #   sig_DA_results_df$log2FoldChange >= 0,
-  #   paste0("DA Up (LFC = ", sprintf("%.2f", sig_DA_results_df$log2FoldChange), ")"),
-  #   paste0("DA Down (LFC = ", sprintf("%.2f", sig_DA_results_df$log2FoldChange), ")")
-  # )
-
-
-  # struc0_label <- case_when(
-  #   is.na(sig_DA_results_df$struc0) ~ "",
-  #   sig_DA_results_df$struc0 == sample_type_order[1] ~ paste0("Structural Zero: ", sample_type_order[1]),
-  #   TRUE ~ paste0("Structural Zero: ", sample_type_order[2])
-  # )
-
-
-  # row_label <- ifelse(struc0_label != "", struc0_label, da_label)
-
-
-  # row_class_levels <- c(
-  #   paste0("Struc0 ", sample_type_order[1]),
-  #   paste0("Struc0 ", sample_type_order[2]),
-  #   paste0("DA ", sample_type_order[1]),
-  #   paste0("DA ", sample_type_order[2])
-  # )
-  # row_class <- ifelse(struc0_label != "",
-  #                     ifelse(sig_DA_results_df$struc0 == sample_type_order[1], 
-  #                            row_class_levels[1], 
-  #                            row_class_levels[2]),
-  #                     ifelse(sig_DA_results_df$log2FoldChange < 0, 
-  #                            row_class_levels[3], 
-  #                            row_class_levels[4]))
-
-  # # STEP ??: Ordering rows by DA
-  # row_order <- order(row_class, -abs(sig_DA_results_df$log2FoldChange), sig_DA_results_df$Label)
-  # log_relative_OTU_mat <- log_relative_OTU_mat[row_order, , drop = FALSE]
-  # sig_DA_results_df <- sig_DA_results_df[row_order, , drop = FALSE]
-  # row_label <- row_label[row_order]
-  # row_class <- row_class[row_order]
-
-  
-  # # STEP ??: Setting Colors
-  # # TODO: adjust to be able to handle more than two sample types
-  # sample_type_colors <- setNames(c("orchid", 
-  #                                  "darkorange"), 
-  #                                sample_type_order)
-  # row_class_colors <- setNames(c("steelblue4",
-  #                                "firebrick4",
-  #                                "steelblue", 
-  #                                "firebrick"),
-  #                              row_class_levels)
-
-  # # STEP ??: Heatmap Cell Coloring
-  # quantile_stat <- quantile(log_relative_OTU_mat,
-  #                           probs = c(0.05, 0.5, 0.95),
-  #                           na.rm = TRUE,
-  #                           names = FALSE)
-  # if (diff(range(quantile_stat)) == 0) {
-  #   quantile_stat <- c(min(log_relative_OTU_mat, na.rm = TRUE) - 1, 0, max(log_relative_OTU_mat) + 1)
-  # }
-
-  # color_function <- colorRamp2(quantile_stat,
-  #                              c("steelblue", "white", "firebrick"))
-
-
-  # top_heatmap_anno <- ComplexHeatmap::HeatmapAnnotation(
-  #   SampleType = META_df$SampleType,
-  #   col = list(SampleType = sample_type_colors),
-  #   annotation_name_gp = grid::gpar(fontsize = 9)
-  # )
-
-  # left_heatmap_anno <- ComplexHeatmap::HeatmapAnnotation(
-  #   Class = row_class,
-  #   Status = row_label,
-  #   col = list(Class = row_class_colors),
-  #   annotation_name_gp = grid::gpar(fontsize = 9),
-  #   which = "row"
-  # )
-
-  # htmap <- ComplexHeatmap::Heatmap(
-  #   log_relative_OTU_mat,
-  #   name = "log2 Reads per Million",
-  #   col = color_function,
-  #   na_col = "grey90",
-  #   top_annotation = top_heatmap_anno,
-  #   left_annotation = left_heatmap_anno,
-  #   column_split = META_df$SampleType,
-  #   column_order = heatmap_column_order,
-  #   cluster_columns = FALSE,
-  #   cluster_column_slices = FALSE,
-  #   show_column_names = TRUE,
-  #   column_names_rot = 90,
-  #   row_names_side = "left",
-  #   column_title = plot_title_label,
-  #   use_raster = TRUE
-  # )
-
-  # png(
-  #   file = paste0(args$out, "/ANCOMBC/", comp_file_label, "/", 
-  #                 args$trialID, "_", comp_file_label, "_", "ANCOMBCHeatmap.png"),
-  #   width = 10,
-  #   height = 8,
-  #   units = "in",
-  #   res = 300
-  # )
-
-  # ComplexHeatmap::draw(htmap,
-  #                      heatmap_legend_side = "right",
-  #                      annotation_legend_side = "right")
-  
-  # dev.off()
 }
 
 
@@ -852,7 +659,7 @@ all_DA_analysis <- function(DA_method,
 
 all_DA_analysis(DA_method = "ANCOMBC",
                 Comparisons = c("NegativeControl", "PatientSample"),
-                tax_agg_level = NULL)
+                tax_agg_level = "Genus")
 #-------------------------------
 # R Session Cataloging
 #-------------------------------

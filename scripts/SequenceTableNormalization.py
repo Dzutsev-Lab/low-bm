@@ -11,7 +11,7 @@ def main():
     ap.add_argument("--id-col", default=None,
                     help="Name of samples ID column in input sequence table. If omitted, will use first column")
     ap.add_argument("--method", required=True)
-    ap.add_argument("--offset", default=0.0, type=float)
+    ap.add_argument("--offset", default=1.0, type=float)
     args = ap.parse_args()
 
     # Import sequence table
@@ -55,17 +55,20 @@ def main():
         # Retrieve Unmapped ASV names
         with open(args.host_names, 'r') as name_file:
             unmapped_names = [line.strip() for line in name_file]
-        print('\nUnmapped ASV IDs')
-        print(unmapped_names)
+        print('\nUnmapped ASV IDs (Bacterial ASVs):')
+        print(unmapped_names.head())
+        print(f"Number of Unmapped ASVs: {len(unmapped_names)}")
 
         # Create data frame with only host-mapped ASV columns
         host_count_df = count_df.drop(columns= unmapped_names)
-        print('\nHost Mapped Sequence Count Table')
+        print('\nHost Mapped Sequence Count Table:')
         print(host_count_df.info())
         print(host_count_df.head())
 
-        return count_df.div(host_count_df.sum(axis='columns').replace(0, 1), # replacing with 1 to reward samples of no host alignment
-                            axis='index')
+        return count_df.replace(0, # replacing 0 with offset (default = 1.0) to avoid zero divisor and log2(0) issues in downstream functions
+                                args.offset).div( 
+            host_count_df.sum(axis='columns'), # results in a 1 column data frame with sum of host-mapped ASV counts for each sample
+            axis='index') # dividing each ASV cound by the some of host-mapped ASV counts for that sample (division done row-wise, matched row by SampleID)
     
     def rawTSSpM(count_df):
         return (rawTSS(count_df) * 1000000)

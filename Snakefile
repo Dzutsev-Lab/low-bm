@@ -29,7 +29,7 @@ POS_ALIGNMENT_DIR = f"{IP_DIR}/06_Pos_Alignment"
 MICROCLEAN_DECONTAM_DIR = f"{IP_DIR}/07_micRoclean_Decontam"
 MOTHUR_TAX_DIR = f"{IP_DIR}/08.1_Mothur_Taxonomy"
 KRAKEN_TAX_DIR = f"{IP_DIR}/08.2_Kraken_Taxonomy"
-NORM_COUNT_DIR = f"{IP_DIR}/09_CountNormalization"
+NORM_COUNT_DIR = f"{OUT_DIR}/CountNormalization"
 PHYLOSEQ_DIR = f"{OUT_DIR}"
 
 TRACK_DIR = f"{OUT_DIR}/Tracking"
@@ -79,11 +79,13 @@ MAX_EE = config["maxEE"]
 TRUNC_Q = config["truncQ"]
 
 # Read Count Normalization Parameters
-NORM_METHOD = config["norm_method"]
-NORM_OFFSET = config["norm_offset"]
+NORM_METHODS = config["norm_methods"]
+PSEUDOCOUNT = config["pseudocount"]
 
 # Phyloseq Analysis Parameters
 ADD_UNCLASSIFIED_PREFIX = config["add_unclassified_prefix"]
+TAX_AGG_LEVEL = config["tax_agg_level"]
+TAX_LABEL_LEVEL = config["tax_label_level"]
 
 # Negative Control Filtering Parameters
 # TODO: figure out how to format for snakemake without config file
@@ -148,8 +150,8 @@ def pick_raw_fastq(wc, read):
 #----------------------------
 rule all:
     input:
-        kraken_countXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
-        kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
+        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData",
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
 
 
 rule copy_config:
@@ -198,27 +200,28 @@ rule index_ref_bwa:
 #------------------------------
 # Kraken Database Construction
 #------------------------------
-rule kraken_db_construction:
-    output:
-        # using database dump files as sentinal 
-        # (needed for tax table reconstruction in phyloseq analysis)
-        names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
-        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
-    params:
-        kraken_db = KRAKEN_DB
-    threads: 16
-    log: f"{LOG_DIR}/00_kraken_db.log"
-    conda: f"{CONDA_ENV_DIR}/kraken-env"
-    shell:
-        r"""
-        set -euo pipefail
-        exec > {log} 2>&1
+# rule kraken_db_construction:
+#     output:
+#         # using database dump files as sentinal 
+#         # (needed for tax table reconstruction in phyloseq analysis)
+#         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
+#         nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
+#     params:
+#         kraken_db = KRAKEN_DB,
+#         kraken_build_option = f"--special {KRAKEN_DB}" if KRAKEN_DB in ["silva", "greengenes"] else "--build"
+#     threads: 16
+#     log: f"{LOG_DIR}/00_kraken_db.log"
+#     conda: f"{CONDA_ENV_DIR}/kraken-env"
+#     shell:
+#         r"""
+#         set -euo pipefail
+#         exec > {log} 2>&1
         
-        kraken2-build \
-            --db {REF_DIR}/{params.kraken_db} \
-            --special {params.kraken_db} \
-            --threads {threads}
-        """
+#         kraken2-build \
+#             {params.kraken_build_option} \
+#             --db {REF_DIR}/{params.kraken_db} \
+#             --threads {threads}
+#         """
 
 
 #-------------------------------------
@@ -543,54 +546,20 @@ rule kraken_classification:
                 {input.decontaminated_ASV_fa}
         """
 
-
-#--------------------------
-# 09 Count Normalization
-#--------------------------
-rule count_normalization:
-    input:
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
-    output:
-        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv"
-    params:
-        method = NORM_METHOD,
-        offset = NORM_OFFSET
-    threads: 1
-    log:    f"{LOG_DIR}/09_normalization.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
-    shell:
-        r"""
-        set -euo pipefail
-        python scripts/SequenceTableNormalization.py \
-            --in {input.seq_table} \
-            --host-names {input.host_unmapped_names} \
-            --out {output.norm_seq_table} \
-            --method {params.method} \
-            --offset {params.offset} \
-        > "{log}" 2>&1
-        """
-
 #-------------------------------
 # 10 Phyloseq Taxonomy Analysis
 #-------------------------------
 rule phyloseq_analysis:
     input:
-        norm_seq_table = f"{NORM_COUNT_DIR}/NormSeqTable.tsv",
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
-        names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
-        nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp",
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv',
         metadata_sheet = METADATA
     output:
-        kraken_abunXtypeXsample_plot = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_countXtypeXsample.png",
-        kraken_genus_table = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_kraken_genus_table.tsv"
+        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData"
     params:
-        kraken_db = KRAKEN_DB,
         unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else "",
-        norm_method = NORM_METHOD
+        dump_dir = f"{REF_DIR}/taxdump"
     threads: 8
     log:    f"{LOG_DIR}/10_phyloseq.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
@@ -601,20 +570,19 @@ rule phyloseq_analysis:
         exec > "{log}" 2>&1
         Rscript scripts/PhyloseqTaxAnalysis.R \
             --kraken-file {input.kraken_file} \
-            --dump-dir {REF_DIR}/{params.kraken_db}/taxonomy \
-            --norm-method {params.norm_method} \
-            --norm-seq-table {input.norm_seq_table} \
             --raw-seq-table {input.raw_seq_table} \
             --bacterial-names {input.bacterial_names} \
             --trialID {TRIAL_ID} \
+            --dump-dir {params.dump_dir} \
             {params.unclassified_prefix_flag} \
-            --read-count-file {input.combined_read_counts} \
             --metadata {input.metadata_sheet} \
+            --tax-agg-level {TAX_AGG_LEVEL} \
+            --tax-label-level {TAX_LABEL_LEVEL} \
             --out {PHYLOSEQ_DIR}
         """
 
 #-----------------------------
-# -01 Read Count Calculations
+# 11 Read Count Calculations
 #-----------------------------
 rule read_counts:
     input:
@@ -633,7 +601,7 @@ rule read_counts:
     params:
         selected = UMI_SELECT_DIR,
     threads: 8
-    log:    f"{LOG_DIR}/-01_read_count.log"
+    log:    f"{LOG_DIR}/11_read_count.log"
     conda:  f"{CONDA_ENV_DIR}/R-tools-env"
 
     shell:
@@ -652,7 +620,28 @@ rule read_counts:
             --combined-counts {output.combined_read_counts}
         """
 
-        
+rule sequence_table_normalization:
+    input:
+        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData",
+        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+    output:
+        norm_seq_table = expand(f"{NORM_COUNT_DIR}/{TRIAL_ID}_{{m}}_SeqTable.tsv", m = NORM_METHODS)
+    threads: 2
+    log:    f"{LOG_DIR}/12_seq_table_norm.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        Rscript scripts/SeqTableNormalization.R \
+            --phyloseq-data {input.phyloseq_image} \
+            --read-counts {input.combined_read_counts} \
+            --norm-methods {NORM_METHODS} \
+            --pseudocount {PSEUDOCOUNT} \
+            --tax-agg-level {TAX_AGG_LEVEL} \
+            --out {NORM_COUNT_DIR} \
+            --trialID {TRIAL_ID}
+        """
 
 
 

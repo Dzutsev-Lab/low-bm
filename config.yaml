@@ -1,8 +1,8 @@
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "041026.2"
-trial_descript: "ItalyLungExp2_micRocleanTrial"
-exp_name:       "240312_VH01090_212_AACF2VNHV"
+trialID:        "041326.1"
+trial_descript: "ItalyLungExp1_RerunMicRocleanTrial"
+exp_name:       "240308_VH01090_210_AACCY2YHV"
 host:           "human"
 
 in_root:        "Exp_Data/"
@@ -81,14 +81,16 @@ tax_min_counts:
 #-------------------------------------
 # READ COUNT NORMALIZATION PARAMETERS
 #-------------------------------------
-#current options: [noNorm, rawTSS, hostTSS, log2, rawTSSlog2, hostTSSlog2]
-norm_method: "rawTSSpMlog2"
-norm_offset: 1
+#current options: [noNorm, RelAbund, RawTSS, HostMapped, log2]
+norm_methods: ["noNorm", "RelAbund", "RawTSS", "HostMapped", "log2"]
+pseudocount: 1
 
 #-----------------------------
 # PYLOSEQ PARAMETERS
 #-----------------------------
 add_unclassified_prefix: true
+tax_agg_level: "Genus"
+tax_label_level: "Genus"
 
 
 #-----------------------------
