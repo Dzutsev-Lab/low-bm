@@ -47,7 +47,8 @@ Compute_LFC <- function(group1_df, group2_df, pseudocount) {
 Compute_Paired_LFC <- function(group1_df, group2_df, pseudocount) {
     #TODO: implement this function to compute paired LFCs for samples with matched tumor-normal samples across batches
 }
-
+# TODO: Inspect whether physeq objects need to be passed to this function 
+(could only be necessary for quickly finding taxa overlap prior to function)
 LFCvLFC_plot <- function(seqTableB1, seqTableB2, physeqB1, physeqB2, expB1, expB2, method, common_taxa, out_dir) {
     # Subsetting seqtables to common taxa and samples of interest
     TumorSeqTableB1 <- seqTableB1[TumorSamplesB1, common_taxa]
