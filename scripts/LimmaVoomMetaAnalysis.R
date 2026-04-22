@@ -96,6 +96,8 @@ calc_fisher_q <- function(Composite_DA_df) {
     ) |> ungroup() |>
     mutate(
         fisher_q = p.adjust(fisher_p, method = "BH"),
+        fisher_neglog10_p = -log10(pmax(fisher_p, .Machine$double.xmin)),
+        fisher_q = p.adjust(fisher_p, method = "BH"),
         # TODO: determine what this is doing
         fisher_neglog10_q = -log10(pmax(fisher_q, .Machine$double.xmin))
     )
@@ -146,6 +148,10 @@ calc_random_effect_heterogeneity <- function(Composite_DA_df) {
 Comp_DA_results <- inner_join(B1_DA_results, B2_DA_results, by = "taxon")
 Comp_DA_results <- calc_fisher_q(Composite_DA_df= Comp_DA_results)
 Comp_DA_results <- calc_random_effect_heterogeneity(Composite_DA_df= Comp_DA_results)
+Comp_DA_results <- Comp_DA_results |>
+    mutate(
+        taxon_label = if ("taxon" %in% names(.)) taxon else rownames(.)
+    )
 
 spearman_res <- cor.test(
   Comp_DA_results$logFC_b1,
@@ -156,6 +162,21 @@ spearman_res <- cor.test(
 
 LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     geom_point(aes(color = fisher_neglog10_q, shape = heterogeneity_class)) +
+    geom_text_repel(
+        data = Comp_DA_results |>
+            filter(
+                heterogeneity_class == "Low heterogeneity",
+                fisher_neglog10_p > 2
+            ),
+        aes(label = taxon_label),
+        size = 3.5,
+        max.overlaps = Inf,
+        box.padding = 0.4,
+        point.padding = 0.3,
+        segment.size = 0.4,
+        segment.color = "grey50",
+        min.segment.length = 0
+    ) +
     scale_shape_manual(
         values = c(
             "Low heterogeneity" = 16,   # ● filled circle
