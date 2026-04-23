@@ -41,7 +41,13 @@ tseqtable <- t(seqtable)
 
 
 counts <- as.matrix(tseqtable)
-design <- model.matrix(~ SampleType, 
+if (args$norm_method == "noNorm") {
+    counts <- DGEList(counts = counts)
+    counts <- calcNormFactors(counts,
+                              method = "TMM")
+}
+
+design <- model.matrix(~ SampleType + PatientID, 
                        data = metadata)
 
 # TODO: determine if should do prior TMM or some other additional normalization
@@ -62,7 +68,7 @@ fit <- lmFit(voom, design)
 fit <- eBayes(fit)
 
 results <- topTable(fit,
-                    coef= ncol(design),
+                    coef= "SampleTypeTumor",
                     number= nrow(counts))
 
 write.table(results, 

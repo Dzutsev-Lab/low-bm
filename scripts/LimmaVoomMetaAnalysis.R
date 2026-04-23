@@ -4,6 +4,7 @@ library(ggplot2)
 library(argparse)
 library(stringr)
 library(metap)
+library(ggrepel)
 
 parser <- ArgumentParser()
 
@@ -148,10 +149,6 @@ calc_random_effect_heterogeneity <- function(Composite_DA_df) {
 Comp_DA_results <- inner_join(B1_DA_results, B2_DA_results, by = "taxon")
 Comp_DA_results <- calc_fisher_q(Composite_DA_df= Comp_DA_results)
 Comp_DA_results <- calc_random_effect_heterogeneity(Composite_DA_df= Comp_DA_results)
-Comp_DA_results <- Comp_DA_results |>
-    mutate(
-        taxon_label = if ("taxon" %in% names(.)) taxon else rownames(.)
-    )
 
 spearman_res <- cor.test(
   Comp_DA_results$logFC_b1,
@@ -161,14 +158,14 @@ spearman_res <- cor.test(
 )
 
 LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
-    geom_point(aes(color = fisher_neglog10_q, shape = heterogeneity_class)) +
+    geom_point(aes(color = fisher_neglog10_p, shape = heterogeneity_class)) +
     geom_text_repel(
         data = Comp_DA_results |>
             filter(
                 heterogeneity_class == "Low heterogeneity",
-                fisher_neglog10_p > 2
+                fisher_p <= 0.05
             ),
-        aes(label = taxon_label),
+        aes(label = taxon),
         size = 3.5,
         max.overlaps = Inf,
         box.padding = 0.4,
@@ -189,7 +186,7 @@ LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     scale_color_gradient(
         low = "grey80",
         high = "firebrick",
-        name = "-log10(Fisher BH q)"
+        name = "-log10(Fisher p)"
     ) +
     labs(
         x = paste0(B1_ExpID, " logFC"),
