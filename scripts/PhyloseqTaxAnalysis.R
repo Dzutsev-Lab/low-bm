@@ -15,6 +15,7 @@ library(readxl)
 library(stringr)
 library(limma)
 library(edgeR)
+library(purrr)
 
 library(ComplexHeatmap)
 library(circlize)
@@ -338,7 +339,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
   if (GroupingType %in% c("CellControl", "NegativeControl", "AllControl")) {
     formula <- "ControlStatus"
     grouping_variable <- "ControlStatus"
-    lfc_adjp_groups <- c("taxon", "ControlStatusPatientSample")
+    results_table_groups <- c("taxon", "ControlStatusPatientSample")
     default_struc0_groups <- c("taxon", 
                                "structural_zero (ControlStatus = Control)", 
                                "structural_zero (ControlStatus = PatientSample)")
@@ -347,7 +348,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
   } else if (GroupingType == "PatientSample") {
     formula <- "SampleType + PatientID"
     grouping_variable <- "SampleType"
-    lfc_adjp_groups <- c("taxon", "SampleTypeTumor")
+    results_table_groups <- c("taxon", "SampleTypeTumor")
     default_struc0_groups <- c("taxon", 
                                "structural_zero (SampleType = NormalTissue)", 
                                "structural_zero (SampleType = Tumor)")
@@ -365,14 +366,21 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
 
   
   # STEP 3: Construct formatted ANCOM-BC results data frame
-  ancombc_lfc_df <- ancombc_output[["res"]][["lfc"]][, lfc_adjp_groups]
+  ancombc_lfc_df <- ancombc_output[["res"]][["lfc"]][, results_table_groups]
   colnames(ancombc_lfc_df) <- c("taxon", "log2FoldChange")
-  
-  ancombc_padj_df <- ancombc_output[["res"]][["q_val"]][, lfc_adjp_groups]
+
+  ancombc_p_df <- ancombc_output[["res"]][["p_val"]][, results_table_groups]
+  colnames(ancombc_p_df) <- c("taxon", "p")
+
+  ancombc_padj_df <- ancombc_output[["res"]][["q_val"]][, results_table_groups]
   colnames(ancombc_padj_df) <- c("taxon", "padj")
+
+  ancombc_se_df <- ancombc_output[["res"]][["se"]][, results_table_groups]
+  colnames(ancombc_se_df) <- c("taxon", "se")
   
   ancombc_struc0_df <- ancombc_output[["zero_ind"]][, default_struc0_groups]
   colnames(ancombc_struc0_df) <- c("taxon", "struc0_group1", "struc0_group2")
+
   ancombc_struc0_df <- ancombc_struc0_df |>
     mutate(
       struc0_group1 = as.logical(struc0_group1),
@@ -382,18 +390,29 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
         !struc0_group1 & struc0_group2 ~ "group2",
         TRUE ~ NA
       )
-    )
+    ) |> select(taxon, struc0)
   
-  ancombc_results_df <- ancombc_lfc_df |>
-    left_join(ancombc_padj_df, by = "taxon") |>
-    left_join(ancombc_struc0_df[, c("taxon", "struc0")], by = "taxon")
+  ancombc_results_df_list <- list(
+    ancombc_lfc_df,
+    ancombc_p_df,
+    ancombc_padj_df,
+    ancombc_se_df,
+    ancombc_struc0_df
+  )
+  
+  ancombc_results_df <- ancombc_results_df_list |>
+    reduce(left_join, by = "taxon")
+
+
  
   
   # STEP 4: Add significance labels
   ancombc_results_df <- ancombc_results_df |>
     mutate(
       log2FoldChange = as.numeric(log2FoldChange),
+      p = as.numeric(p),
       padj = as.numeric(padj), 
+      se = as.numeric(se),
       significance = if_else(
         padj < alpha &
           (abs(log2FoldChange) > lfc_cutoff |
@@ -404,7 +423,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
         log2FoldChange > 0 | struc0 == "group1" ~ "pos",
         log2FoldChange < 0 | struc0 == "group2" ~ "neg",
         log2FoldChange == 0 ~ "none")) |>
-    select(taxon, log2FoldChange, padj, struc0, significance, direction)
+    select(taxon, log2FoldChange, p, padj, struc0, se, significance, direction)
 
 
   # STEP 5: Export results
@@ -524,7 +543,7 @@ LIMMA_VOOM_DA <- function(Grouped_phyloseq,
   write.table(
     limma_voom_results_df,
     file = paste0(args$out, "/LIMMA_VOOM/", comp_file_label, "/", 
-                  args$trialID, "_", comp_file_label, "_LimmaVoomResults.tsv"),
+                  args$trialID, "_", comp_file_label, "_LIMMA_VOOMResults.tsv"),
     sep = "\t",
     quote = FALSE,
     row.names = TRUE,

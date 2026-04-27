@@ -17,9 +17,9 @@ parser$add_argument("--batch1-Name",
 parser$add_argument("--batch2-Name",
                     type = "character",
                     help = "Name for batch 2 to locate limma voom results")
-parser$add_argument("--norm-method",
+parser$add_argument("--comparison",
                     type = "character",
-                    help = "normalization method used prior to limma voom")
+                    help = "Comparison used for differential abundance (Options: NTtoT, NegativeControltoPS)")
 parser$add_argument("--out-dir",
                     type = "character",
                     help = "desired output directory")
@@ -36,8 +36,6 @@ readin_DA <- function(file, batch_label) {
         header = TRUE,
         sep = "\t"
     )
-
-    names(df)[1] <- "taxon"
 
     df |>
         mutate(
@@ -57,27 +55,27 @@ B2_ExpID <- B2_name_components[2]
 # Read in Limma Voom Differential Abundance Results
 #---------------------------------------------------
 B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$in_dir, "/", 
-                                         B1_ID, "_", B1_ExpID, "_", args$norm_method, "_limmavoom_results.tsv"),
+                                         B1_ID, "_", B1_ExpID, "_", args$comparison, "_ANCOMBCResults.tsv"),
                            batch_label = B1_ExpID) |>
                     rename(
-                        logFC_b1 = logFC,
-                        AveExpr_b1 = AveExpr,
-                        t_b1 = t,
-                        p_b1 = P.Value,
-                        adj_p_b1 = adj.P.Val,
-                        B_b1 = B
+                        b1 = batch,
+                        logFC_b1 = log2FoldChange,
+                        p_b1 = p,
+                        adj_p_b1 = padj,
+                        se_b1 = se
                     )
+print(str(B1_DA_results))
 B2_DA_results <- readin_DA(file = paste0("Exp_Output/", args$in_dir, "/", 
-                                         B2_ID, "_", B2_ExpID, "_", args$norm_method, "_limmavoom_results.tsv"),
+                                         B2_ID, "_", B2_ExpID, "_", args$comparison, "_ANCOMBCResults.tsv"),
                            batch_label = B2_ExpID) |>
                     rename(
-                        logFC_b2 = logFC,
-                        AveExpr_b2 = AveExpr,
-                        t_b2 = t,
-                        p_b2 = P.Value,
-                        adj_p_b2 = adj.P.Val,
-                        B_b2 = B
+                        b2 = batch,
+                        logFC_b2 = log2FoldChange,
+                        p_b2 = p,
+                        adj_p_b2 = padj,
+                        se_b2 = se
                     )
+str(B2_DA_results)
 
 
 #------------------------------------------------
@@ -98,15 +96,13 @@ calc_fisher_q <- function(Composite_DA_df) {
     mutate(
         fisher_q = p.adjust(fisher_p, method = "BH"),
         fisher_neglog10_p = -log10(pmax(fisher_p, .Machine$double.xmin)),
-        fisher_q = p.adjust(fisher_p, method = "BH"),
-        # TODO: determine what this is doing
         fisher_neglog10_q = -log10(pmax(fisher_q, .Machine$double.xmin))
     )
 }
 
 calc_random_effect_heterogeneity <- function(Composite_DA_df) {
-    #TODO: put random effect heterogeneous calculations here, saving as new columns in the composite data frame
-    required_cols <- c("logFC_b1", "t_b1", "logFC_b2", "t_b2")
+
+    required_cols <- c("logFC_b1", "se_b1", "logFC_b2", "se_b2")
     missing_cols <- setdiff(required_cols, names(Composite_DA_df))
     if (length(missing_cols) > 0) {
     stop("Missing required columns for heterogeneity calculation: ",
@@ -116,8 +112,6 @@ calc_random_effect_heterogeneity <- function(Composite_DA_df) {
     Composite_DA_df |>
         rowwise() |>
         mutate(
-            se_b1 = if (is.finite(logFC_b1) && is.finite(t_b1) && t_b1 != 0) abs(logFC_b1 / t_b1) else NA_real_,
-            se_b2 = if (is.finite(logFC_b2) && is.finite(t_b2) && t_b2 != 0) abs(logFC_b2 / t_b2) else NA_real_,
             w_b1 = if (is.finite(se_b1) && se_b1 > 0) 1 / (se_b1^2) else NA_real_,
             w_b2 = if (is.finite(se_b2) && se_b2 > 0) 1 / (se_b2^2) else NA_real_,
             fixed_effect = if (is.finite(w_b1) && is.finite(w_b2) && (w_b1 + w_b2) > 0) {
@@ -158,12 +152,12 @@ spearman_res <- cor.test(
 )
 
 LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
-    geom_point(aes(color = fisher_neglog10_p, shape = heterogeneity_class)) +
+    geom_point(aes(color = fisher_neglog10_q, shape = heterogeneity_class)) +
     geom_text_repel(
         data = Comp_DA_results |>
             filter(
                 heterogeneity_class == "Low heterogeneity",
-                fisher_p <= 0.05
+                fisher_q <= 0.05
             ),
         aes(label = taxon),
         size = 3.5,
@@ -186,7 +180,7 @@ LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     scale_color_gradient(
         low = "grey80",
         high = "firebrick",
-        name = "-log10(Fisher p)"
+        name = "-log10(Fisher q, BH adjusted)"
     ) +
     labs(
         x = paste0(B1_ExpID, " logFC"),
