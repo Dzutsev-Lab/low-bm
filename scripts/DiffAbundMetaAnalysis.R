@@ -5,24 +5,26 @@ library(argparse)
 library(stringr)
 library(metap)
 library(ggrepel)
+library(patchwork)
+library(stringr)
 
 parser <- ArgumentParser()
 
-parser$add_argument("--in-dir",
-                    type = "character",
-                    help = "Directory where limma voom DA results can be found")
 parser$add_argument("--batch1-Name",
                     type = "character",
-                    help = "Name for batch 1 to locate limma voom results")
+                    help = "Name for batch 1 to locate differential abundance results within Exp_Output")
 parser$add_argument("--batch2-Name",
                     type = "character",
-                    help = "Name for batch 2 to locate limma voom results")
+                    help = "Name for batch 2 to locate differential abundance results within Exp_Output")
+parser$add_argument("--DA-method",
+                    type = "character",
+                    help = "The tool used to generate differenital abundance results (Options: LIMMA_VOOM, ANCOMBC)")
 parser$add_argument("--comparison",
                     type = "character",
-                    help = "Comparison used for differential abundance (Options: NTtoT, NegativeControltoPS)")
-parser$add_argument("--out-dir",
+                    help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNormalTissue, NegativeControl, PatientSample)")
+parser$add_argument("--out-trial",
                     type = "character",
-                    help = "desired output directory")
+                    help = "desired output directory within Exp_Ouput")
 
 args <- parser$parse_args()
 
@@ -54,29 +56,39 @@ B2_ExpID <- B2_name_components[2]
 #---------------------------------------------------
 # Read in Limma Voom Differential Abundance Results
 #---------------------------------------------------
-B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$in_dir, "/", 
-                                         B1_ID, "_", B1_ExpID, "_", args$comparison, "_ANCOMBCResults.tsv"),
+B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch1_Name, "/", 
+                                         args$DA_method, "/",
+                                         args$comparison, "/",
+                                         B1_ID, "_", args$comparison, "_", args$DA_method, "Results.tsv"),
                            batch_label = B1_ExpID) |>
                     rename(
                         b1 = batch,
                         logFC_b1 = log2FoldChange,
                         p_b1 = p,
                         adj_p_b1 = padj,
-                        se_b1 = se
+                        se_b1 = se,
+                        direction_b1 = direction
                     )
-print(str(B1_DA_results))
-B2_DA_results <- readin_DA(file = paste0("Exp_Output/", args$in_dir, "/", 
-                                         B2_ID, "_", B2_ExpID, "_", args$comparison, "_ANCOMBCResults.tsv"),
+B2_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch2_Name, "/", 
+                                         args$DA_method, "/",
+                                         args$comparison, "/",
+                                         B2_ID, "_", args$comparison, "_", args$DA_method, "Results.tsv"),
                            batch_label = B2_ExpID) |>
                     rename(
                         b2 = batch,
                         logFC_b2 = log2FoldChange,
                         p_b2 = p,
                         adj_p_b2 = padj,
-                        se_b2 = se
+                        se_b2 = se,
+                        direction_b2 = direction
                     )
-str(B2_DA_results)
 
+if (args$DA_method == "ANCOMBC") {
+    B1_DA_results <- B1_DA_results |>
+                        rename(struc0_b1 = struc0)
+    B2_DA_results <- B2_DA_results |>
+                        rename(struc0_b2 = struc0)
+}
 
 #------------------------------------------------
 # Fisher composite q value calculator
@@ -85,11 +97,12 @@ calc_fisher_q <- function(Composite_DA_df) {
     required_cols <- c("p_b1", "p_b2")
     missing_cols <- setdiff(required_cols, names(Composite_DA_df))
     if (length(missing_cols) > 0) {
-    stop("Missing required columns for heterogeneity calculation: ",
-            paste(missing_cols, collapse = ", "))
+        stop("Missing required columns for heterogeneity calculation: ",
+             paste(missing_cols, collapse = ", "))
     }
 
-    Composite_DA_df |> rowwise() |>
+    Composite_DA_df |> 
+    rowwise() |>
     mutate(
         fisher_p = sumlog(c(p_b1, p_b2))$p
     ) |> ungroup() |>
@@ -141,6 +154,12 @@ calc_random_effect_heterogeneity <- function(Composite_DA_df) {
 }
 
 Comp_DA_results <- inner_join(B1_DA_results, B2_DA_results, by = "taxon")
+# Extract Agreed Structural Zeros
+agreed_struc0_df <- Comp_DA_results |>
+    filter(!is.na(struc0_b1) & !is.na(struc0_b2))
+# Filter out any taxa with any Structural Zero (disconcordant or concordant)
+Comp_DA_results <- Comp_DA_results |> 
+    filter(is.na(struc0_b1) & is.na(struc0_b2))
 Comp_DA_results <- calc_fisher_q(Composite_DA_df= Comp_DA_results)
 Comp_DA_results <- calc_random_effect_heterogeneity(Composite_DA_df= Comp_DA_results)
 
@@ -151,14 +170,16 @@ spearman_res <- cor.test(
   exact = FALSE
 )
 
-LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
-    geom_point(aes(color = fisher_neglog10_q, shape = heterogeneity_class)) +
+
+ConcordancePlot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
+    geom_point(
+        aes(color = fisher_neglog10_q, 
+            shape = heterogeneity_class)
+    ) +
     geom_text_repel(
-        data = Comp_DA_results |>
-            filter(
-                heterogeneity_class == "Low heterogeneity",
-                fisher_q <= 0.05
-            ),
+        data = subset(Comp_DA_results,
+                      heterogeneity_class == "Low heterogeneity" &
+                      fisher_q <= 0.05),
         aes(label = taxon),
         size = 3.5,
         max.overlaps = Inf,
@@ -185,8 +206,9 @@ LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     labs(
         x = paste0(B1_ExpID, " logFC"),
         y = paste0(B2_ExpID, " logFC"),
-        title = paste("DA concordance between", B1_ExpID, "and", B2_ExpID),
-        subtitle = sprintf(
+        title = paste(args$comparison, "DA concordance"),
+        subtitle = paste(B1_ExpID, "vs", B2_ExpID),
+        caption = sprintf(
             "Shared taxa = %d; Spearman rho = %.2f (p = %.2g)",
             nrow(Comp_DA_results),
             unname(spearman_res$estimate),
@@ -197,9 +219,26 @@ LFCxLFC_plot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     geom_vline(xintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
     theme_classic(base_size = 12)
 
+Struc0Plot <- ggplot(agreed_struc0_df, aes(x = 0, y = factor(taxon))) +
+  geom_text(aes(label = paste0(taxon, " (", direction_b1, ")")),
+            hjust = 0, 
+            size = 3) +
+  coord_cartesian(xlim = c(0, 1)) +
+  theme_void() +
+  labs(title = "Structural Zeros") +
+  theme(plot.margin = margin(5.5, 20, 5.5, 5.5))
+
+if (!dir.exists(paste0("Exp_Output/", args$out_trial, "/", args$DA_method))) {
+    dir.create(paste0("Exp_Output/", args$out_trial, "/", args$DA_method),
+    recursive = TRUE)
+}
+
 ggsave(
-    filename = file.path("Exp_Output", args$out_dir, "batch_logFC_concordance.png"),
-    plot = LFCxLFC_plot,
+    filename = paste0("Exp_Output/", args$out_trial, "/",
+                      args$DA_method, "/",
+                      B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_logFC_concordance.png"),
+    plot = (ConcordancePlot / Struc0Plot) +
+            plot_layout(heights = c(3,0.5)),
     width = 7,
     height = 6,
     dpi = 300
@@ -207,7 +246,9 @@ ggsave(
 
 write.table(
     Comp_DA_results,
-    file = file.path("Exp_Output", args$out_dir, "shared_taxa_meta.tsv"),
+    file = paste0("Exp_Output/", args$out_trial, "/",
+                  args$DA_method, "/",
+                  B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_shared_taxa_meta.tsv"),
     sep = "\t",
     quote = FALSE,
     row.names = FALSE
