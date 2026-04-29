@@ -72,10 +72,6 @@ counts_normalization <- function(physeq,
                                  norm_method, 
                                  pseudocount, 
                                  tax_agg_level) {
-  if (!is.null(args$tax_agg_level)) {
-    physeq <- tax_glom(physeq, taxrank = args$tax_agg_level)
-    taxa_names(physeq) <- as.character(tax_table(physeq)[, args$tax_agg_level])
-  }
 
     otu_divide_by_sample_factor <- function(physeq, factor_column) {
       sample_factors <- sample_data(physeq)[[factor_column]]

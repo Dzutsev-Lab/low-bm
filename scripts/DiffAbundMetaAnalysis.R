@@ -219,14 +219,20 @@ ConcordancePlot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     geom_vline(xintercept = 0, linetype = "solid", color = "black", linewidth = 0.4) +
     theme_classic(base_size = 12)
 
-Struc0Plot <- ggplot(agreed_struc0_df, aes(x = 0, y = factor(taxon))) +
-  geom_text(aes(label = paste0(taxon, " (", direction_b1, ")")),
-            hjust = 0, 
-            size = 3) +
-  coord_cartesian(xlim = c(0, 1)) +
-  theme_void() +
-  labs(title = "Structural Zeros") +
-  theme(plot.margin = margin(5.5, 20, 5.5, 5.5))
+if (nrow(agreed_struc0_df) > 0) {
+    Struc0Plot <- ggplot(agreed_struc0_df, aes(x = 0, y = factor(taxon))) +
+    geom_text(aes(label = paste0(taxon, " (", direction_b1, ")")),
+                hjust = 0, 
+                size = 3) +
+    coord_cartesian(xlim = c(0, 1)) +
+    theme_void() +
+    labs(title = "Structural Zeros") +
+    theme(plot.margin = margin(5.5, 20, 5.5, 5.5))
+
+    ConcordancePlot <- (ConcordancePlot / Struc0Plot) + plot_layout(heights = c(3,0.5))
+}
+
+
 
 if (!dir.exists(paste0("Exp_Output/", args$out_trial, "/", args$DA_method))) {
     dir.create(paste0("Exp_Output/", args$out_trial, "/", args$DA_method),
@@ -237,8 +243,7 @@ ggsave(
     filename = paste0("Exp_Output/", args$out_trial, "/",
                       args$DA_method, "/",
                       B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_logFC_concordance.png"),
-    plot = (ConcordancePlot / Struc0Plot) +
-            plot_layout(heights = c(3,0.5)),
+    plot = ConcordancePlot,
     width = 7,
     height = 6,
     dpi = 300
