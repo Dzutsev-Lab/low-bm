@@ -52,7 +52,8 @@ metadata_df <- metadata_df |>
   rename(batch = "ProcessingBatch",
          sample_type = "SampleType") |>
   mutate(
-    is_control = str_detect(sample_type, "Control"),
+    # Only counting negative controls as controls for purposes of decontam (cell line controls don't fix with their framework)
+    is_control = sample_type == "NegativeControl",
     is_control = as.logical(is_control),
     sample_type = as.factor(sample_type),
     batch = as.factor(batch)) |>

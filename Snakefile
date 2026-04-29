@@ -31,6 +31,7 @@ MOTHUR_TAX_DIR = f"{IP_DIR}/08.1_Mothur_Taxonomy"
 KRAKEN_TAX_DIR = f"{IP_DIR}/08.2_Kraken_Taxonomy"
 NORM_COUNT_DIR = f"{OUT_DIR}/CountNormalization"
 PHYLOSEQ_DIR = f"{OUT_DIR}"
+DIFF_ABUND_DIR = f"{OUT_DIR}"
 
 TRACK_DIR = f"{OUT_DIR}/Tracking"
 LOG_DIR = f"{OUT_DIR}/Logs"
@@ -78,29 +79,17 @@ MAX_N = config["maxN"]
 MAX_EE = config["maxEE"]
 TRUNC_Q = config["truncQ"]
 
-# Read Count Normalization Parameters
-NORM_METHODS = config["norm_methods"]
-PSEUDOCOUNT = config["pseudocount"]
 
-# Phyloseq Analysis Parameters
+# Phyloseq Parameters
 ADD_UNCLASSIFIED_PREFIX = config["add_unclassified_prefix"]
+
+# Differential Abundance Parameters
+DA_METHODS = config["da_methods"]
+DA_COMPARISONS = config["da_comparisons"]
 TAX_AGG_LEVEL = config["tax_agg_level"]
 TAX_LABEL_LEVEL = config["tax_label_level"]
-
-# Negative Control Filtering Parameters
-# TODO: figure out how to format for snakemake without config file
-NEG_DB_TOP_K="10000"
-NEG_AS_KEEP_LT="160"   
-
-# Taxonomy Cutoffs
-TAX_MIN = config["tax_min_counts"]
-TAX_LEVELS = ['genus', 'species', 'class', 'phylum']
-TAX_FIELDS = {
-    "phylum":  "2",
-    "class":   "2,3",
-    "genus":   "2,3,4,5,6",
-    "species": "2,3,4,5,6,7",
-}
+NORM_METHOD = config["norm_method"]
+PSEUDOCOUNT = config["pseudocount"]
 
 
 #------------------------------------
@@ -150,9 +139,8 @@ def pick_raw_fastq(wc, read):
 #----------------------------
 rule all:
     input:
-        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData",
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
-
+        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData",
+        diff_abund_results = expand(f"{DIFF_ABUND_DIR}/{{m}}/{{c}}/{TRIAL_ID}_{{c}}_{{m}}Results.tsv", m=DA_METHODS, c=DA_COMPARISONS)
 
 rule copy_config:
     output:
@@ -457,7 +445,7 @@ rule micRoclean_decontamination_detection:
         
     threads: 8
     log:    f"{LOG_DIR}/07.1_micRoclean_decontam.log"
-    conda:  f"{CONDA_ENV_DIR}/micRoclean-env-new"
+    conda:  f"{CONDA_ENV_DIR}/micRoclean-env"
     shell:
         r"""
         set -euo pipefail
@@ -546,6 +534,99 @@ rule kraken_classification:
                 {input.decontaminated_ASV_fa}
         """
 
+#-----------------------------
+# 11 Read Count Calculations
+#-----------------------------
+rule read_counts:
+    input:
+        sample_names = f"{OUT_DIR}/sample.names",
+        
+        umi_selection_count_summary_tsv = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES),
+
+        dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
+        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        
+        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
+        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+    output:
+        library_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
+    params:
+        selected = UMI_SELECT_DIR,
+    threads: 8
+    log:    f"{LOG_DIR}/09_read_count.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+
+        Rscript scripts/ReadCountCompilation.R \
+            --sample-name-file {input.sample_names} \
+            --selected-dir {params.selected} \
+            --dada-filter-counts {input.dada_read_counts} \
+            --seq-table {input.seq_table} \
+            --host-names {input.host_unmapped_names} \
+            --viral-names {input.viral_unmapped_names} \
+            --bacterial-names {input.bacterial_names} \
+            --combined-counts {output.library_counts}
+        """
+
+rule phyloseq_construction:
+    input:
+        kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+        raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        metadata_sheet = METADATA,
+        library_counts = f"{TRACK_DIR}/combined_read_counts.tsv"
+    output:
+        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
+    params:
+        dump_dir = f"{REF_DIR}/taxdump",        
+        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
+    threads: 8
+    log:    f"{LOG_DIR}/10_phyloseq.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        Rscript scripts/PhyloseqConstruction.R \
+            --kraken-file {input.kraken_file} \
+            --bacterial-names {input.bacterial_names} \
+            --raw-seq-table {input.raw_seq_table} \
+            --metadata {input.metadata_sheet} \
+            --library-counts {input.library_counts} \
+            --dump-dir {params.dump_dir} \
+            {params.unclassified_prefix_flag} \
+            --trialID {TRIAL_ID} \
+            --out {PHYLOSEQ_DIR}
+        """
+
+rule differential_abundance_analysis:
+    input:
+        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
+    output:
+        diff_abund_results = expand(f"{DIFF_ABUND_DIR}/{{m}}/{{c}}/{TRIAL_ID}_{{c}}_{{m}}Results.tsv", m=DA_METHODS, c=DA_COMPARISONS)
+    threads: 8
+    log:    f"{LOG_DIR}/11_diff_abund.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        Rscript scripts/DiffAbundAnalysis.R \
+            --trialID {TRIAL_ID} \
+            --B1-physeq {input.phyloseq_object} \
+            --DA-methods {DA_METHODS} \
+            --DA-comparisons {DA_COMPARISONS} \
+            --norm-method {NORM_METHOD} \
+            --tax-agg-level {TAX_AGG_LEVEL} \
+            --tax-label-level {TAX_LABEL_LEVEL} \
+            --out {DIFF_ABUND_DIR}
+        """
+
 #-------------------------------
 # 10 Phyloseq Taxonomy Analysis
 #-------------------------------
@@ -554,6 +635,7 @@ rule phyloseq_analysis:
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
+        library_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
         metadata_sheet = METADATA
     output:
         phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData"
@@ -572,6 +654,7 @@ rule phyloseq_analysis:
             --kraken-file {input.kraken_file} \
             --raw-seq-table {input.raw_seq_table} \
             --bacterial-names {input.bacterial_names} \
+            --library-counts {input.library_counts} \
             --trialID {TRIAL_ID} \
             --dump-dir {params.dump_dir} \
             {params.unclassified_prefix_flag} \
@@ -581,67 +664,8 @@ rule phyloseq_analysis:
             --out {PHYLOSEQ_DIR}
         """
 
-#-----------------------------
-# 11 Read Count Calculations
-#-----------------------------
-rule read_counts:
-    input:
-        sample_names = f"{OUT_DIR}/sample.names",
-        
-        umi_selection_count_summary_tsv = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES),
 
-        dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        
-        host_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.host.ASV.names",
-        viral_unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.viral.ASV.names",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-    output:
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
-    params:
-        selected = UMI_SELECT_DIR,
-    threads: 8
-    log:    f"{LOG_DIR}/11_read_count.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
 
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-
-        Rscript scripts/ReadCountCompilation.R \
-            --sample-name-file {input.sample_names} \
-            --selected-dir {params.selected} \
-            --dada-filter-counts {input.dada_read_counts} \
-            --seq-table {input.seq_table} \
-            --host-names {input.host_unmapped_names} \
-            --viral-names {input.viral_unmapped_names} \
-            --bacterial-names {input.bacterial_names} \
-            --combined-counts {output.combined_read_counts}
-        """
-
-rule sequence_table_normalization:
-    input:
-        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData",
-        combined_read_counts = f'{TRACK_DIR}/combined_read_counts.tsv'
-    output:
-        norm_seq_table = expand(f"{NORM_COUNT_DIR}/{TRIAL_ID}_{{m}}_SeqTable.tsv", m = NORM_METHODS)
-    threads: 2
-    log:    f"{LOG_DIR}/12_seq_table_norm.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-        Rscript scripts/SeqTableNormalization.R \
-            --phyloseq-data {input.phyloseq_image} \
-            --read-counts {input.combined_read_counts} \
-            --norm-methods {NORM_METHODS} \
-            --pseudocount {PSEUDOCOUNT} \
-            --tax-agg-level {TAX_AGG_LEVEL} \
-            --out {NORM_COUNT_DIR} \
-            --trialID {TRIAL_ID}
-        """
 
 
 

@@ -1,9 +1,13 @@
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "041326.1"
-trial_descript: "ItalyLungExp1_RerunMicRocleanTrial"
-exp_name:       "240308_VH01090_210_AACCY2YHV"
-host:           "human"
+trialID:        "042826.3"
+trial_descript: "ItalyLungExp3_batchCompPrep"
+# Exp 1
+# exp_name:       "240308_VH01090_210_AACCY2YHV"
+# Exp 2
+# exp_name:       "240312_VH01090_212_AACF2VNHV"
+# Exp 3
+exp_name:       "240315_VH00687_360_AAFJKNVM5"
 
 in_root:        "Exp_Data/"
 ip_root:        "IP_Data/"
@@ -13,6 +17,7 @@ script_dir:     "scripts"
 #--------------------------
 # REFERENCE GENOMES
 #--------------------------
+host:         "human"
 human_ref:    "Ref_Data/clean.human.fa"
 mouse_ref:    "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
 viral_ref:    "Ref_Data/all.viral.fna"
@@ -78,24 +83,18 @@ tax_min_counts:
   genus: 10
   species: 5
 
-#-------------------------------------
-# READ COUNT NORMALIZATION PARAMETERS
-#-------------------------------------
-#current options: [noNorm, RelAbund, RawTSS, HostMapped, log2]
-norm_methods: ["noNorm", "RelAbund", "RawTSS", "HostMapped", "log2"]
-pseudocount: 1
-
 #-----------------------------
-# PYLOSEQ PARAMETERS
+# PHYLOSEQ PARAMETERS
 #-----------------------------
 add_unclassified_prefix: true
+
+#----------------------------------
+# DIFFERENTIAL ABUDNACE PARAMETERS
+#----------------------------------
+da_methods: ["ANCOMBC"]
+da_comparisons: ["NegativeControl", "PatientSample"]
 tax_agg_level: "Genus"
 tax_label_level: "Genus"
-
-
-#-----------------------------
-# NEGATIVE CONTROL PARAMETERS
-#-----------------------------
-neg_tags: ["NEGATIVECONTROL", "CELLSCONTROL", "NEGWATER", "BLANK", "NEGcDNA", "NEGPCR", "NEG"]
-neg_db_top_k: 10000
-neg_as_keep_lt: 160
+#current options: [noNorm, RelAbund, RawTSS, HostMapped, log2]
+norm_method: "noNorm"
+pseudocount: 1

@@ -2,23 +2,36 @@ library(phyloseq)
 library(limma)
 library(edgeR)
 library(dplyr)
+library(argparse)
 
-load("/data/taylorng/low-bm/Exp_Output/041326.1_ItalyLungExp1_RerunMicRocleanTrial/041326.1_raw_kraken_phyloseq.RData")
-B1_physeq <- raw_kraken_phyloseq
 
-load("/data/taylorng/low-bm/Exp_Output/041026.1_ItalyLungExp2_micRocleanTrial/041026.1_raw_kraken_phyloseq.RData")
-B2_physeq <- raw_kraken_phyloseq
+parser <- ArgumentParser()
 
-taxa_of_interest <- c(
-    "g__Haemophilus",
-    "g__Klebsiella",
-    "UC_o__Enterobacterales",
-    "g__Acinetobacter",
-    "g__Lautropia",
-    "UC_f__Neisseriaceae",
-    "g__Gemella",
-    "g__Anaerococcus"
-)
+parser$add_argument("--B1-physeq",
+                    type = "character",
+                    help = "physeq object from batch #1 for comparison")
+parser$add_argument("--B2-physeq",
+                    type = "character",
+                    help = "physeq object from batch #2 for comparison")
+parser$add_argument("--taxa-of-interest",
+                    type = "character",
+                    help = "list of taxa to produce violin plots for")
+parser$add_argument("--trialID",
+                    type = "character",
+                    help = "ID number for the trial to label output plots")
+parser$add_argument("--out",
+                    type = "character",
+                    help = "output directory")
+
+args <- parser$parse_args()
+
+load(args$B1_physeq)
+B1_physeq <- physeq
+
+load(args$B2_physeq)
+B2_physeq <- physeq
+
+taxa_of_interest <- args$taxa_of_interest
 
 
 
