@@ -43,6 +43,8 @@ if (args$limma_voom) {
     args$norm_method <- "noNorm"
 }
 
+
+# STEP 1: Import phyloseq objects for each sequencing batch
 load(paste0("Exp_Output/", args$B1_physeq))
 B1_physeq <- physeq
 
@@ -89,11 +91,13 @@ counts_normalization <- function(physeq,
 }
 
 
+# Step 2: Group, glom, and normalize phyloseq according to desired comparison and normalization method
 prep_phyloseq <- function(physeq, norm_method, pseudocount) {
-    grouped_physeq <- subset_samples(physeq, SampleType %in% c("NormalTissue", "Tumor"))
-    grouped_physeq <- prune_taxa(taxa_sums(grouped_physeq) > 0, grouped_physeq)
+    # grouped_physeq <- subset_samples(physeq, SampleType %in% c("NormalTissue", "Tumor"))
+    # grouped_physeq <- prune_taxa(taxa_sums(grouped_physeq) > 0, grouped_physeq)
    
-    glommed_physeq <- tax_glom(grouped_physeq, taxrank = "Genus")
+    # glommed_physeq <- tax_glom(grouped_physeq, taxrank = "Genus")
+    glommed_physeq <- tax_glom(physeq, taxrank = "Genus")
     taxa_names(glommed_physeq) <- as.character(tax_table(glommed_physeq)[, "Genus"])
 
     normalized_physeq <- counts_normalization(physeq = glommed_physeq,
@@ -114,7 +118,7 @@ prep_B2_physeq <- prep_phyloseq(
     pseudocount = args$pseudocount
 )
 
-
+# STEP 3: Optionally use limma/voom normalization (mutually exclusive with other normalization methods)
 limma_voom_normalization <- function(prep_physeq) {
     metadata <- as.data.frame(as.matrix(sample_data(prep_physeq)))
     counts <- as.matrix(t(as(otu_table(prep_physeq), "matrix")))
@@ -139,7 +143,7 @@ if (args$limma_voom) {
 }
 
 
-
+# STEP 4: Melt phyloseq object into dataframe for compositing
 melt_and_batch_label <- function(prep_physeq, batch_name) {
     melted_df <- psmelt(prep_physeq)
     melted_df$Batch <- batch_name
@@ -150,6 +154,8 @@ melt_and_batch_label <- function(prep_physeq, batch_name) {
 melt_B1_df <- melt_and_batch_label(prep_B1_physeq, "ItalyExp1")
 melt_B2_df <- melt_and_batch_label(prep_B2_physeq, "ItalyExp2")
 
+
+# STEP 5: Composite phyloseq dataframes and filter to taxa of interest
 comp_and_filter_df <- function(df1, df2, taxa_of_interest) {
     comp_df <- bind_rows(df1, df2)
 
@@ -168,15 +174,16 @@ comp_and_filter_df <- function(df1, df2, taxa_of_interest) {
 comp_df <- comp_and_filter_df(
     df1 = melt_B1_df, 
     df2 = melt_B2_df,
-    taxa_of_interest = args$taxa_of_interest
+    taxa_of_interest = taxa_of_interest
 )
 
-
+# STEP 6: Import differential abundance results (for statistical context included in violin plot captions)
 DA_results_df <- read.delim(paste0("Exp_Output/", args$DA_results), header = TRUE) |> filter(taxon %in% args$taxa_of_interest)
 
-out_dir <- paste0("Exp_Output/", args$out_dir)
+# STEP 7: Violin plotting
+out_dir <- paste0("Exp_Output/", args$out_dir, "/", args$norm_method)
 if (!dir.exists(out_dir)) {
-    dir.create(raw_out_dir, recursive = TRUE)
+    dir.create(out_dir, recursive = TRUE)
 }
 
 for (taxon in taxa_of_interest) {
@@ -229,17 +236,68 @@ for (taxon in taxa_of_interest) {
         )
     
     ggsave(
-        filename = paste0(out_dir, "/", taxon, "_violin_plot.png"),
+        filename = paste0(out_dir, "/", taxon, "_", args$norm_method,"_violin_plot.png"),
         plot = violin_plot,
         width = 8,
         height = 4
     )
 
     ggsave(
-        filename = paste0(out_dir, "/", taxon, "_multibatch_violin_plot.png"),
+        filename = paste0(out_dir, "/", taxon, "_", args$norm_method, "_multibatch_violin_plot.png"),
         plot = multibatch_violin_plot,
         width = 8,
         height = 4
     )
 
 }
+
+# STEP 8: Heat map plotting
+Heat_Mapping <- function(batch_name, 
+                         norm_method,
+                         prep_physeq, 
+                         taxa_of_interest,
+                         out_dir) {
+
+    pruned_physeq <- prune_taxa(taxa_of_interest, prep_physeq)
+    column_order <- rownames(sample_data(pruned_physeq))[order(sample_data(pruned_physeq)$SampleType,
+                                                               sample_data(pruned_physeq)$PatientID)]
+
+    heatmap_plot <- plot_heatmap(pruned_physeq,
+                                 sample.order = column_order,
+                                 taxa.order = taxa_of_interest,
+                                 title = paste0(batch_name, " Select Taxa Heatmap ",
+                                                ifelse(norm_method == "noNorm",
+                                                       "(Unnormalized)",
+                                                       paste0("(", norm_method, ")")
+                                                )
+                                         ),
+                                 sample.label = "SampleID",
+                                 taxa.label = "Genus")
+    
+    # Add vertical line separating samples by sample type
+    type_ordered <- sample_data(pruned_physeq)[column_order, "SampleType"]
+    type_block_sizes <- table(type_ordered)
+    type_block_cuts <- cumsum(type_block_sizes)
+    heatmap_plot <- heatmap_plot + geom_vline(xintercept = type_block_cuts+0.5, linewidth = 1, color = "white")
+
+    ggsave(
+        filename = paste0(out_dir, "/", batch_name, "_", norm_method, "_SelectTaxaHeatmap.png"),
+        plot = heatmap_plot,
+        width = 14,
+        height = 12,
+        units = "in",
+        dpi = 300
+    )
+}
+
+Heat_Mapping(batch_name = "ItalyLungExp1",
+             norm_method = args$norm_method,
+             prep_physeq = prep_B1_physeq,
+             taxa_of_interest = taxa_of_interest,
+             out_dir = out_dir)
+
+Heat_Mapping(batch_name = "ItalyLungExp2",
+             norm_method = args$norm_method,
+             prep_physeq = prep_B2_physeq,
+             taxa_of_interest = taxa_of_interest,
+             out_dir = out_dir)
