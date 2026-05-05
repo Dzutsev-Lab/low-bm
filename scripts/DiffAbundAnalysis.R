@@ -56,6 +56,10 @@ parser$add_argument("--tax-label-level",
                     type = "character",
                     default = "Genus",
                     help = "taxonomic level to use for taxon labels in plots (e.g. Genus, Family, etc.)")
+parser$add_argument("--select-taxa-names",
+                    type = "character",
+                    nargs = "+",
+                    help = "optional list of files containing lists of taxa to subset differential abundance analysis to (union of all unique names provided)")
 parser$add_argument("--out",
                     type = "character",
                     help = "directory to store output abundance plots")
@@ -98,6 +102,9 @@ counts_normalization <- function(physeq,
       physeq <- otu_divide_by_sample_factor(physeq, "Raw_reads")
   } else if (norm_method == "HostMapped") {
       physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
+  } else if (norm_method == "log2HostMapped") {
+      physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
+      physeq <- transform_sample_counts(physeq, function(x) log2(x + pseudocount))
   } else {
       message("Unknown normalization method provided for limma voom pre-normlaization, no normalization used.")
   }
@@ -633,14 +640,17 @@ all_DA_analysis <- function(phyloseq,
                             DA_methods,
                             Comparisons,
                             norm_method, psuedocount,
-                            tax_agg_level = NULL, tax_label_level = "Genus") {
+                            tax_agg_level = NULL, tax_label_level = "Genus",
+                            select_taxa = NULL) {
   
   for (DA_method in DA_methods) {
     for (Comparison in Comparisons) {
       Grouped_phyloseq <- SampleGrouping(Ungrouped_phyloseq = phyloseq, 
                                          GroupingType = Comparison,
                                          tax_agg_level = tax_agg_level)
-
+      if (!is.null(select_taxa)) {
+        Grouped_phyloseq <- prune_taxa(select_taxa, Grouped_phyloseq)
+      }
       if (nsamples(Grouped_phyloseq) == 0 ||
           is.null(Grouped_phyloseq) ||
           length(unique(as.matrix(sample_data(Grouped_phyloseq))[,"SampleType"])) < 2) {
@@ -673,6 +683,14 @@ if (!is.null(args$B2_physeq)) {
   CompPhyseq <- B1physeq
 }
 
+# Read in selected taxa names if chosen to subset
+if (!is.null(args$select_taxa_names)) {
+  select_taxa <- unique(unlist(lapply(args$select_taxa_names, function(name_file) {
+    read.csv(name_file, stringsAsFactors = FALSE)[[1]]
+  })))
+} else {
+  select_taxa = NULL
+}
 
 
 all_DA_analysis(phyloseq = CompPhyseq,
@@ -680,4 +698,5 @@ all_DA_analysis(phyloseq = CompPhyseq,
                 Comparisons = args$DA_comparisons,
                 norm_method = args$norm_method,
                 psuedocount = args$pseudocount,
-                tax_agg_level = args$tax_agg_level)
+                tax_agg_level = args$tax_agg_level,
+                select_taxa = select_taxa)

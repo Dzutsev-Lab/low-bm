@@ -22,6 +22,12 @@ parser$add_argument("--DA-method",
 parser$add_argument("--comparison",
                     type = "character",
                     help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNormalTissue, NegativeControl, PatientSample)")
+parser$add_argument("--hetQ-p-cutoff",
+                    type = "double",
+                    help = "Threshold value for random effect model hetergenity Q p-value to differentiate between low- and high-heterogeneity taxa")
+parser$add_argument("--fisher-q-cutoff",
+                    type = "double",
+                    help = "Threshold value for adjusted fisher composite p-values to differentiate significant differentially abundant taxa")
 parser$add_argument("--out-trial",
                     type = "character",
                     help = "desired output directory within Exp_Ouput")
@@ -93,7 +99,8 @@ if (args$DA_method == "ANCOMBC") {
 #------------------------------------------------
 # Fisher composite q value calculator
 #------------------------------------------------
-calc_fisher_q <- function(Composite_DA_df) {
+calc_fisher_q <- function(Composite_DA_df,
+                          fisher_q_cutoff) {
     required_cols <- c("p_b1", "p_b2")
     missing_cols <- setdiff(required_cols, names(Composite_DA_df))
     if (length(missing_cols) > 0) {
@@ -109,11 +116,13 @@ calc_fisher_q <- function(Composite_DA_df) {
     mutate(
         fisher_q = p.adjust(fisher_p, method = "BH"),
         fisher_neglog10_p = -log10(pmax(fisher_p, .Machine$double.xmin)),
-        fisher_neglog10_q = -log10(pmax(fisher_q, .Machine$double.xmin))
+        fisher_neglog10_q = -log10(pmax(fisher_q, .Machine$double.xmin)),
+        fisher_sig = fisher_q <= fisher_q_cutoff
     )
 }
 
-calc_random_effect_heterogeneity <- function(Composite_DA_df) {
+calc_random_effect_heterogeneity <- function(Composite_DA_df,
+                                             hetQ_p_cutoff) {
 
     required_cols <- c("logFC_b1", "se_b1", "logFC_b2", "se_b2")
     missing_cols <- setdiff(required_cols, names(Composite_DA_df))
@@ -144,7 +153,7 @@ calc_random_effect_heterogeneity <- function(Composite_DA_df) {
         mutate(
             het_Q_q = p.adjust(het_Q_p, method = "BH"),
             # basing heterogeneity on unadjusted het_Q p-value out of caution
-            non_heterogeneous = het_Q_p > 0.2,
+            non_heterogeneous = het_Q_p > hetQ_p_cutoff,
             het_neglog10_q = -log10(pmax(het_Q_q, .Machine$double.xmin)),
             heterogeneity_class = ifelse(
                 non_heterogeneous,
@@ -160,8 +169,17 @@ agreed_struc0_df <- Comp_DA_results |>
 # Filter out any taxa with any Structural Zero (disconcordant or concordant)
 Comp_DA_results <- Comp_DA_results |> 
     filter(is.na(struc0_b1) & is.na(struc0_b2))
-Comp_DA_results <- calc_fisher_q(Composite_DA_df= Comp_DA_results)
-Comp_DA_results <- calc_random_effect_heterogeneity(Composite_DA_df= Comp_DA_results)
+Comp_DA_results <- calc_fisher_q(Composite_DA_df = Comp_DA_results,
+                                 fisher_q_cutoff = args$fisher_q_cutoff)
+Comp_DA_results <- calc_random_effect_heterogeneity(Composite_DA_df= Comp_DA_results,
+                                                    hetQ_p_cutoff = args$hetQ_p_cutoff)
+
+# Create subset data frame with only taxa that meet our desired thresolds for concordance and signficance
+Concord_DA_results <- subset(Comp_DA_results,
+                                  heterogeneity_class == "Low heterogeneity" &
+                                  fisher_sig)
+
+Taxa_of_Interest <- Concord_DA_results$taxon
 
 spearman_res <- cor.test(
   Comp_DA_results$logFC_b1,
@@ -170,16 +188,13 @@ spearman_res <- cor.test(
   exact = FALSE
 )
 
-
 ConcordancePlot <- ggplot(Comp_DA_results, aes(x = logFC_b1, y = logFC_b2)) +
     geom_point(
         aes(color = fisher_neglog10_q, 
             shape = heterogeneity_class)
     ) +
     geom_text_repel(
-        data = subset(Comp_DA_results,
-                      heterogeneity_class == "Low heterogeneity" &
-                      fisher_q <= 0.05),
+        data = Concord_DA_results,
         aes(label = taxon),
         size = 3.5,
         max.overlaps = Inf,
@@ -258,3 +273,11 @@ write.table(
     quote = FALSE,
     row.names = FALSE
 )
+
+write.table(Taxa_of_Interest, 
+          file = paste0("Exp_Output/", args$out_trial, "/",
+                        args$DA_method, "/",
+                        B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_taxa_of_interest.csv"),
+          sep = ",",
+          col.names = FALSE,
+          row.names = FALSE)
