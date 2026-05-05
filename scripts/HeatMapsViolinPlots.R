@@ -172,6 +172,16 @@ for (taxon in taxa_of_interest) {
 
     single_tax_df <- MeltPhyseq_df |> filter(OTU == taxon)
 
+    techrep_avg_single_tax_df <- single_tax_df |>
+        group_by(SampleID) |>
+        summarise(
+            Abundance = mean(Abundance, na.rm = FALSE),
+            PatientOutcome = first(PatientOutcome),
+            SampleType = first(SampleType),
+            PatientID = first(PatientID),
+            .groups = "drop"
+        )
+
     violin_plot <- ggplot(single_tax_df, 
                           aes(x = SampleType, y = Abundance, fill = SampleType)) +
         geom_violin(trim = FALSE, alpha = 0.6) +
@@ -188,15 +198,18 @@ for (taxon in taxa_of_interest) {
             legend.position = "none"
         )
 
-    B1_LFC <- round(as.numeric(DA_results_df[DA_results_df$taxon == taxon, "logFC_b1"]), 2)
-    B2_LFC <- round(DA_results_df[DA_results_df$taxon == taxon, "logFC_b2"], 2)
+    single_tax_DA_results_df <- DA_results_df[DA_results_df$taxon == taxon, ,drop=FALSE]
 
-    B1_adj_p <- round(DA_results_df[DA_results_df$taxon == taxon, "adj_p_b1"], 3)
-    B2_adj_p <- round(DA_results_df[DA_results_df$taxon == taxon, "adj_p_b2"], 3)
+    B1_LFC <- round(single_tax_DA_results_df[, "logFC_b1"], 2)
+    B2_LFC <- round(single_tax_DA_results_df[, "logFC_b2"], 2)
 
-    het_Q <- round(DA_results_df[DA_results_df$taxon == taxon, "het_Q"], 3)
-    het_Q_q <- round(DA_results_df[DA_results_df$taxon == taxon, "het_Q_q"], 3)
+    B1_adj_p <- round(single_tax_DA_results_df[, "adj_p_b1"], 3)
+    B2_adj_p <- round(single_tax_DA_results_df[, "adj_p_b2"], 3)
 
+    het_Q <- round(single_tax_DA_results_df[, "het_Q"], 3)
+    het_Q_q <- round(single_tax_DA_results_df[, "het_Q_q"], 3)
+
+    fisher_q <- round(single_tax_DA_results_df[, "fisher_q"], 4)
 
     multibatch_violin_plot <- ggplot(single_tax_df, 
                                      aes(x = SampleType, y = Abundance)) +
@@ -217,9 +230,29 @@ for (taxon in taxa_of_interest) {
             plot.title = element_text(hjust = 0.5),
         )
     
+    techrep_avg_violin_plot <- ggplot(filter(techrep_avg_single_tax_df, SampleType != "CellLineControl"), 
+                                      aes(x = SampleType, y = Abundance)) +
+        geom_violin(aes(fill = SampleType, group = SampleType),
+                        trim = FALSE, alpha = 0.6) +
+        geom_jitter(aes(fill = SampleType),
+                    width =0.2, size = 1.5, alpha = 0.8) +
+        labs(
+            title = paste("Averaged Abundance Comparison for", taxon),
+            subtitle = paste0("Fisher q-value: ", fisher_q, "; ",
+                              "HetQ: ", het_Q, " (q=", het_Q_q, ")"),
+            x = "Sample Type",
+            y = paste0("Normalized Avg Abund (", args$norm_method, ")")
+        ) +
+        theme_bw() +
+        theme(
+            plot.title = element_text(hjust = 0.5),
+        )
+    
     if (!dir.exists(paste0(out_dir, "/", taxon))) {
         dir.create(paste0(out_dir, "/", taxon), recursive = TRUE)
     }
+
+
 
     ggsave(
         filename = paste0(out_dir, "/", taxon, "/",
@@ -233,6 +266,14 @@ for (taxon in taxa_of_interest) {
         filename = paste0(out_dir, "/", taxon, "/",
                           taxon, "_", args$norm_method, "_multibatch_violin_plot.png"),
         plot = multibatch_violin_plot,
+        width = 8,
+        height = 4
+    )
+
+    ggsave(
+        filename = paste0(out_dir, "/", taxon, "/",
+                          taxon, "_", args$norm_method, "_techrep_avg_violin_plot.png"),
+        plot = techrep_avg_violin_plot,
         width = 8,
         height = 4
     )
