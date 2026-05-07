@@ -1,13 +1,12 @@
+# Trial infromation (trialID, trial_descript, and exp_dir) taken from experiment_batch_configs.tsv 
+#   for SLURM job array submission
+#   Can enter manually for bespoke snakemake runs
 # trialID Format: ddmmyy.{trial number}
 # trial_descript Format: {experiment dataset}_{trial description}
-trialID:        "042826.3"
-trial_descript: "ItalyLungExp3_batchCompPrep"
-# Exp 1
-# exp_name:       "240308_VH01090_210_AACCY2YHV"
-# Exp 2
-# exp_name:       "240312_VH01090_212_AACF2VNHV"
-# Exp 3
-exp_name:       "240315_VH00687_360_AAFJKNVM5"
+trialID:        ""
+trial_descript: ""
+exp_dir:        ""
+metadata_file:  "TIGERLiverCancerCohort/TIGERLiverCancerCohort_metadata.xlsx"
 
 in_root:        "Exp_Data/"
 ip_root:        "IP_Data/"

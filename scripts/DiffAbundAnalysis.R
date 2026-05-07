@@ -39,7 +39,7 @@ parser$add_argument("--DA-methods",
 parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
-                    help = "Choice of differential abunance comprisons to use [CellLineControltoTumor, CellLineControltoNormalTissue, NegativeControl, PatientSample]")
+                    help = "Choice of differential abunance comprisons to use [CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample]")
 parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
@@ -122,12 +122,12 @@ SampleGrouping <- function(Ungrouped_phyloseq,
     keep_samples <- !is.na(get_variable(Ungrouped_phyloseq, "SampleType"))
   } else if (GroupingType == "CellLineControltoTumor") {
     keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Tumor")
-  } else if (GroupingType == "CellLineControltoNormalTissue") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "NormalTissue")
+  } else if (GroupingType == "CellLineControltoNontumor") {
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Nontumor")
   } else if (GroupingType == "NegativeControl") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("NegativeControl", "Tumor", "NormalTissue")
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("NegativeControl", "Tumor", "Nontumor")
   } else if (GroupingType == "PatientSample") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("Tumor", "NormalTissue")
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("Tumor", "Nontumor")
   }
 
   #Protecting against comparisons where one or more comparison groups are missing
@@ -162,7 +162,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
   #STEP 1: Set formula for ANCOM-BC run, desired columns from ANCOM-BC output, and fomatted output file label
   #         based on comparison
   # TODO: simplify handling of control comparisons versus patient sample comparison (single grouping variable)
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNormalTissue", "NegativeControl", "AllControl")) {
+  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
     formula <- "ControlStatus"
     grouping_variable <- "ControlStatus"
     results_table_groups <- c("taxon", "ControlStatusPatientSample")
@@ -176,7 +176,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
     grouping_variable <- "SampleType"
     results_table_groups <- c("taxon", "SampleTypeTumor")
     default_struc0_groups <- c("taxon", 
-                               "structural_zero (SampleType = NormalTissue)", 
+                               "structural_zero (SampleType = Nontumor)", 
                                "structural_zero (SampleType = Tumor)")
     comp_file_label <- "NTtoT"
   }
@@ -295,7 +295,7 @@ LIMMA_VOOM_DA <- function(Grouped_phyloseq,
     metadata <- metadata[!(rownames(metadata) %in% low_count_samples), , drop = FALSE]
   }
 
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNormalTissue", "NegativeControl", "AllControl")) {
+  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
     design <- model.matrix(~ ControlStatus,
                            data = metadata)
     results_table_header <- "ControlStatusPatientSample"
@@ -417,7 +417,7 @@ DA_volcano_plotting <- function(DA_results_df,
 
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNormalTissue", "NegativeControl", "AllControl")) {
+  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
     comp_file_label <- paste0(GroupingType, "toPS")
     plot_title_label <- paste(GroupingType, "vs Patient Samples")
   } else if (GroupingType == "PatientSample"){
@@ -512,7 +512,7 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
                                 DA_method) {
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNormalTissue", "NegativeControl", "AllControl")) {
+  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
     comp_file_label <- paste0(GroupingType, "toPS")
     plot_title_label <- paste(GroupingType, "vs Patient Samples")
   } else if (GroupingType == "PatientSample"){

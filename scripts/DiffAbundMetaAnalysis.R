@@ -21,7 +21,7 @@ parser$add_argument("--DA-method",
                     help = "The tool used to generate differenital abundance results (Options: LIMMA_VOOM, ANCOMBC)")
 parser$add_argument("--comparison",
                     type = "character",
-                    help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNormalTissue, NegativeControl, PatientSample)")
+                    help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample)")
 parser$add_argument("--hetQ-p-cutoff",
                     type = "double",
                     help = "Threshold value for random effect model hetergenity Q p-value to differentiate between low- and high-heterogeneity taxa")

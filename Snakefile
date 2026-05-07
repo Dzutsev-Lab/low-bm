@@ -5,16 +5,16 @@ configfile: "config.yaml"
 
 # Input and Output Directories
 TRIAL_ID = config["trialID"]
-TRIAL_NAME = TRIAL_ID + "_" + config["trial_descript"]
-EXP_NAME = config["exp_name"]
+TRIAL_NAME = str(TRIAL_ID) + "_" + config["trial_descript"]
+EXP_DIR = config["exp_dir"]
 
-IN_DIR = os.path.join(config["in_root"], f"{EXP_NAME}_Data")
-IP_DIR = os.path.join(config["ip_root"], EXP_NAME)
-OUT_DIR = os.path.join(config["out_root"], TRIAL_NAME)
+IN_DIR =    os.path.join(config["in_root"], EXP_DIR)
+IP_DIR =    os.path.join(config["ip_root"], EXP_DIR)
+OUT_DIR =   os.path.join(config["out_root"], TRIAL_NAME)
+METADATA =  os.path.join(config["in_root"], config["metadata_file"])
 
 SCRIPTS = config["script_dir"]
 REF_DIR = "Ref_Data"
-METADATA = f"{IN_DIR}/{EXP_NAME}_metadata.xlsx"
 CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
 
 
@@ -360,7 +360,8 @@ rule dada_denoising:
             --primerLen {params.primerLen} \
             --maxN {params.maxN} \
             --maxEE {params.maxEE} \
-            --truncQ {params.truncQ} 
+            --truncQ {params.truncQ} \
+            --threads {threads}
         """
 
 #--------------------------------------------------------
@@ -437,6 +438,7 @@ rule micRoclean_decontamination_detection:
     input:
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+        sample_names = f"{OUT_DIR}/sample.names",
         metadata_sheet = METADATA
     output:
         decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
@@ -453,6 +455,7 @@ rule micRoclean_decontamination_detection:
         Rscript scripts/Decontamination.R \
             --seq-table {input.seq_table} \
             --bacterial-names {input.bacterial_names} \
+            --sample-names {input.sample_names} \
             --metadata {input.metadata_sheet} \
             --trialID {TRIAL_ID} \
             --out {MICROCLEAN_DECONTAM_DIR}
@@ -578,6 +581,7 @@ rule phyloseq_construction:
         kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        sample_names = f"{OUT_DIR}/sample.names",
         metadata_sheet = METADATA,
         library_counts = f"{TRACK_DIR}/combined_read_counts.tsv"
     output:
@@ -596,6 +600,7 @@ rule phyloseq_construction:
             --kraken-file {input.kraken_file} \
             --bacterial-names {input.bacterial_names} \
             --raw-seq-table {input.raw_seq_table} \
+            --sample-names {input.sample_names} \
             --metadata {input.metadata_sheet} \
             --library-counts {input.library_counts} \
             --dump-dir {params.dump_dir} \

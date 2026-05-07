@@ -1,23 +1,6 @@
-#!/usr/bin/env Rscript
-
-#----------------------------
-# Log Construction (no longer needed becuase running via shell directive with std err and std out taken care of)
-#----------------------------  
-# logfile <- snakemake@log[[1]]
-# if (!is.null(logfile) && nzchar(logfile)) {
-#   logcon <- file(logfile, open = "wt")
-#   sink(logcon, type = "output")
-#   sink(logcon, type = "message")
-#   cat("----- R script started -----\n")
-#   cat("Working dir:", getwd(), "\n")
-#   cat("Sys.getenv PATH:", Sys.getenv("PATH"), "\n")
-#   flush.console()
-# }
-
 library(dada2)
 library(Biostrings)
 library(ggplot2)
-#library(DECIPHER)
 library(argparse)
 
 #---------------------------------
@@ -43,6 +26,9 @@ parser$add_argument("--primerLen", type="integer")
 parser$add_argument("--maxN", type="integer")
 parser$add_argument("--maxEE", type="integer")
 parser$add_argument("--truncQ", type="integer")
+
+#computational resource parameters
+parser$add_argument("--threads", type="integer")
 
 args <- parser$parse_args()
 
@@ -86,24 +72,17 @@ names(filtered.fq.files) <- sample.names
 #----------------------------
 # Filtering and Trimming
 #----------------------------  
-chunk_idx <- split(seq_along(fq.files), ceiling(seq_along(fq.files) / chunk_size))
-outs_list <- vector("list", length(chunk_idx))
-
-for (i in seq_along(chunk_idx)) {
-  j <- chunk_idx[[i]]
-  message(sprintf('[chunk %d/%d] processing %d samples', i, length(chunk_idx), length(j)))
-  filter.result <- filterAndTrim( fwd = fq.files[j], 
-                                  filt = filtered.fq.files[j],
-                                  trimLeft = primerLen,
-                                  truncLen = truncLen,
-                                  maxN = maxN, maxEE = maxEE, truncQ = truncQ, 
-                                  rm.phix = TRUE,
-                                  compress = FALSE, 
-                                  multithread = TRUE)
-  outs_list[[i]] <- filter.result
-
-}
-out_mat <- do.call(rbind, outs_list)
+out_mat <- filterAndTrim( 
+  fwd = fq.files, 
+  filt = filtered.fq.files,
+  trimLeft = primerLen,
+  truncLen = truncLen,
+  maxN = maxN, maxEE = maxEE, truncQ = truncQ, 
+  rm.phix = TRUE,
+  compress = FALSE, 
+  multithread = args$threads,
+  n = chunk_size
+)
 rownames(out_mat) <- names(fq.files)
 
 # ---- find filtered, non-empty fastqs ----
@@ -133,7 +112,7 @@ if (length(zero.fq.idx) > 0) {
 # ---- Insufficient FASTQ check ----
 if (length(nonzero.fq.files) < 2) stop("Not enough filtered+trimmed FASTQs to learn error model.")
 
-error.model <- learnErrors(nonzero.fq.files, multithread = TRUE)
+error.model <- learnErrors(nonzero.fq.files, multithread = args$threads)
 
 # ---- plot error models ----
 png(filename = args$err_plt, width=800, height=600)
@@ -143,13 +122,13 @@ dev.off()
 #----------------------------
 # Unique Sequence Denoising
 #----------------------------
-denoised.reads <- dada(nonzero.fq.files, err=error.model, multithread=TRUE)
+denoised.reads <- dada(nonzero.fq.files, err=error.model, multithread = args$threads)
 
 # ---- Construct Sequence Table ----
 seqtab.denoise <- makeSequenceTable(denoised.reads)
 
 # ---- Remove Chimeras ----
-seqtab.nochim <- removeBimeraDenovo(seqtab.denoise, method = "consensus", multithread = TRUE)
+seqtab.nochim <- removeBimeraDenovo(seqtab.denoise, method = "consensus", multithread = args$threads)
 
 # ---- Add Empty Entries for Completely Filetered Samples ----
 missing.samples <- setdiff(sample.names, rownames(seqtab.nochim))
@@ -223,11 +202,3 @@ write.table(seqtab.nochim,
             sep = '\t', 
             quote = FALSE, 
             col.names = NA) #check to see if this is not mutating the matrix
-
-# #----------------------------
-# # Log Close
-# #----------------------------
-# if (!is.null(logfile) && nzchar(logfile)) {
-#   sink(type = "message"); sink(type = "output")
-#   close(logcon)
-# }

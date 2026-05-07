@@ -5,6 +5,11 @@ Exp_Data/
 OLD_TRIALS/
 IP_Data/
 Exp_Output/
+SLURM_stderr/
+SLURM_stdout/
+snakemake_logs/
+experiment_batch_configs/
+experiment_batch_configs.tsv
 .snakemake/
 .vscode/
 .Rhistory

@@ -28,6 +28,9 @@ parser$add_argument("--raw-seq-table",
 parser$add_argument("--bacterial-names",
                     type = "character",
                     help = "names of bacterial ASVs")
+parser$add_argument("--sample-names", 
+                    type="character", 
+                    help="Text file containing list of sample names, one per line")
 parser$add_argument("--metadata",
                     type = "character",
                     help = "standardized metadata sheet as .xlsx file")
@@ -69,35 +72,32 @@ bacterial_IDs <- bacterial_IDs[nzchar(bacterial_IDs)] # removes empty lines # no
 raw_seq_table <- read.delim(args$raw_seq_table,
                             header = TRUE,
                             row.names = 1)
-raw_seq_table <- raw_seq_table[, bacterial_IDs] |>
-  rownames_to_column(var = "Sample_ID") |>
-  mutate(Sample_ID = sub("_S\\d+$", "", Sample_ID)) |>
-  column_to_rownames(var = "Sample_ID")
 
 
 #--------------------------------
 # Sample Data Table Construction
 #--------------------------------
+sample_names <- readLines(args$sample_names)
+sample_names <- trimws(sample_names)
+sample_names <- sample_names[sample_names != ""]
+
 sample_meta_data_df <- read_excel(args$metadata)
 sample_meta_data_df <- sample_meta_data_df |>
-  dplyr::rename(Batch = ProcessingBatch) |>
+  filter(SampleName %in% sample_names) |>
   mutate(
     IsControl = str_detect(SampleType, "Control"),
     IsControl = as.logical(IsControl),
-    PatientID = ifelse(IsControl,
-                       NA,
-                       parse_number(SampleID)),
     ControlStatus = ifelse(IsControl,
                            "Control",
                            "PatientSample"),
     SampleType = as.factor(SampleType),
-    Batch = as.factor(Batch),
-    PatientID = as.factor(PatientID)) 
+    PatientID = as.factor(PatientID),
+    SampleID = as.factor(SampleID)) 
 
 library_counts_df <- read.delim(args$library_counts, sep = "\t", header = TRUE)
 library_counts_df <- library_counts_df |>
   mutate(
-      SampleName = sub("_S\\d+$", "", SampleID),
+      SampleName = SampleID,
       Raw_reads = as.numeric(Raw_reads),
       HostMappedReads = chimera.filtered - HostUnmapped_reads,
       HostMappedReads = as.numeric(HostMappedReads) 

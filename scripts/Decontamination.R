@@ -14,6 +14,9 @@ parser$add_argument("--seq-table",
 parser$add_argument("--bacterial-names",
                     type = "character",
                     help = "ASV IDs associated with bacterial reads according to mapping filters")
+parser$add_argument("--sample-names", 
+                    type="character", 
+                    help="Text file containing list of sample names, one per line")
 parser$add_argument("--metadata",
                     type = "character",
                     help = "standardized metadata sheet as .xslx file")
@@ -26,6 +29,10 @@ parser$add_argument("--out",
 
 args <- parser$parse_args()
 
+sample_names <- readLines(args$sample_names)
+sample_names <- trimws(sample_names)
+sample_names <- sample_names[sample_names != ""]
+
 #---------------------------
 # Construct count matrix
 #---------------------------
@@ -36,21 +43,32 @@ raw_seq_table <- read.delim(args$seq_table,
 bacterial_ASVids <- readLines(args$bacterial_names)
 bacterial_ASVids <- bacterial_ASVids[nzchar(bacterial_ASVids)]
 
-counts_df <- raw_seq_table[, bacterial_ASVids]
-# Remove S## label from sample names in the sequence table to match with metadata sample names
-counts_df <- counts_df |>
-  rownames_to_column(var = "Sample_ID") |>
-  mutate(Sample_ID = sub("_S\\d+$", "", Sample_ID)) |>
-  column_to_rownames(var = "Sample_ID")
-
+counts_df <- raw_seq_table[, bacterial_ASVids, drop = FALSE]
 
 #---------------------------
 # Construct sample metadata
 #---------------------------
 metadata_df <- read_excel(args$metadata)
 metadata_df <- metadata_df |> 
-  rename(batch = "ProcessingBatch",
-         sample_type = "SampleType") |>
+  filter(SampleName %in% sample_names)
+
+if (length(setdiff(sample_names, metadata_df$SampleName)) > 0) {
+  message(paste("No metadata information found for:", paste(unlist(setdiff(sample_names, metadata_df$SampleName)), collapse = ", ")))
+  counts_df <- counts_df[rownames(counts_df) %in% metadata_df$SampleName, , drop = FALSE]
+} 
+
+  # Use ProcessingBatch as batch for Step 1 of micRoclean if cases where it exists in metadata
+  #   If it is missing from meta data, set to default value with one level, will automatically skip
+if ("ProcessingBatch" %in% names(metadata_df)) {
+  metadata_df <- metadata_df |> 
+    rename(batch = ProcessingBatch)
+} else {
+  metadata_df <- metadata_df |> 
+    mutate(batch = "NoProcessingBatches")
+}
+
+metadata_df <- metadata_df |> 
+  rename(sample_type = "SampleType") |>
   mutate(
     # Only counting negative controls as controls for purposes of decontam (cell line controls don't fix with their framework)
     is_control = sample_type == "NegativeControl",
@@ -72,7 +90,6 @@ tr <- data.frame(
 # Run micRoclean
 #---------------------------
 bl <- c("FakeBlockedTaxa")
-
 biomarkerID_results <- micRoclean(counts = counts_df,
                                   meta = metadata_df,
                                   research_goal = "biomarker",
