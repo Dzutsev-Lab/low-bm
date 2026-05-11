@@ -74,8 +74,8 @@ args <- parser$parse_args()
 # optionally could do away with pre-normalization altogther as it complicates limma/voom assumptions
 counts_normalization <- function(physeq, 
                                  norm_method, 
-                                 pseudocount, 
-                                 tax_agg_level) {
+                                 pseudocount) {
+
 
     otu_divide_by_sample_factor <- function(physeq, factor_column) {
       sample_factors <- sample_data(physeq)[[factor_column]]
@@ -90,26 +90,25 @@ counts_normalization <- function(physeq,
       otu_mat <- otu_mat * 1e6  # scaling factor to bring values back to a more interpretable range
       otu_table(physeq) <- otu_table(otu_mat, taxa_are_rows = taxa_are_rows(physeq))
       return(physeq)
-  }
+    }
 
-  if (norm_method == "noNorm") {
-      physeq <- physeq
-  } else if (norm_method == "log2") {
-      physeq <- transform_sample_counts(physeq, function(x) log2(x + pseudocount))
-  } else if (norm_method == "RelAbund") {
-      physeq <- transform_sample_counts(physeq, function(x) x / sum(x))
-  } else if (norm_method == "RawTSS") {
-      physeq <- otu_divide_by_sample_factor(physeq, "Raw_reads")
-  } else if (norm_method == "HostMapped") {
-      physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
-  } else if (norm_method == "log2HostMapped") {
-      physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
-      physeq <- transform_sample_counts(physeq, function(x) log2(x + pseudocount))
-  } else {
-      message("Unknown normalization method provided for limma voom pre-normlaization, no normalization used.")
-  }
+    if (norm_method == "noNorm") {
+        return(physeq)
+    } else if (norm_method == "log2") {
+        return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
+    } else if (norm_method == "RelAbund") {
+        return(transform_sample_counts(physeq, function(x) x / sum(x)))
+    } else if (norm_method == "RawTSS") {
+        return(otu_divide_by_sample_factor(physeq, "Raw_reads"))
+    } else if (norm_method == "HostMapped") {
+        return(otu_divide_by_sample_factor(physeq, "Host_mapped_reads"))
+    } else if (norm_method == "log2HostMapped") {
+        physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
+        return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
+    } else {
+        message("Unknown normalization method provided for limma voom pre-normlaization, no normalization used.")
+    }
 
-  return(t(as(otu_table(physeq), "matrix")))
 }
 
 #---------------------------------------
@@ -276,7 +275,7 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
 
 LIMMA_VOOM_DA <- function(Grouped_phyloseq,
                           GroupingType,
-                          norm_method, psuedocount, 
+                          norm_method, pseudocount, 
                           tax_agg_level,
                           alpha, lfc_cutoff,
                           lib_size_cutoff = 1) {
@@ -411,9 +410,9 @@ DA_volcano_plotting <- function(DA_results_df,
   sig_DA_results_df <- subset(DA_results_df,
                               significance == "Sig" & !is.na(padj))
   pos_sig_DA_results_df <- subset(sig_DA_results_df,
-                                  log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
+                                  log2FoldChange > 0)
   neg_sig_DA_results_df <- subset(sig_DA_results_df,
-                                  log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
+                                  log2FoldChange < 0)
 
 
   #Create plot title and file labels depending on comparison
@@ -506,7 +505,7 @@ DA_volcano_plotting <- function(DA_results_df,
 DA_heatmap_plotting <- function(Grouped_phyloseq,
                                 DA_results_df,
                                 GroupingType,
-                                norm_method, psuedocount,
+                                norm_method, pseudocount,
                                 tax_agg_level, tax_label_level,
                                 alpha, lfc_cutoff,
                                 DA_method) {
@@ -528,19 +527,19 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   }
 
   
-  normalized_counts <- t(counts_normalization(physeq = Grouped_phyloseq, 
-                                              norm_method = norm_method, 
-                                              pseudocount = pseudocount, 
-                                              tax_agg_level= tax_agg_level))
-  Normalized_phyloseq <- Grouped_phyloseq
-  otu_table(Normalized_phyloseq) <- otu_table(normalized_counts, taxa_are_row = FALSE)
+  Normalized_phyloseq <-   counts_normalization(physeq = Grouped_phyloseq, 
+                                                norm_method = norm_method, 
+                                                pseudocount = pseudocount)
 
   Pruned_phyloseq <- prune_taxa(sig_taxa, Normalized_phyloseq)
 
-  if (DA_method == "ANCOMBC") {
+
+  if (DA_method == "ANCOMBC" & length(sig_taxa) > 1) {
     row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange, sig_DA_results_df$struc0)]
-  } else {
+  } else if (DA_method == "LIMMA_VOOM" & length(sig_taxa) > 1) {
     row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange)]
+  } else {
+    row_order = NULL
   }
 
   column_order <- rownames(sample_data(Pruned_phyloseq))[order(sample_data(Pruned_phyloseq)$SampleType,
@@ -588,7 +587,7 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
 DAxPlottingWrapper <- function(Grouped_phyloseq, 
                                DA_method,
                                GroupingType,
-                               norm_method, psuedocount,
+                               norm_method, pseudocount,
                                tax_agg_level = "Genus", tax_label_level = "Genus",
                                alpha = 0.01, lfc_cutoff = 1) {
   
@@ -625,7 +624,7 @@ DAxPlottingWrapper <- function(Grouped_phyloseq,
   DA_heatmap_plotting(Grouped_phyloseq = Grouped_phyloseq,
                       GroupingType = GroupingType,
                       DA_results_df = DA_results_df,
-                      norm_method = norm_method, psuedocount = psuedocount,
+                      norm_method = norm_method, pseudocount = pseudocount,
                       tax_agg_level = tax_agg_level, tax_label_level = tax_label_level,
                       alpha = alpha, lfc_cutoff = lfc_cutoff,
                       DA_method = DA_method)
@@ -639,7 +638,7 @@ DAxPlottingWrapper <- function(Grouped_phyloseq,
 all_DA_analysis <- function(phyloseq,
                             DA_methods,
                             Comparisons,
-                            norm_method, psuedocount,
+                            norm_method, pseudocount,
                             tax_agg_level = NULL, tax_label_level = "Genus",
                             select_taxa = NULL) {
   
@@ -665,7 +664,7 @@ all_DA_analysis <- function(phyloseq,
       DAxPlottingWrapper(
         Grouped_phyloseq = Grouped_phyloseq,
         DA_method = DA_method,
-        norm_method = norm_method, psuedocount = psuedocount,
+        norm_method = norm_method, pseudocount = pseudocount,
         tax_agg_level = tax_agg_level, tax_label_level = tax_label_level,
         GroupingType = Comparison)
     }
@@ -697,6 +696,6 @@ all_DA_analysis(phyloseq = CompPhyseq,
                 DA_methods = args$DA_methods,
                 Comparisons = args$DA_comparisons,
                 norm_method = args$norm_method,
-                psuedocount = args$pseudocount,
+                pseudocount = args$pseudocount,
                 tax_agg_level = args$tax_agg_level,
                 select_taxa = select_taxa)

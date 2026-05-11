@@ -116,6 +116,7 @@ def discover_samples():
         r2a = os.path.join(RAW, f"{base}_R2_001.fastq")
         r2b = os.path.join(RAW, f"{base}_R2_001.fastq.gz")
         if os.path.exists(r2a) or os.path.exists(r2b):
+            base = re.sub(r"_S\d+$", "", base)
             samples.append(base)
     if not samples:
         raise ValueError(f"No samples found in {RAW} matching *_R1_001.fastq(.gz) with paired R2.")
@@ -125,14 +126,26 @@ def discover_samples():
 # Input FASTQ Compression check
 #   checks if the input raw fastq need to be unzipped for input to raw normalization
 def pick_raw_fastq(wc, read):
-    fastq_path = os.path.join(RAW, f"{wc.s}_R{read}_001.fastq")
-    gz_path = fastq_path + ".gz"
-    if os.path.exists(fastq_path):
-        return fastq_path
-    elif os.path.exists(gz_path):
-        return gz_path
+    file_path_patterns = [
+        os.path.join(RAW, f"{wc.s}_S*_R{read}_001.fastq"),
+        os.path.join(RAW, f"{wc.s}_S*_R{read}_001.fastq.gz")
+    ]
+    matches = []
+    for pattern in file_path_patterns:
+        matches.extend(glob.glob(pattern))
+
+    if len(matches) == 1:
+        return matches[0]
+    elif len(matches) == 0:
+        raise ValueError(
+            f"Missing raw FASTQ for sample {wc.s} read R{read}: "
+            f"{wc.s}_S*_R{read}_001.fastq(.gz)"
+        )
     else:
-        raise (ValueError(f"Missing raw FASTQ for sample {wc.s} read R{read}: {fastq_path}(.gz)"))
+        raise ValueError(
+            f"Multiple raw FASTQ's match for sample {wc.s} read R{read}: "
+            f"{matches}"
+        )
 
 #----------------------------
 # All Rule
