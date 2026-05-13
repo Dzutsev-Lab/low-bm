@@ -6,6 +6,10 @@ parser <- ArgumentParser()
 parser$add_argument("--trial-list",
                     type = "character",
                     help = "list of trials to compile into single phyloseq object file path")
+parser$add_argument("--techrep-avg",
+                    action = "store_true",
+                    default = FALSE,
+                    help = "Optional flag to average OTU counts between technical replicates")
 parser$add_argument("--out",
                     type = "character",
                     help = "desired output directory for R session image with complied phyloseq object")
@@ -29,6 +33,47 @@ trial_to_rdata <- function(trial, base_dir = "Exp_Output") {
   trial_dir <- file.path(base_dir, trial)
   trialID <- sub("_.*$", "", trial)
   file.path(trial_dir, paste0(trialID, "_physeq.RData"))
+}
+
+#Help to average techincal replicate count values 
+average_by_techrep <- function(physeq) {
+    meta_df <- as(sample_data(physeq), "data.frame")
+    otu_mat <- as(otu_table(physeq), "matrix")
+
+    if (taxa_are_rows(physeq)) {
+        otu_mat <- t(otu_mat)
+    }
+
+    # Make vector for grouping by SampleID (should be identical between technical replicates)
+    meta_df$SampleID <- as.character(meta_df$SampleID)
+    group <- meta_df$SampleID
+
+    # Make explicit factor for SampleID grouping
+    group_levels <- unique(group)
+    group_factor <- factor(group, levels = group_levels)
+    group_counts <- table(group_factor)
+    print(str(group_counts))
+
+    # avergae rows within each unique Sample ID
+    avg_otu_mat <- rowsum(otu_mat, group = group_factor, reorder = FALSE)
+    print(str(avg_otu_mat))
+    avg_otu_mat <- sweep(
+        avg_otu_mat,
+        1,
+        as.numeric(group_counts[rownames(avg_otu_mat)]),
+        FUN = "/"
+    )
+    
+
+    # filter meta data to representative sample rows (1 for each technical replicate pair)
+    avg_meta_df <- meta_df[match(rownames(avg_otu_mat), meta_df$SampleID), , drop = FALSE]
+    rownames(avg_meta_df) <- rownames(avg_otu_mat)
+    
+    phyloseq(
+        otu_table(as.matrix(avg_otu_mat), taxa_are_rows = FALSE),
+        sample_data(avg_meta_df),
+        tax_table(physeq)
+    )
 }
 
 # list to store physeq objects before merging
@@ -67,6 +112,10 @@ if (length(physeq_list) == 1) {
 }
 
 physeq <- CompPhyseq
+
+if (args$techrep_avg) {
+  physeq <- average_by_techrep(physeq)
+}
 
 # Save output
 if (!dir.exists(args$out)) {

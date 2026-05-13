@@ -3,6 +3,8 @@ library(dplyr)
 library(ggplot2)
 library(argparse)
 library(phyloseq)
+library(limma)
+library(sva)
 
 parser <- ArgumentParser()
 
@@ -17,6 +19,11 @@ parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
                     help = "Determine which normalized sequence table to feed into limma voom (default = noNorm)")
+parser$add_argument("--dist-metric",
+                    type = "character",
+                    nargs = "+",
+                    default = NULL,
+                    help = "list of desired distance metrics to generate ordination plots for (default is all distance metrics available via distanceMethodList$vegdist)")
 parser$add_argument("--pseudocount",
                     type = "double",
                     default = 1.0,
@@ -32,6 +39,93 @@ parser$add_argument("--out",
 
 args <- parser$parse_args()
 
+batch_adjustment <- function(physeq) {
+    otu_mat <- as(otu_table(physeq), "matrix")
+    meta_df <- as(sample_data(physeq), "data.frame")
+
+    meta_df <- meta_df |>
+        mutate(
+            SampleID = ifelse(ControlStatus == "Control",
+                              "Control",
+                              SampleID), 
+            Batch = factor(Batch)
+        )
+    sampleID <- meta_df$SampleID
+    if ("ProcessingBatch" %in% names(meta_df)) {
+        batch = meta_df$ProcessingBatch
+    } else if ("Batch" %in% names(meta_df)) {
+        batch = meta_df$Batch
+    } else {
+        message("Skipping Batch Adjustment: No appropriate batching column found in metadata.")
+        return(physeq)
+    }
+
+
+
+    # If there is uneven distribution of sample types across batches, causes ComBat to fail
+    # Example: all cell controls in one processing batch, then SampleType and Batch are not linearly independent
+    #           failing the assumptions of ComBats model, forced to remove covariate model
+    mod <- model.matrix(~ SampleType, data = meta_df)
+
+    if (!taxa_are_rows(physeq)) {
+        otu_mat <- t(otu_mat)
+    }
+
+    # adjusted_otu_mat <- ComBat(
+    #     dat = otu_mat,
+    #     batch = batch,
+    #     mod = mod,
+    #     par.prior = TRUE
+    # )
+    adjusted_otu_mat <- removeBatchEffect(
+        x = otu_mat,
+        batch = batch,
+        design = mod
+    )
+
+    otu_table(physeq) <- otu_table(adjusted_otu_mat, taxa_are_rows = TRUE)
+    return(physeq)
+}
+
+average_by_techrep <- function(physeq) {
+    meta_df <- as(sample_data(physeq), "data.frame")
+    otu_mat <- as(otu_table(physeq), "matrix")
+
+    if (taxa_are_rows(physeq)) {
+        otu_mat <- t(otu_mat)
+    }
+
+    # Make vector for grouping by SampleID (should be identical between technical replicates)
+    meta_df$SampleID <- as.character(meta_df$SampleID)
+    group <- meta_df$SampleID
+
+    # Make explicit factor for SampleID grouping
+    group_levels <- unique(group)
+    group_factor <- factor(group, levels = group_levels)
+    group_counts <- table(group_factor)
+    
+
+    # avergae rows within each unique Sample ID
+    avg_otu_mat <- rowsum(otu_mat, group = group_factor, reorder = FALSE)
+    
+    avg_otu_mat <- sweep(
+        avg_otu_mat,
+        1,
+        as.numeric(group_counts[rownames(avg_otu_mat)]),
+        FUN = "/"
+    )
+    
+
+    # filter meta data to representative sample rows (1 for each technical replicate pair)
+    avg_meta_df <- meta_df[match(rownames(avg_otu_mat), meta_df$SampleID), , drop = FALSE]
+    rownames(avg_meta_df) <- rownames(avg_otu_mat)
+    
+    phyloseq(
+        otu_table(as.matrix(avg_otu_mat), taxa_are_rows = FALSE),
+        sample_data(avg_meta_df),
+        tax_table(physeq)
+    )
+}
 
 counts_normalization <- function(physeq, 
                                  norm_method, 
@@ -100,30 +194,121 @@ if (!is.null(args$tax_agg_level)) {
 }
 
 # Removing Negative Controls
-FiltPhyseq <- subset_samples(GlomPhyseq, SampleType != "NegativeControl")
+FiltPhyseq <- subset_samples(GlomPhyseq, SampleType != "NegativeControl" & SampleType %in% c("Tumor", "NormalTissue"))
 
 # Normalizing OTU Counts
 NormPhyseq <- counts_normalization(physeq = FiltPhyseq, 
                                    norm_method = args$norm_method, 
                                    pseudocount = args$pseudocount)
 
+# Batch Adjustment
+AdjPhyseq <- batch_adjustment(physeq = NormPhyseq)
 
-
-#--------------------------
-# Ordination Plotting
-#--------------------------
-NormOrd <- ordinate(NormPhyseq, "PCoA", "bray")
-SampleTypeOrdPlot <- plot_ordination(NormPhyseq, NormOrd, 
-                                     type="samples",
-                                     color="SampleType",
-                                     shape="SequencingBatch") +
-                     geom_point(size = 5) +
-                     ggtitle("Composite Batch Sample Ordination")
-if (!dir.exists(args$out)) {
-    dir.create(args$out,
+if (!dir.exists(paste0(args$out, "/DistanceOrdination"))) {
+    dir.create(paste0(args$out, "/DistanceOrdination"),
                recursive = TRUE)
 }
+#------------------------------
+# Averaged PCA
+#------------------------------
+TechRepAvgPhyseq <- average_by_techrep(NormPhyseq)
+
+TechRepAvgOTU_mat <- as(otu_table(TechRepAvgPhyseq), "matrix")
+if (taxa_are_rows(TechRepAvgPhyseq)) TechRepAvgOTU_mat <- t(TechRepAvgOTU_mat)
+
+TechRepAvgOTU_mat <- as.matrix(TechRepAvgOTU_mat)
+storage.mode(TechRepAvgOTU_mat) <- "double"
+
+# Removing taxa that have zero variance (cause issue with PCA scaling and provide no information about inter-sample variance)
+sds <- apply(TechRepAvgOTU_mat, 2, sd, na.rm = TRUE)
+keep <- is.finite(sds) & sds > 0
+TechRepAvgOTU_mat <- TechRepAvgOTU_mat[, keep, drop = FALSE]
+
+TechRepAvgPCA <- prcomp(TechRepAvgOTU_mat, center = TRUE, scale. = TRUE)
+
+PCAScores <- as.data.frame(TechRepAvgPCA$x)
+PCAScores$SampleType <- sample_data(TechRepAvgPhyseq)$SampleType
+
+var_explained <- TechRepAvgPCA$sdev^2
+var_explained <- var_explained / sum(var_explained)
+
+pc1_var <- round(var_explained[1] * 100, 2)
+pc2_var <- round(var_explained[2] * 100, 2)
+
+
+TechRepAvgPCA_plot <- ggplot(PCAScores,
+    aes(PC1, PC2, color = SampleType)) +
+    geom_point(size = 3) +
+    theme_minimal() +
+    labs(
+        x = paste0("PC1 (", pc1_var, "%)"),
+        y = paste0("PC2 (", pc2_var, "%)")
+    )
 
 ggsave(
-    filename = paste0(args$out, "/", args$trialID, "_SampleOrdination.png")
+    filename = paste0(args$out, "/", args$trialID, "_TechRepAvgPCA.png")
 )
+
+#------------------------------
+# Distance Ordination Plotting
+#------------------------------
+if (is.null(args$dist_metrics)) {
+    args$dist_metrics <- distanceMethodList$vegdist
+}
+
+for (metric in args$dist_metrics) {
+    NormOrd <- ordinate(NormPhyseq, "PCoA", metric)
+    SampleTypeOrdPlot <- plot_ordination(NormPhyseq, NormOrd, 
+                                        type="samples",
+                                        color="SampleType",
+                                        shape="Batch") +
+                        geom_point(size = 5) +
+                        ggtitle(paste0("Composite Batch Sample Ordination (", metric, ")"))
+    Centroids <- SampleTypeOrdPlot$data |>
+        group_by(SampleType) |>
+        summarize(
+            Axis.1 = mean(Axis.1),
+            Axis.2 = mean(Axis.2)
+        )
+
+
+    plot_data <- SampleTypeOrdPlot$data
+
+    plot_data_with_centroids <- plot_data %>%
+    left_join(
+        Centroids %>% rename(Centroid1 = Axis.1, Centroid2 = Axis.2),
+        by = "SampleType"
+    )
+
+    SampleTypeOrdPlot <- SampleTypeOrdPlot +
+        geom_segment(
+            data = plot_data_with_centroids,
+            aes(x = Axis.1, y = Axis.2,
+                xend = Centroid1, yend = Centroid2,
+                color = SampleType),
+            alpha = 0.5,
+            linewidth = 0.5,
+            inherit.aes = FALSE
+        ) +
+        # stat_ellipse(
+        #     aes(x = Axis.1, y = Axis.2, color = SampleType, group = SampleType),
+        #     type = "t",
+        #     linetype = 2,
+        #     linewidth = 1,
+        #     inherit.aes = FALSE
+        # ) +
+        geom_point(
+            data = Centroids,
+            aes(x = Axis.1, y = Axis.2, color = SampleType),
+            size = 6, shape = 9, stroke = 2,
+            inherit.aes = FALSE
+        ) +
+        geom_text(
+            data = Centroids,
+            aes(x = Axis.1, y = Axis.2, label = SampleType),
+            inherit.aes = FALSE,
+            vjust = -1)
+    ggsave(
+        filename = paste0(args$out, "/DistanceOrdination/", args$trialID, "_", metric, "_SampleOrdination.png")
+    )
+}

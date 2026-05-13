@@ -4,6 +4,7 @@ library(edgeR)
 library(dplyr)
 library(ggplot2)
 library(argparse)
+library(sva)
 
 
 parser <- ArgumentParser()
@@ -45,6 +46,39 @@ parser$add_argument("--out-dir",
 
 args <- parser$parse_args()
 
+batch_adjustment <- function(physeq) {
+    otu_mat <- as(otu_table(physeq), "matrix")
+    meta_df <- as(sample_data(physeq), "data.frame")
+
+    if ("ProcessingBatch" %in% names(meta_df)) {
+        batch = meta_df$ProcessingBatch
+    } else if ("Batch" %in% names(meta_df)) {
+        batch = meta_df$Batch
+    } else {
+        message("Skipping Batch Adjustment: No appropriate batching column found in metadata.")
+        return(physeq)
+    }
+
+    # If there is uneven distribution of sample types across batches, causes ComBat to fail
+    # Example: all cell controls in one processing batch, then SampleType and Batch are not linearly independent
+    #           failing the assumptions of ComBats model, forced to remove covariate model
+    mod <- model.matrix(~ SampleType, data = meta_df)
+
+    if (!taxa_are_rows(physeq)) {
+        otu_mat <- t(otu_mat)
+    }
+
+    adjusted_otu_mat <- ComBat(
+        dat = otu_mat,
+        batch = batch,
+        #mod = mod,
+        mod = NULL,
+        par.prior = TRUE
+    )
+
+    otu_table(physeq) <- otu_table(adjusted_otu_mat, taxa_are_rows = TRUE)
+    return(physeq)
+}
 
 counts_normalization <- function(physeq, 
                                  norm_method, 
@@ -125,6 +159,7 @@ NormPhyseq <- counts_normalization(physeq = FiltPhyseq,
                                    norm_method = args$norm_method, 
                                    pseudocount = args$pseudocount)
 
+AdjPhyseq <- batch_adjustment(physeq = NormPhyseq)
 
 # STEP 2: Optionally use limma/voom normalization (mutually exclusive with other normalization methods)
 limma_voom_normalization <- function(prep_physeq) {
@@ -155,7 +190,7 @@ if (args$limma_voom) {
 taxa_of_interest <- unique(unlist(lapply(args$select_taxa_names, function(name_file) {
     read.csv(name_file, header = FALSE, stringsAsFactors = FALSE)[[1]]
 })))
-MeltPhyseq_df <- psmelt(NormPhyseq) |>
+MeltPhyseq_df <- psmelt(AdjPhyseq) |>
     mutate(
         SequencingBatch = factor(SequencingBatch),
         SampleType = factor(SampleType)
@@ -163,7 +198,7 @@ MeltPhyseq_df <- psmelt(NormPhyseq) |>
 
 # STEP 4: Import differential abundance results (for statistical context included in violin plot captions)
 DA_results_df <- read.delim(paste0("Exp_Output/", args$DA_results), header = TRUE)
-str(DA_results_df)
+
 # STEP 5: Violin plotting
 out_dir <- paste0("Exp_Output/", args$out_dir, "/", args$norm_method)
 
@@ -323,7 +358,7 @@ Heat_Mapping <- function(patient_batch_name,
 }
 
 for (patient_batch_name in args$patient_sample_batches) {
-    Heat_Mapping(prep_physeq = NormPhyseq,
+    Heat_Mapping(prep_physeq = AdjPhyseq,
                  patient_batch_name = patient_batch_name,
                  norm_method = args$norm_method,
                  taxa_of_interest = taxa_of_interest,

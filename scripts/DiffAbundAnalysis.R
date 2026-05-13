@@ -405,18 +405,22 @@ DA_volcano_plotting <- function(DA_results_df,
                                 GroupingType, 
                                 alpha, lfc_cutoff, 
                                 DA_method) {
-  
+  #Subset to non-structural zeros
+  nostruc0_DA_results_df <- DA_results_df |> subset(is.na(struc0))
   #Subset to significant ASVs
-  sig_DA_results_df <- subset(DA_results_df,
+  sig_DA_results_df <- subset(nostruc0_DA_results_df,
                               significance == "Sig" & !is.na(padj))
   pos_sig_DA_results_df <- subset(sig_DA_results_df,
-                                  log2FoldChange > 0)
+                                  log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
   neg_sig_DA_results_df <- subset(sig_DA_results_df,
-                                  log2FoldChange < 0)
+                                  log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
 
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
+  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor")) {
+    comp_file_label <- GroupingType
+    plot_title_label <- GroupingType
+  } else if (GroupingType %in% c("NegativeControl", "AllControl")) {
     comp_file_label <- paste0(GroupingType, "toPS")
     plot_title_label <- paste(GroupingType, "vs Patient Samples")
   } else if (GroupingType == "PatientSample"){
@@ -425,7 +429,7 @@ DA_volcano_plotting <- function(DA_results_df,
   }
   
   # Build ggplot object
-  p_volcano <- ggplot(DA_results_df,
+  p_volcano <- ggplot(nostruc0_DA_results_df, #exclude structural zeros (make no sense in volcano plot)
                       aes(x = log2FoldChange,
                           y = -log10(padj))) +
     theme(
@@ -511,7 +515,10 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
                                 DA_method) {
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
+  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor")) {
+    comp_file_label <- GroupingType
+    plot_title_label <- GroupingType
+  } else if (GroupingType %in% c("NegativeControl", "AllControl")) {
     comp_file_label <- paste0(GroupingType, "toPS")
     plot_title_label <- paste(GroupingType, "vs Patient Samples")
   } else if (GroupingType == "PatientSample"){
