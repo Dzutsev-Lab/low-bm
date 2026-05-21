@@ -39,7 +39,7 @@ parser$add_argument("--DA-methods",
 parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
-                    help = "Choice of differential abunance comprisons to use [CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample]")
+                    help = "Choice of differential abunance comprisons to use [CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample, TumorType]")
 parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
@@ -119,14 +119,16 @@ SampleGrouping <- function(Ungrouped_phyloseq,
                            tax_agg_level) {
   if (GroupingType == "AllControl") {
     keep_samples <- !is.na(get_variable(Ungrouped_phyloseq, "SampleType"))
+  } else if (GroupingType == "TumorType") {
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") == "Tumor"
   } else if (GroupingType == "CellLineControltoTumor") {
     keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Tumor")
   } else if (GroupingType == "CellLineControltoNontumor") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Nontumor")
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Nontumor", "NormalTissue")
   } else if (GroupingType == "NegativeControl") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("NegativeControl", "Tumor", "Nontumor")
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("NegativeControl", "Tumor", "Nontumor", "NormalTissue")
   } else if (GroupingType == "PatientSample") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("Tumor", "Nontumor")
+    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("Tumor", "Nontumor", "NormalTissue")
   }
 
   #Protecting against comparisons where one or more comparison groups are missing
@@ -135,18 +137,13 @@ SampleGrouping <- function(Ungrouped_phyloseq,
   }
 
   Grouped_phyloseq <- prune_samples(keep_samples, Ungrouped_phyloseq)
+  Grouped_phyloseq <- tax_glom(Grouped_phyloseq, tax_agg_level)
+  taxa_names(Grouped_phyloseq) <- as.character(tax_table(Grouped_phyloseq)[, tax_agg_level])
 
-  #Remove any taxa that now have total zero count after subsetting
+  #Remove any taxa that now have total zero count after subsetting and glomming
   Grouped_phyloseq <- prune_taxa(taxa_sums(Grouped_phyloseq) > 0, Grouped_phyloseq)
-  if (!is.null(tax_agg_level)) {
-    Glommed_phyloseq <- tax_glom(Grouped_phyloseq,
-                                 taxrank = tax_agg_level)
-    taxa_names(Glommed_phyloseq) <- as.character(tax_table(Glommed_phyloseq)[, tax_agg_level])
-  } else {
-    Glommed_phyloseq <- Grouped_phyloseq
-  }
 
-  return(Glommed_phyloseq)
+  return(Grouped_phyloseq)
 }
 
 
@@ -169,14 +166,31 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
                                "structural_zero (ControlStatus = Control)", 
                                "structural_zero (ControlStatus = PatientSample)")
     comp_file_label <- paste0(GroupingType, "toPS")
-    
+
+  } else if (GroupingType == "TumorType") {
+    formula <- "TumorType"
+    grouping_variable <- "TumorType"
+    results_table_groups <- c("taxon", "TumorTypeiCCA")
+    default_struc0_groups <- c("taxon",
+                               "structural_zero (TumorType = iCCA)",
+                               "structural_zero (TumorType = HCC)")
+    comp_file_label <- "TumorType"
+
   } else if (GroupingType == "PatientSample") {
     formula <- "SampleType + PatientID"
     grouping_variable <- "SampleType"
     results_table_groups <- c("taxon", "SampleTypeTumor")
-    default_struc0_groups <- c("taxon", 
-                               "structural_zero (SampleType = Nontumor)", 
-                               "structural_zero (SampleType = Tumor)")
+
+    if ("NormalTissue" %in% levels(as(sample_data(Grouped_phyloseq), "data.frame")$SampleType)) {
+      default_struc0_groups <- c("taxon", 
+                                "structural_zero (SampleType = NormalTissue)", 
+                                "structural_zero (SampleType = Tumor)")
+    } else if ("Nontumor" %in% levels(as(sample_data(Grouped_phyloseq), "data.frame")$SampleType)) {
+            default_struc0_groups <- c("taxon", 
+                                "structural_zero (SampleType = Nontumor)", 
+                                "structural_zero (SampleType = Tumor)")
+    }
+
     comp_file_label <- "NTtoT"
   }
 
@@ -417,7 +431,7 @@ DA_volcano_plotting <- function(DA_results_df,
 
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor")) {
+  if (GroupingType %in% c("TumorType", "CellLineControltoTumor", "CellLineControltoNontumor")) {
     comp_file_label <- GroupingType
     plot_title_label <- GroupingType
   } else if (GroupingType %in% c("NegativeControl", "AllControl")) {
@@ -435,7 +449,8 @@ DA_volcano_plotting <- function(DA_results_df,
     theme(
       axis.title.x  = element_text(size = 21),
       axis.title.y  = element_text(size = 21),
-      plot.title    = element_text(size = 25)
+      plot.title    = element_text(size = 25),
+      axis.text     = element_text(size = 18)
     ) +
     geom_point(alpha = 0.6, size = 4, color = "grey40") +
     geom_vline(xintercept = 0) +
@@ -515,7 +530,7 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
                                 DA_method) {
 
   #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor")) {
+  if (GroupingType %in% c("TumorType", "CellLineControltoTumor", "CellLineControltoNontumor")) {
     comp_file_label <- GroupingType
     plot_title_label <- GroupingType
   } else if (GroupingType %in% c("NegativeControl", "AllControl")) {
@@ -539,7 +554,7 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
                                                 pseudocount = pseudocount)
 
   Pruned_phyloseq <- prune_taxa(sig_taxa, Normalized_phyloseq)
-
+  Pruned_phyloseq <- prune_samples(sample_sums(Pruned_phyloseq) > 0, Pruned_phyloseq)
 
   if (DA_method == "ANCOMBC" & length(sig_taxa) > 1) {
     row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange, sig_DA_results_df$struc0)]
@@ -553,10 +568,11 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
                                                                sample_data(Pruned_phyloseq)$PatientID)]
 
   p_heatmap <- plot_heatmap(Pruned_phyloseq,
-                            method = NULL,
+                            method = "PCoA",
+                            distance = "bray",
                             sample.order = column_order,
                             sample.label = "SampleID",
-                            taxa.order = row_order,
+                            #taxa.order = row_order,
                             taxa.label = tax_label_level,
                             low="#000033", high="#FF3300", na.value = "black")
   
@@ -570,9 +586,9 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   # Adding horizontal lines to heatmap to separate taxa by direction of differential abundance
   neg_lfc_block_size <- sum(sig_DA_results_df$direction == "neg")
   
-  if (neg_lfc_block_size > 0 & neg_lfc_block_size < length(row_order)) {
-    p_heatmap <- p_heatmap + geom_hline(yintercept = neg_lfc_block_size + 0.5, linewidth = 1, color = "white", linetype = "dashed")
-  }
+  # if (neg_lfc_block_size > 0 & neg_lfc_block_size < length(row_order)) {
+  #   p_heatmap <- p_heatmap + geom_hline(yintercept = neg_lfc_block_size + 0.5, linewidth = 1, color = "white", linetype = "dashed")
+  # }
 
   ggsave(
     filename = paste0(args$out, "/", DA_method, "/", GroupingType, "/", 
@@ -684,11 +700,16 @@ B1physeq <- physeq
 if (!is.null(args$B2_physeq)) {
   load(args$B2_physeq)
   B2physeq <- physeq
+  if (!is.null(args$tax_agg_level)) {
+    B1physeq <- tax_glom(B1physeq, args$tax_agg_level)
+    B2physeq <- tax_glom(B2physeq, args$tax_agg_level)
+    taxa_names(B1physeq) <- as.character(tax_table(B1physeq)[, args$tax_agg_level])
+    taxa_names(B2physeq) <- as.character(tax_table(B2physeq)[, args$tax_agg_level])
+  }
   CompPhyseq <- merge_phyloseq(B1physeq, B2physeq)
 } else {
   CompPhyseq <- B1physeq
 }
-
 # Read in selected taxa names if chosen to subset
 if (!is.null(args$select_taxa_names)) {
   select_taxa <- unique(unlist(lapply(args$select_taxa_names, function(name_file) {

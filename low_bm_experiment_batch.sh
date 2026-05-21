@@ -11,7 +11,7 @@ mamba activate low-bm-base
 cd /data/$USER/low-bm
 
 line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" experiment_batch_configs.tsv)
-IFS=$'\t' read -r trialID trial_descript exp_dir <<< "$line"
+IFS=$'\t' read -r trialID trial_descript exp_dir metadata <<< "$line"
 RUN_CONFIG_DIR="experiment_batch_configs/"
 mkdir -p "$RUN_CONFIG_DIR"
 RUN_CONFIG_FILE="${RUN_CONFIG_DIR}/${trialID}_runconfig.yaml"
@@ -20,6 +20,7 @@ cat > "$RUN_CONFIG_FILE" <<EOF
 trialID: "$trialID"
 trial_descript: "$trial_descript"
 exp_dir: "$exp_dir"
+metadata: "$metadata"
 EOF
 
 LOG_DIR="snakemake_logs/${trialID}"

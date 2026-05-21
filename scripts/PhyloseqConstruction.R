@@ -224,6 +224,9 @@ if (isTRUE(args$add_unclassified_prefix)) {
 #--------------------------------------
 # Kraken Phyloseq Objects Construction
 #--------------------------------------
+anyDuplicated(colnames(raw_seq_table))
+anyDuplicated(kraken_info$ASVid)
+anyDuplicated(rownames(kraken_tax_matrix))
 physeq <- phyloseq(otu_table(raw_seq_table, taxa_are_rows = FALSE),
                      sample_data(sample_meta_data_df),
                      tax_table(kraken_tax_matrix))

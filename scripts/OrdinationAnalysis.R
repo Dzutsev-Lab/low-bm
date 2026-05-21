@@ -19,6 +19,13 @@ parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
                     help = "Determine which normalized sequence table to feed into limma voom (default = noNorm)")
+parser$add_argument("--batch-adj",
+                    type = "character",
+                    help = "Optional flag with the field in file metadata to use for batch adjustment (default = no batch adjustment)")
+parser$add_argument("--techrep-avg",
+                    action = "store_true",
+                    default = FALSE,
+                    help = "Optional flag to average across technical replicates if available across phyloseq objects once compiled")
 parser$add_argument("--dist-metric",
                     type = "character",
                     nargs = "+",
@@ -39,7 +46,7 @@ parser$add_argument("--out",
 
 args <- parser$parse_args()
 
-batch_adjustment <- function(physeq) {
+batch_adjustment <- function(physeq, batch_column) {
     otu_mat <- as(otu_table(physeq), "matrix")
     meta_df <- as(sample_data(physeq), "data.frame")
 
@@ -47,19 +54,22 @@ batch_adjustment <- function(physeq) {
         mutate(
             SampleID = ifelse(ControlStatus == "Control",
                               "Control",
-                              SampleID), 
-            Batch = factor(Batch)
+                              SampleID)
         )
     sampleID <- meta_df$SampleID
-    if ("ProcessingBatch" %in% names(meta_df)) {
-        batch = meta_df$ProcessingBatch
-    } else if ("Batch" %in% names(meta_df)) {
-        batch = meta_df$Batch
+
+    if (is.null(batch_column)) {
+        message("Skipping Batch Adjustment: No batching column provided.")
+        return(physeq)        
+    } else if (batch_column %in% names(meta_df)) {
+        batch <- meta_df[[batch_column]]
+        batch[is.na(batch)] <- "Unknown"
+        batch <- factor(batch)
+        print(batch)
     } else {
         message("Skipping Batch Adjustment: No appropriate batching column found in metadata.")
         return(physeq)
     }
-
 
 
     # If there is uneven distribution of sample types across batches, causes ComBat to fail
@@ -148,11 +158,12 @@ counts_normalization <- function(physeq,
     }
 
     if (norm_method == "noNorm") {
+        message("Skipping Normalization: no normalization method selected.")
         return(physeq)
     } else if (norm_method == "log2") {
         return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
     } else if (norm_method == "RelAbund") {
-        return(transform_sample_counts(physeq, function(x) x / sum(x)))
+        return(transform_sample_counts(physeq, function(x) (x + pseudocount) / (sum(x + pseudocount))))
     } else if (norm_method == "RawTSS") {
         return(otu_divide_by_sample_factor(physeq, "Raw_reads"))
     } else if (norm_method == "HostMapped") {
@@ -160,8 +171,12 @@ counts_normalization <- function(physeq,
     } else if (norm_method == "log2HostMapped") {
         physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
         return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
+    } else if (norm_method == "log2RelAbund") {
+        physeq <- transform_sample_counts(physeq, function(x) (x + pseudocount) / (sum(x + pseudocount)))
+        return(transform_sample_counts(physeq, function(x) log2(x)))
     } else {
-        message("Unknown normalization method provided for limma voom pre-normlaization, no normalization used.")
+        message("Skipping Normalization: Unknown normalization method provided.")
+        return(physeq)
     }
 
 }
@@ -194,40 +209,51 @@ if (!is.null(args$tax_agg_level)) {
 }
 
 # Removing Negative Controls
-FiltPhyseq <- subset_samples(GlomPhyseq, SampleType != "NegativeControl" & SampleType %in% c("Tumor", "NormalTissue"))
+FiltPhyseq <- GlomPhyseq
+#FiltPhyseq <- subset_samples(GlomPhyseq, SampleType != "NegativeControl" & SampleType %in% c("Tumor", "NormalTissue", "Nontumor"))
 
 # Normalizing OTU Counts
 NormPhyseq <- counts_normalization(physeq = FiltPhyseq, 
                                    norm_method = args$norm_method, 
                                    pseudocount = args$pseudocount)
 
+# Pruning phyloseq of taxa and samples with zero counts
+NormPhyseq <- prune_samples(sample_sums(NormPhyseq) > 0, NormPhyseq)
+NormPhyseq <- prune_taxa(taxa_sums(NormPhyseq) > 0, NormPhyseq)
+
 # Batch Adjustment
-AdjPhyseq <- batch_adjustment(physeq = NormPhyseq)
+AdjPhyseq <- batch_adjustment(physeq = NormPhyseq, batch_column = args$batch_adj)
 
 if (!dir.exists(paste0(args$out, "/DistanceOrdination"))) {
     dir.create(paste0(args$out, "/DistanceOrdination"),
                recursive = TRUE)
 }
 #------------------------------
-# Averaged PCA
+# PCA Plotting
 #------------------------------
-TechRepAvgPhyseq <- average_by_techrep(NormPhyseq)
+#average across technical replicates if available
+if (args$techrep_avg) AdjPhyseq <- average_by_techrep(NormPhyseq)
 
-TechRepAvgOTU_mat <- as(otu_table(TechRepAvgPhyseq), "matrix")
-if (taxa_are_rows(TechRepAvgPhyseq)) TechRepAvgOTU_mat <- t(TechRepAvgOTU_mat)
+AdjOTU_mat <- as(otu_table(AdjPhyseq), "matrix")
+if (taxa_are_rows(AdjPhyseq)) AdjOTU_mat <- t(AdjOTU_mat)
 
-TechRepAvgOTU_mat <- as.matrix(TechRepAvgOTU_mat)
-storage.mode(TechRepAvgOTU_mat) <- "double"
+AdjOTU_mat <- as.matrix(AdjOTU_mat)
+storage.mode(AdjOTU_mat) <- "double"
 
 # Removing taxa that have zero variance (cause issue with PCA scaling and provide no information about inter-sample variance)
-sds <- apply(TechRepAvgOTU_mat, 2, sd, na.rm = TRUE)
+sds <- apply(AdjOTU_mat, 2, sd, na.rm = TRUE)
 keep <- is.finite(sds) & sds > 0
-TechRepAvgOTU_mat <- TechRepAvgOTU_mat[, keep, drop = FALSE]
+AdjOTU_mat <- AdjOTU_mat[, keep, drop = FALSE]
 
-TechRepAvgPCA <- prcomp(TechRepAvgOTU_mat, center = TRUE, scale. = TRUE)
+TechRepAvgPCA <- prcomp(AdjOTU_mat, center = TRUE, scale. = TRUE)
 
 PCAScores <- as.data.frame(TechRepAvgPCA$x)
-PCAScores$SampleType <- sample_data(TechRepAvgPhyseq)$SampleType
+if ("TumorType" %in% names(sample_data(AdjPhyseq))) {
+    PCAScores$SampleType <- sample_data(AdjPhyseq)$TumorType
+} else {
+    PCAScores$SampleType <- sample_data(AdjPhyseq)$SampleType
+}
+
 
 var_explained <- TechRepAvgPCA$sdev^2
 var_explained <- var_explained / sum(var_explained)
@@ -246,7 +272,7 @@ TechRepAvgPCA_plot <- ggplot(PCAScores,
     )
 
 ggsave(
-    filename = paste0(args$out, "/", args$trialID, "_TechRepAvgPCA.png")
+    filename = paste0(args$out, "/", args$trialID, "_PCA.png")
 )
 
 #------------------------------
@@ -260,12 +286,11 @@ for (metric in args$dist_metrics) {
     NormOrd <- ordinate(NormPhyseq, "PCoA", metric)
     SampleTypeOrdPlot <- plot_ordination(NormPhyseq, NormOrd, 
                                         type="samples",
-                                        color="SampleType",
-                                        shape="Batch") +
+                                        color= "TumorType") +
                         geom_point(size = 5) +
                         ggtitle(paste0("Composite Batch Sample Ordination (", metric, ")"))
     Centroids <- SampleTypeOrdPlot$data |>
-        group_by(SampleType) |>
+        group_by(TumorType) |>
         summarize(
             Axis.1 = mean(Axis.1),
             Axis.2 = mean(Axis.2)
@@ -277,7 +302,7 @@ for (metric in args$dist_metrics) {
     plot_data_with_centroids <- plot_data %>%
     left_join(
         Centroids %>% rename(Centroid1 = Axis.1, Centroid2 = Axis.2),
-        by = "SampleType"
+        by = "TumorType"
     )
 
     SampleTypeOrdPlot <- SampleTypeOrdPlot +
@@ -285,7 +310,7 @@ for (metric in args$dist_metrics) {
             data = plot_data_with_centroids,
             aes(x = Axis.1, y = Axis.2,
                 xend = Centroid1, yend = Centroid2,
-                color = SampleType),
+                color = TumorType),
             alpha = 0.5,
             linewidth = 0.5,
             inherit.aes = FALSE
@@ -299,13 +324,13 @@ for (metric in args$dist_metrics) {
         # ) +
         geom_point(
             data = Centroids,
-            aes(x = Axis.1, y = Axis.2, color = SampleType),
+            aes(x = Axis.1, y = Axis.2, color = TumorType),
             size = 6, shape = 9, stroke = 2,
             inherit.aes = FALSE
         ) +
         geom_text(
             data = Centroids,
-            aes(x = Axis.1, y = Axis.2, label = SampleType),
+            aes(x = Axis.1, y = Axis.2, label = TumorType),
             inherit.aes = FALSE,
             vjust = -1)
     ggsave(

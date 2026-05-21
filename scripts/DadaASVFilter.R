@@ -1,5 +1,6 @@
 library(dada2)
 library(Biostrings)
+library(digest)
 library(ggplot2)
 library(argparse)
 
@@ -18,6 +19,7 @@ parser$add_argument("--err-plt", type="character", help="File path to store erro
 parser$add_argument("--filt-counts", type="character", help="File path to store filter stage read counts tsv.")
 parser$add_argument("--asv-fa", type="character", help="File path to store stable ASV IDs")
 parser$add_argument("--seq-table", type="character", help="File path to store sequence table")
+parser$add_argument("--asv-map", type="character", help="File path to store asv ID to sequence map")
 
 #trimAndFilerter Paramters
 parser$add_argument("--chunk-size", type="integer")
@@ -186,8 +188,18 @@ write.table(tracker_df,
 # Classification FASTA Prep
 #----------------------------
 #stable ASV IDs (not just DNA sequence)
-ASV_IDs <- paste0("ASV", seq_len(ncol(seqtab.nochim)))
-dna_strings <- DNAStringSet(colnames((seqtab.nochim)))
+seqs <- colnames(seqtab.nochim)
+ASV_IDs <- paste0(
+  "ASV_", 
+  vapply(
+    seqs,
+    digest,
+    character(1),
+    algo = "md5",
+    serialize = FALSE
+  )
+)
+dna_strings <- DNAStringSet(seqs)
 names(dna_strings) <- ASV_IDs
 writeXStringSet(dna_strings, 
                 filepath = args$asv_fa,
@@ -202,3 +214,20 @@ write.table(seqtab.nochim,
             sep = '\t', 
             quote = FALSE, 
             col.names = NA) #check to see if this is not mutating the matrix
+            
+#----------------------------------------------
+# Export ASV Sequence Lookup Table
+#----------------------------------------------
+asv_map <- data.frame(
+  ASV_ID = ASV_IDs,
+  Sequence = seqs,
+  stringsAsFactors = FALSE
+)
+
+write.table(
+  asv_map,
+  file = args$asv_map,
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)

@@ -18,15 +18,18 @@ parser$add_argument("--batch2-Name",
                     help = "Name for batch 2 to locate differential abundance results within Exp_Output")
 parser$add_argument("--DA-method",
                     type = "character",
+                    default = "ANCOMBC",
                     help = "The tool used to generate differenital abundance results (Options: LIMMA_VOOM, ANCOMBC)")
 parser$add_argument("--comparison",
                     type = "character",
                     help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample)")
 parser$add_argument("--hetQ-p-cutoff",
                     type = "double",
+                    default = 0.05,
                     help = "Threshold value for random effect model hetergenity Q p-value to differentiate between low- and high-heterogeneity taxa")
 parser$add_argument("--fisher-q-cutoff",
                     type = "double",
+                    default = 0.05,
                     help = "Threshold value for adjusted fisher composite p-values to differentiate significant differentially abundant taxa")
 parser$add_argument("--out-trial",
                     type = "character",
@@ -65,7 +68,7 @@ B2_ExpID <- B2_name_components[2]
 B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch1_Name, "/", 
                                          args$DA_method, "/",
                                          args$comparison, "/",
-                                         B1_ID, "_", args$comparison, "_", args$DA_method, "Results.tsv"),
+                                         args$batch1_Name,"_", args$comparison, "_", args$DA_method, "Results.tsv"),
                            batch_label = B1_ExpID) |>
                     rename(
                         b1 = batch,
@@ -78,7 +81,7 @@ B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch1_Name, "/",
 B2_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch2_Name, "/", 
                                          args$DA_method, "/",
                                          args$comparison, "/",
-                                         B2_ID, "_", args$comparison, "_", args$DA_method, "Results.tsv"),
+                                         args$batch2_Name,"_", args$comparison, "_", args$DA_method, "Results.tsv"),
                            batch_label = B2_ExpID) |>
                     rename(
                         b2 = batch,

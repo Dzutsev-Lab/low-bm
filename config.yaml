@@ -6,7 +6,7 @@
 trialID:        ""
 trial_descript: ""
 exp_dir:        ""
-metadata_file:  "TIGERLiverCancerCohort/TIGERLiverCancerCohort_metadata.xlsx"
+metadata:       ""
 
 in_root:        "Exp_Data/"
 ip_root:        "IP_Data/"
@@ -73,6 +73,11 @@ mothur_method: "wang"
 #current options: [silva, greengenes, ncbi20_k2]
 kraken_db: "ncbi20_k2"
 
+#-----------------------------
+# BLAST PARAMETERS
+#-----------------------------
+conf_cutoff: 0.2
+
 #---------------------------
 # TAXONOMY COUNT PARAMETERS
 #---------------------------
@@ -94,6 +99,7 @@ da_methods: ["ANCOMBC"]
 da_comparisons: ["NegativeControl", "PatientSample"]
 tax_agg_level: "Genus"
 tax_label_level: "Genus"
-#current options: [noNorm, RelAbund, RawTSS, HostMapped, log2]
+#current options: [noNorm, RelAbund, RawTSS, HostMapped, log2, log2HostMapped]
 norm_method: "noNorm"
 pseudocount: 1
+
