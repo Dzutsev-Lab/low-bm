@@ -4,7 +4,7 @@
 #SBATCH --mem=25GB
 #SBATCH --output=SLURM_stdout/slurm-%A_%a.out
 #SBATCH --error=SLURM_stderr/slurm-%A_%a.err
-#SBATCH --time 5:00:00
+#SBATCH --time 6:00:00
 
 source myconda
 mamba activate low-bm-base

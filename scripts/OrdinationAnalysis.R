@@ -1,10 +1,14 @@
 library(tibble)
 library(dplyr)
+library(tidyr)
 library(ggplot2)
 library(argparse)
 library(phyloseq)
 library(limma)
 library(sva)
+library(vegan)
+library(FSA)
+library(ggpubr)
 
 parser <- ArgumentParser()
 
@@ -199,6 +203,90 @@ load_physeq <- function(path) {
 physeq_list <- lapply(args$physeqs, load_physeq)
 CompPhyseq <- Reduce(phyloseq::merge_phyloseq, physeq_list)
 
+if (!dir.exists(paste0(args$out, "/AlphaDiversity"))) {
+    dir.create(paste0(args$out, "/AlphaDiversity"),
+               recursive = TRUE)
+}
+#-----------------------------------
+# ALPHA DIVERSITY
+#-----------------------------------
+alpha_div_results <- estimate_richness(CompPhyseq, measures = c("Shannon", "Simpson"))
+sample_data(CompPhyseq)$Shannon <- alpha_div_results$Shannon
+sample_data(CompPhyseq)$Simpson <- alpha_div_results$Simpson
+
+
+# Long-format data
+alpha_df <- as(sample_data(CompPhyseq), "data.frame") |>
+  dplyr::select(SampleType, Shannon, Simpson) |>
+  pivot_longer(
+    cols = c(Shannon, Simpson),
+    names_to = "Metric",
+    values_to = "Value"
+  ) |>
+  mutate(
+    SampleType = factor(SampleType)
+  )
+
+# Build Dunn labels separately for each metric
+make_dunn_labels <- function(dat) {
+  dunn_tbl <- dunnTest(Value ~ SampleType, data = dat, method = "bh")$res |>
+    mutate(
+      Metric = unique(dat$Metric),
+      group1 = trimws(sub(" - .*", "", Comparison)),
+      group2 = trimws(sub(".* - ", "", Comparison)),
+      p.adj.signif = case_when(
+        P.adj <= 1e-4 ~ "****",
+        P.adj <= 1e-3 ~ "***",
+        P.adj <= 1e-2 ~ "**",
+        P.adj <= 0.05 ~ "*",
+        TRUE ~ as.character(round(P.adj, digits = 3))
+      )
+    )
+
+  y_max <- max(dat$Value, na.rm = TRUE)
+  y_rng <- diff(range(dat$Value, na.rm = TRUE))
+  if (y_rng == 0) y_rng <- 1
+
+  dunn_tbl |>
+    arrange(P.adj) |>
+    mutate(y.position = y_max + y_rng * (0.08 * row_number()))
+}
+
+dunn_labels <- alpha_df |>
+  group_by(Metric) |>
+  group_split() |>
+  lapply(make_dunn_labels) |>
+  bind_rows()
+
+# Plot
+alpha_div_plot <- ggplot(alpha_df, aes(x = SampleType, y = Value, fill = SampleType)) +
+  geom_boxplot(width = 0.7, outlier.shape = NA) +
+  facet_wrap(~Metric, scales = "free_y", nrow = 2) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  stat_pvalue_manual(
+    dunn_labels,
+    label = "p.adj.signif",
+    xmin = "group1",
+    xmax = "group2",
+    y.position = "y.position",
+    tip.length = 0.01,
+    hide.ns = FALSE,
+    bracket.size = 0.4,
+    size = 3,
+    inherit.aes = FALSE
+  )
+
+alpha_div_plot
+
+ggsave(
+  filename = paste0(args$out, "/AlphaDiversity/", args$trialID, "_AlphaDivBoxplot.png"),
+  plot = alpha_div_plot,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
 # Glomming to desired taxa level
 if (!is.null(args$tax_agg_level)) {
     GlomPhyseq <- tax_glom(CompPhyseq,
@@ -248,8 +336,8 @@ AdjOTU_mat <- AdjOTU_mat[, keep, drop = FALSE]
 TechRepAvgPCA <- prcomp(AdjOTU_mat, center = TRUE, scale. = TRUE)
 
 PCAScores <- as.data.frame(TechRepAvgPCA$x)
-if ("TumorType" %in% names(sample_data(AdjPhyseq))) {
-    PCAScores$SampleType <- sample_data(AdjPhyseq)$TumorType
+if ("SampleType" %in% names(sample_data(AdjPhyseq))) {
+    PCAScores$SampleType <- sample_data(AdjPhyseq)$SampleType
 } else {
     PCAScores$SampleType <- sample_data(AdjPhyseq)$SampleType
 }
@@ -286,11 +374,11 @@ for (metric in args$dist_metrics) {
     NormOrd <- ordinate(NormPhyseq, "PCoA", metric)
     SampleTypeOrdPlot <- plot_ordination(NormPhyseq, NormOrd, 
                                         type="samples",
-                                        color= "TumorType") +
+                                        color= "SampleType") +
                         geom_point(size = 5) +
                         ggtitle(paste0("Composite Batch Sample Ordination (", metric, ")"))
     Centroids <- SampleTypeOrdPlot$data |>
-        group_by(TumorType) |>
+        group_by(SampleType) |>
         summarize(
             Axis.1 = mean(Axis.1),
             Axis.2 = mean(Axis.2)
@@ -302,7 +390,7 @@ for (metric in args$dist_metrics) {
     plot_data_with_centroids <- plot_data %>%
     left_join(
         Centroids %>% rename(Centroid1 = Axis.1, Centroid2 = Axis.2),
-        by = "TumorType"
+        by = "SampleType"
     )
 
     SampleTypeOrdPlot <- SampleTypeOrdPlot +
@@ -310,7 +398,7 @@ for (metric in args$dist_metrics) {
             data = plot_data_with_centroids,
             aes(x = Axis.1, y = Axis.2,
                 xend = Centroid1, yend = Centroid2,
-                color = TumorType),
+                color = SampleType),
             alpha = 0.5,
             linewidth = 0.5,
             inherit.aes = FALSE
@@ -324,13 +412,13 @@ for (metric in args$dist_metrics) {
         # ) +
         geom_point(
             data = Centroids,
-            aes(x = Axis.1, y = Axis.2, color = TumorType),
+            aes(x = Axis.1, y = Axis.2, color = SampleType),
             size = 6, shape = 9, stroke = 2,
             inherit.aes = FALSE
         ) +
         geom_text(
             data = Centroids,
-            aes(x = Axis.1, y = Axis.2, label = TumorType),
+            aes(x = Axis.1, y = Axis.2, label = SampleType),
             inherit.aes = FALSE,
             vjust = -1)
     ggsave(
