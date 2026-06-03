@@ -13,3 +13,4 @@ experiment_batch_configs.tsv
 .snakemake/
 .vscode/
 .Rhistory
+.DS_Store
