@@ -62,4 +62,4 @@ names(merged_unique) <- dt_unique$ASV_ID
 
 writeXStringSet(merged_unique, filepath = file.path(args$out_dir, "MergedASV.fasta"))
 
-message("Wrote merged FASTA with ", length(merged_unique), " unique ASVs to: ", args$out_fasta)
+message("Wrote merged FASTA with ", length(merged_unique), " unique ASVs to: ", args$out_dir, "/MergedASV.fasta")

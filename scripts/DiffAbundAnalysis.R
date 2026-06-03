@@ -60,6 +60,14 @@ parser$add_argument("--select-taxa-names",
                     type = "character",
                     nargs = "+",
                     help = "optional list of files containing lists of taxa to subset differential abundance analysis to (union of all unique names provided)")
+parser$add_argument("--alpha",
+                    type = "double",
+                    default = 0.05,
+                    help = "Alpha cutoff for differential abundance significance (default = 0.05)")
+parser$add_argument("--lfc-cutoff",
+                    type = "double",
+                    default = 1.0,
+                    help = "Log-fold change cutoff for differential abundance significance (default = 1.0)")
 parser$add_argument("--out",
                     type = "character",
                     help = "directory to store output abundance plots")
@@ -170,10 +178,10 @@ ANCOMBC_DA <- function(Grouped_phyloseq,
   } else if (GroupingType == "TumorType") {
     formula <- "TumorType"
     grouping_variable <- "TumorType"
-    results_table_groups <- c("taxon", "TumorTypeiCCA")
+    results_table_groups <- c("taxon", "TumorTypeiCC")
     default_struc0_groups <- c("taxon",
-                               "structural_zero (TumorType = iCCA)",
-                               "structural_zero (TumorType = HCC)")
+                               "structural_zero (TumorType = HCC)",
+                               "structural_zero (TumorType = iCC)")
     comp_file_label <- "TumorType"
 
   } else if (GroupingType == "PatientSample") {
@@ -663,7 +671,8 @@ all_DA_analysis <- function(phyloseq,
                             Comparisons,
                             norm_method, pseudocount,
                             tax_agg_level = NULL, tax_label_level = "Genus",
-                            select_taxa = NULL) {
+                            select_taxa = NULL,
+                            alpha, lfc_cutoff) {
   
   for (DA_method in DA_methods) {
     for (Comparison in Comparisons) {
@@ -673,11 +682,24 @@ all_DA_analysis <- function(phyloseq,
       if (!is.null(select_taxa)) {
         Grouped_phyloseq <- prune_taxa(select_taxa, Grouped_phyloseq)
       }
+      
+      if (Comparison == "TumorType") {
+        Grouping_col <- "TumorType"
+      } else {
+        Grouping_col <- "SampleType"
+      }
+
       if (nsamples(Grouped_phyloseq) == 0 ||
           is.null(Grouped_phyloseq) ||
-          length(unique(as.matrix(sample_data(Grouped_phyloseq))[,"SampleType"])) < 2) {
+          length(unique(as.matrix(sample_data(Grouped_phyloseq))[, Grouping_col])) < 2) {
         message_string <- paste("Skipped", DA_method, Comparison, "due to lack of one or more sample-type group(s)")
         message(message_string)
+
+        if (!dir.exists(paste0(args$out, "/", DA_method, "/", Comparison))) {
+          dir.create(paste0(args$out, "/", DA_method, "/", Comparison),
+                    recursive = TRUE)
+        }
+
         writeLines(message_string,
                    paste0(args$out, "/", DA_method, "/", Comparison, "/", 
                    args$trialID, "_", Comparison, "_", DA_method, "Results.tsv"))
@@ -689,7 +711,8 @@ all_DA_analysis <- function(phyloseq,
         DA_method = DA_method,
         norm_method = norm_method, pseudocount = pseudocount,
         tax_agg_level = tax_agg_level, tax_label_level = tax_label_level,
-        GroupingType = Comparison)
+        GroupingType = Comparison,
+        alpha = alpha, lfc_cutoff = lfc_cutoff)
     }
   }
 }
@@ -726,4 +749,6 @@ all_DA_analysis(phyloseq = CompPhyseq,
                 norm_method = args$norm_method,
                 pseudocount = args$pseudocount,
                 tax_agg_level = args$tax_agg_level,
-                select_taxa = select_taxa)
+                select_taxa = select_taxa,
+                alpha = args$alpha, 
+                lfc_cutoff = args$lfc_cutoff)
