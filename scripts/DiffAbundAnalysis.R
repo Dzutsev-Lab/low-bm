@@ -43,7 +43,7 @@ parser$add_argument("--DA-comparisons",
 parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
-                    help = "Determine which normalized sequence table to feed into limma voom (default = noNorm)")
+                    help = "Determine which normalized sequence table to feed into limma voom and scale heatmaps values (default = noNorm)")
 parser$add_argument("--pseudocount",
                     type = "double",
                     default = 1.0,

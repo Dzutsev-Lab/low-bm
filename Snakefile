@@ -157,9 +157,7 @@ def pick_raw_fastq(wc, read):
 #----------------------------
 rule all:
     input:
-        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData",
-        diff_abund_results = expand(f"{DIFF_ABUND_DIR}/{{m}}/{{c}}/{TRIAL_ID}_{{c}}_{{m}}Results.tsv", m=DA_METHODS, c=DA_COMPARISONS),
-        reconciled_kraken_file = f"{RECONCILED_TAX_DIR}/reconciled.ASV.{KRAKEN_DB}.kraken2"
+        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
 
 rule copy_config:
     output:
@@ -203,33 +201,6 @@ rule index_ref_bwa:
         exec > {log} 2>&1
         bwa index {input.reference}
         """
-
-#------------------------------
-# Kraken Database Construction
-#------------------------------
-# rule kraken_db_construction:
-#     output:
-#         # using database dump files as sentinal 
-#         # (needed for tax table reconstruction in phyloseq analysis)
-#         names_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/names.dmp",
-#         nodes_dump = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
-#     params:
-#         kraken_db = KRAKEN_DB,
-#         kraken_build_option = f"--special {KRAKEN_DB}" if KRAKEN_DB in ["silva", "greengenes"] else "--build"
-#     threads: 16
-#     log: f"{LOG_DIR}/00_kraken_db.log"
-#     conda: f"{CONDA_ENV_DIR}/kraken-env"
-#     shell:
-#         r"""
-#         set -euo pipefail
-#         exec > {log} 2>&1
-        
-#         kraken2-build \
-#             {params.kraken_build_option} \
-#             --db {REF_DIR}/{params.kraken_db} \
-#             --threads {threads}
-#         """
-
 
 #-------------------------------------
 # 00 Normalizing and Unzipping FASTQs
@@ -498,42 +469,6 @@ rule decontamination_filter:
         seqtk subseq "{input.bacterial_ASV_fa}" "{input.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
         """
 
-
-#------------------------------
-# 08.1 Mothur Taxa Classifcation 
-#------------------------------
-rule mothur_classify:
-    input:
-        bacterial_ASVs = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
-        mothur_ref = MOTHUR_REFERENCE,
-        mothur_tax_file = MOTHUR_TAX_FILE
-    output:
-        taxfile = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.taxonomy",
-        tax_summary = f"{MOTHUR_TAX_DIR}/bacterial.ASV.ncbi20.wang.tax.summary",
-    threads: 8
-    log:    f"{LOG_DIR}/08.1_mothur_class.log"
-    conda:  f"{CONDA_ENV_DIR}/mothur-env"
-    shell:
-        r"""
-        set -euo pipefail
-
-        # ---- Run Mothur ----
-        mothur "#set.dir(output={MOTHUR_TAX_DIR}); 
-                set.logfile(name={log});
-                classify.seqs(
-                    fasta={input.bacterial_ASVs}, 
-                    reference={input.mothur_ref}, 
-                    taxonomy={input.mothur_tax_file}, 
-                    method={MOTHUR_METHOD}, 
-                    cutoff={MOTHUR_CUTOFF}, 
-                    processors={threads}
-                )" >> {log} 2>&1
-        
-        
-        # ---- Remove Redundant Mothur Logs ----
-        rm *.logfile
-        """
-
 #--------------------------------------
 # 08.2 Kraken2 Taxanomic Classifcation 
 #--------------------------------------
@@ -559,36 +494,9 @@ rule kraken_classification:
         """
 
 #--------------------------------------
-# 08.3.1 BLAST Candidate Selection
-#--------------------------------------
-rule blast_candidate_selection:
-    input:
-        kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
-        tax_db_nodes = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp",
-        rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta"
-    output:
-        candidate_fasta = f"{BLAST_TAX_DIR}/blast_candidate.fasta"
-    params:
-        conf_cutoff = CONF_CUTOFF
-    threads: 16
-    log:    f"{LOG_DIR}/08.3.1_blast_candidate_selection.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"   
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-
-        Rscript scripts/BLASTCandidateSelection.R \
-            --kraken-file {input.kraken_file} \
-            --tax-db-nodes {input.tax_db_nodes} \
-            --conf-cutoff {params.conf_cutoff} \
-            --asv-fasta {input.rep_asv_fasta} \
-            --candidate-fasta {output.candidate_fasta}
-        """
-
-#--------------------------------------
 # 00 BLAST Database Construction
 #--------------------------------------
+# Not used by pipeline but used later in confirmatory taxanomic analysis
 rule blast_db_construction:
     input:
         reference_db_fasta = f"{REF_DIR}/{KRAKEN_DB}.fasta",
@@ -613,60 +521,39 @@ rule blast_db_construction:
             -out {params.blast_db_base}
         """
 
-#--------------------------------------
-# 08.3.2 BLAST Classification
-#--------------------------------------
-rule blast_classification:
+rule phyloseq_construction:
     input:
-        candidate_fasta = f"{BLAST_TAX_DIR}/blast_candidate.fasta",
-        blast_db = f"{REF_DIR}/{KRAKEN_DB}/blast_format_db/{KRAKEN_DB}_blast.nsq"
+        kraken_class_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
+        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
+        raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
+        sample_names = f"{OUT_DIR}/sample.names",
+        metadata_sheet = METADATA,
+        library_counts = f"{TRACK_DIR}/combined_read_counts.tsv"
     output:
-        blast_hits = f"{BLAST_TAX_DIR}/blast_hits.tsv"
-    params: 
-        blast_db_base = f"{REF_DIR}/{KRAKEN_DB}/blast_format_db/{KRAKEN_DB}_blast"
-    threads: 16
-    log:    f"{LOG_DIR}/08.3.2_blast_classification.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"  
+        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
+    params:
+        dump_dir = f"{REF_DIR}/taxdump",        
+        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
+    threads: 8
+    log:    f"{LOG_DIR}/10_phyloseq.log"
+    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
     shell:
         r"""
         set -euo pipefail
         exec > "{log}" 2>&1
-        
-        blastn -query {input.candidate_fasta} \
-            -db {params.blast_db_base} \
-            -task megablast \
-            -num_threads {threads} \
-            -max_target_seqs 1 \
-            -outfmt '6 qseqid sseqid pident length qcovs evalue bitscore staxids sscinames' \
-            > {output.blast_hits}
+        Rscript scripts/PhyloseqConstruction.R \
+            --kraken-file {input.kraken_class_file} \
+            --bacterial-names {input.bacterial_names} \
+            --raw-seq-table {input.raw_seq_table} \
+            --sample-names {input.sample_names} \
+            --metadata {input.metadata_sheet} \
+            --library-counts {input.library_counts} \
+            --dump-dir {params.dump_dir} \
+            {params.unclassified_prefix_flag} \
+            --trialID {TRIAL_ID} \
+            --out {PHYLOSEQ_DIR}
         """
-#--------------------------------------------------
-# 08.5 Kraken2-BLAST Classification Reconciliation
-#--------------------------------------------------
-rule kraken_blast_reconciliation:
-    input:
-        kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
-        blast_hits = f"{BLAST_TAX_DIR}/blast_hits.tsv",
-        tax_db_nodes = f"{REF_DIR}/{KRAKEN_DB}/taxonomy/nodes.dmp"
-    output:
-        reconciled_kraken_file = f"{RECONCILED_TAX_DIR}/reconciled.ASV.{KRAKEN_DB}.kraken2",
-        reconciliation_summary = f"{RECONCILED_TAX_DIR}/reconciliation_summary.tsv"
-    threads: 16
-    log:    f"{LOG_DIR}/08.4_kraken_blast_reconciliation.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"   
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
 
-        Rscript scripts/KrakenBLASTReconciliation.R \
-            --kraken-file {input.kraken_file} \
-            --blast-hits {input.blast_hits} \
-            --tax-db-nodes {input.tax_db_nodes} \
-            --reconciled-out {output.reconciled_kraken_file} \
-            --summary-out {output.reconciliation_summary} \
-            --conflict-policy lca
-        """
 
 #-----------------------------
 # 11 Read Count Calculations
@@ -706,101 +593,6 @@ rule read_counts:
             --bacterial-names {input.bacterial_names} \
             --combined-counts {output.library_counts}
         """
-
-rule phyloseq_construction:
-    input:
-        reconciled_kraken_file = f"{RECONCILED_TAX_DIR}/reconciled.ASV.{KRAKEN_DB}.kraken2",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        sample_names = f"{OUT_DIR}/sample.names",
-        metadata_sheet = METADATA,
-        library_counts = f"{TRACK_DIR}/combined_read_counts.tsv"
-    output:
-        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
-    params:
-        dump_dir = f"{REF_DIR}/taxdump",        
-        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
-    threads: 8
-    log:    f"{LOG_DIR}/10_phyloseq.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-        Rscript scripts/PhyloseqConstruction.R \
-            --kraken-file {input.reconciled_kraken_file} \
-            --bacterial-names {input.bacterial_names} \
-            --raw-seq-table {input.raw_seq_table} \
-            --sample-names {input.sample_names} \
-            --metadata {input.metadata_sheet} \
-            --library-counts {input.library_counts} \
-            --dump-dir {params.dump_dir} \
-            {params.unclassified_prefix_flag} \
-            --trialID {TRIAL_ID} \
-            --out {PHYLOSEQ_DIR}
-        """
-
-rule differential_abundance_analysis:
-    input:
-        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
-    output:
-        diff_abund_results = expand(f"{DIFF_ABUND_DIR}/{{m}}/{{c}}/{TRIAL_ID}_{{c}}_{{m}}Results.tsv", m=DA_METHODS, c=DA_COMPARISONS)
-    threads: 8
-    log:    f"{LOG_DIR}/11_diff_abund.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-        Rscript scripts/DiffAbundAnalysis.R \
-            --trialID {TRIAL_ID} \
-            --B1-physeq {input.phyloseq_object} \
-            --DA-methods {DA_METHODS} \
-            --DA-comparisons {DA_COMPARISONS} \
-            --norm-method {NORM_METHOD} \
-            --tax-agg-level {TAX_AGG_LEVEL} \
-            --tax-label-level {TAX_LABEL_LEVEL} \
-            --out {DIFF_ABUND_DIR}
-        """
-
-#-------------------------------
-# 10 Phyloseq Taxonomy Analysis
-#-------------------------------
-rule phyloseq_analysis:
-    input:
-        raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        kraken_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
-        library_counts = f"{TRACK_DIR}/combined_read_counts.tsv",
-        metadata_sheet = METADATA
-    output:
-        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_raw_kraken_phyloseq.RData"
-    params:
-        unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else "",
-        dump_dir = f"{REF_DIR}/taxdump"
-    threads: 8
-    log:    f"{LOG_DIR}/10_phyloseq.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
-
-    shell:
-        r"""
-        set -euo pipefail
-        exec > "{log}" 2>&1
-        Rscript scripts/PhyloseqTaxAnalysis.R \
-            --kraken-file {input.kraken_file} \
-            --raw-seq-table {input.raw_seq_table} \
-            --bacterial-names {input.bacterial_names} \
-            --library-counts {input.library_counts} \
-            --trialID {TRIAL_ID} \
-            --dump-dir {params.dump_dir} \
-            {params.unclassified_prefix_flag} \
-            --metadata {input.metadata_sheet} \
-            --tax-agg-level {TAX_AGG_LEVEL} \
-            --tax-label-level {TAX_LABEL_LEVEL} \
-            --out {PHYLOSEQ_DIR}
-        """
-
-
 
 
 
