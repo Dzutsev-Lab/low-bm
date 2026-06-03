@@ -1,521 +1,226 @@
+library(argparse)
 library(phyloseq)
-library(Biostrings)
 library(ggplot2)
 library(ggrepel)
-library(argparse)
 library(dplyr)
-library(taxonomizr)
-library(DESeq2)
-library(tidyr)
-library(ANCOMBC)
-library(microbiome)
-library(readr)
-library(tibble)
-library(readxl)
-library(stringr)
-library(limma)
-library(edgeR)
-library(purrr)
 
-library(ComplexHeatmap)
-library(circlize)
+source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
 
 parser <- ArgumentParser()
 
+parser$add_argument("--analysis-config",
+                    type = "character",
+                    default = NULL,
+                    help = "Analysis YAML with differential_abundance comparison specs")
+parser$add_argument("--compiled-physeq",
+                    type = "character",
+                    default = NULL,
+                    help = "Compiled phyloseq RData file")
+parser$add_argument("--physeqs",
+                    type = "character",
+                    nargs = "+",
+                    default = NULL,
+                    help = "List of phyloseq RData files named 'physeq'")
+parser$add_argument("--batch-table",
+                    type = "character",
+                    default = NULL,
+                    help = "Canonical batch table with include_analysis column")
+parser$add_argument("--base-dir",
+                    type = "character",
+                    default = "Exp_Output",
+                    help = "Base directory containing trial output folders")
+
+# Legacy-compatible arguments.
 parser$add_argument("--trialID",
                     type = "character",
+                    default = NULL,
                     help = "ID number to attach to output files")
 parser$add_argument("--B1-physeq",
                     type = "character",
-                    help = ".RData file contatining phyloseq object for required first batch")
+                    default = NULL,
+                    help = "Legacy first-batch phyloseq RData file")
 parser$add_argument("--B2-physeq",
                     type = "character",
                     default = NULL,
-                    help = ".RData file contatining phyloseq object for optional second batch")
+                    help = "Legacy optional second-batch phyloseq RData file")
 parser$add_argument("--DA-methods",
                     type = "character",
                     nargs = "+",
-                    help = "Choice of differential abunance tools to use [ANCOMBC, LIMMA_VOOM]")
+                    default = NULL,
+                    help = "Legacy method list; config-driven v1 supports ANCOMBC")
 parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
-                    help = "Choice of differential abunance comprisons to use [CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample, TumorType]")
+                    default = NULL,
+                    help = "Legacy comparison preset names")
 parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
-                    help = "Determine which normalized sequence table to feed into limma voom and scale heatmaps values (default = noNorm)")
+                    help = "Normalization method for DA heatmaps")
 parser$add_argument("--pseudocount",
                     type = "double",
                     default = 1.0,
-                    help = "pseudocount value to replace zero counts (default: 1.0)")
+                    help = "Pseudocount for heatmap normalization")
 parser$add_argument("--tax-agg-level",
                     type = "character",
                     default = "Genus",
-                    help = "taxonomic level to agglomerate to for DA analysis (e.g. Genus, Family, etc.)")
+                    help = "Taxonomic level to agglomerate to for DA")
 parser$add_argument("--tax-label-level",
                     type = "character",
                     default = "Genus",
-                    help = "taxonomic level to use for taxon labels in plots (e.g. Genus, Family, etc.)")
+                    help = "Taxonomic level to use for labels")
 parser$add_argument("--select-taxa-names",
                     type = "character",
                     nargs = "+",
-                    help = "optional list of files containing lists of taxa to subset differential abundance analysis to (union of all unique names provided)")
+                    default = NULL,
+                    help = "Optional files containing taxa names to analyze")
 parser$add_argument("--alpha",
                     type = "double",
                     default = 0.05,
-                    help = "Alpha cutoff for differential abundance significance (default = 0.05)")
+                    help = "Alpha cutoff for significance")
 parser$add_argument("--lfc-cutoff",
                     type = "double",
                     default = 1.0,
-                    help = "Log-fold change cutoff for differential abundance significance (default = 1.0)")
+                    help = "Log-fold-change cutoff for significance")
 parser$add_argument("--out",
                     type = "character",
-                    help = "directory to store output abundance plots")
-
+                    default = NULL,
+                    help = "Output directory")
 
 args <- parser$parse_args()
 
-#--------------------------------------
-# Read Counts Normalization
-#--------------------------------------
-# TODO: fix factor division normalization to account for zero divisor errors
-# optionally could do away with pre-normalization altogther as it complicates limma/voom assumptions
-counts_normalization <- function(physeq, 
-                                 norm_method, 
-                                 pseudocount) {
-
-
-    otu_divide_by_sample_factor <- function(physeq, factor_column) {
-      sample_factors <- sample_data(physeq)[[factor_column]]
-
-      otu_mat <- as(otu_table(physeq), "matrix")
-
-      if (taxa_are_rows(physeq)) {
-          otu_mat <- sweep(otu_mat, 2, sample_factors, FUN = "/")
-      } else {
-          otu_mat <- sweep(otu_mat, 1, sample_factors, FUN = "/")
-      }
-      otu_mat <- otu_mat * 1e6  # scaling factor to bring values back to a more interpretable range
-      otu_table(physeq) <- otu_table(otu_mat, taxa_are_rows = taxa_are_rows(physeq))
-      return(physeq)
-    }
-
-    if (norm_method == "noNorm") {
-        return(physeq)
-    } else if (norm_method == "log2") {
-        return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
-    } else if (norm_method == "RelAbund") {
-        return(transform_sample_counts(physeq, function(x) x / sum(x)))
-    } else if (norm_method == "RawTSS") {
-        return(otu_divide_by_sample_factor(physeq, "Raw_reads"))
-    } else if (norm_method == "HostMapped") {
-        return(otu_divide_by_sample_factor(physeq, "Host_mapped_reads"))
-    } else if (norm_method == "log2HostMapped") {
-        physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
-        return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
-    } else {
-        message("Unknown normalization method provided for limma voom pre-normlaization, no normalization used.")
-    }
-
-}
-
-#---------------------------------------
-# Grouping Samples by Control Type
-#---------------------------------------
-SampleGrouping <- function(Ungrouped_phyloseq, 
-                           GroupingType,
-                           tax_agg_level) {
-  if (GroupingType == "AllControl") {
-    keep_samples <- !is.na(get_variable(Ungrouped_phyloseq, "SampleType"))
-  } else if (GroupingType == "TumorType") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") == "Tumor"
-  } else if (GroupingType == "CellLineControltoTumor") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Tumor")
-  } else if (GroupingType == "CellLineControltoNontumor") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("CellLineControl", "Nontumor", "NormalTissue")
-  } else if (GroupingType == "NegativeControl") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("NegativeControl", "Tumor", "Nontumor", "NormalTissue")
-  } else if (GroupingType == "PatientSample") {
-    keep_samples <- get_variable(Ungrouped_phyloseq, "SampleType") %in% c("Tumor", "Nontumor", "NormalTissue")
+load_project_and_da_config <- function() {
+  if (!is.null(args$analysis_config)) {
+    full_config <- load_yaml_config(args$analysis_config)
+    return(list(
+      project = full_config$project %||% list(),
+      da = normalize_da_config(full_config$differential_abundance)
+    ))
   }
 
-  #Protecting against comparisons where one or more comparison groups are missing
-  if (!any(keep_samples)) {
+  if (is.null(args$DA_comparisons)) {
+    args$DA_comparisons <- c("NegativeControl", "PatientSample")
+  }
+
+  list(
+    project = list(),
+    da = normalize_da_config(build_legacy_da_config(
+      trial_id = args$trialID %||% "analysis",
+      comparisons = args$DA_comparisons,
+      methods = args$DA_methods %||% c("ANCOMBC"),
+      out_dir = args$out %||% "Exp_Output/analysis",
+      norm_method = args$norm_method,
+      pseudocount = args$pseudocount,
+      tax_agg_level = args$tax_agg_level,
+      tax_label_level = args$tax_label_level,
+      alpha = args$alpha,
+      lfc_cutoff = args$lfc_cutoff
+    ))
+  )
+}
+
+config_bundle <- load_project_and_da_config()
+project_config <- config_bundle$project
+da_config <- config_bundle$da
+
+trial_id <- args$trialID %||% da_config$trialID %||% "analysis"
+base_dir <- project_config$base_dir %||% args$base_dir
+out_dir <- args$out %||% da_config$output_dir %||% project_config$output_dir %||% file.path(base_dir, "analysis")
+
+load_input_physeq <- function() {
+  if (!is.null(args$compiled_physeq)) {
+    return(load_physeq(args$compiled_physeq))
+  }
+  if (!is.null(project_config$compiled_physeq) && file.exists(project_config$compiled_physeq)) {
+    return(load_physeq(project_config$compiled_physeq))
+  }
+  if (!is.null(args$physeqs)) {
+    return(merge_physeqs(load_physeqs(args$physeqs)))
+  }
+  if (!is.null(args$B1_physeq)) {
+    paths <- c(args$B1_physeq, args$B2_physeq)
+    paths <- paths[!is.na(paths) & !is.null(paths) & nzchar(paths)]
+    return(merge_physeqs(load_physeqs(paths)))
+  }
+  if (!is.null(args$batch_table) || !is.null(project_config$batch_table)) {
+    batch_table <- args$batch_table %||% project_config$batch_table
+    physeq_paths <- resolve_batch_physeqs(batch_table, base_dir = base_dir)
+    return(merge_physeqs(load_physeqs(physeq_paths)))
+  }
+  stop(
+    "Provide --compiled-physeq, --physeqs, --B1-physeq, --batch-table, or project.batch_table.",
+    call. = FALSE
+  )
+}
+
+read_select_taxa <- function(paths) {
+  if (is.null(paths)) {
     return(NULL)
   }
-
-  Grouped_phyloseq <- prune_samples(keep_samples, Ungrouped_phyloseq)
-  Grouped_phyloseq <- tax_glom(Grouped_phyloseq, tax_agg_level)
-  taxa_names(Grouped_phyloseq) <- as.character(tax_table(Grouped_phyloseq)[, tax_agg_level])
-
-  #Remove any taxa that now have total zero count after subsetting and glomming
-  Grouped_phyloseq <- prune_taxa(taxa_sums(Grouped_phyloseq) > 0, Grouped_phyloseq)
-
-  return(Grouped_phyloseq)
+  unique(unlist(lapply(paths, function(name_file) {
+    read.csv(name_file, header = FALSE, stringsAsFactors = FALSE)[[1]]
+  })))
 }
 
-
-#----------------------------------------------
-# ANCOMBC Differential Abundance Analysis
-#----------------------------------------------
-ANCOMBC_DA <- function(Grouped_phyloseq, 
-                       GroupingType, 
-                       tax_agg_level, 
-                       alpha, lfc_cutoff) {
-
-  #STEP 1: Set formula for ANCOM-BC run, desired columns from ANCOM-BC output, and fomatted output file label
-  #         based on comparison
-  # TODO: simplify handling of control comparisons versus patient sample comparison (single grouping variable)
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
-    formula <- "ControlStatus"
-    grouping_variable <- "ControlStatus"
-    results_table_groups <- c("taxon", "ControlStatusPatientSample")
-    default_struc0_groups <- c("taxon", 
-                               "structural_zero (ControlStatus = Control)", 
-                               "structural_zero (ControlStatus = PatientSample)")
-    comp_file_label <- paste0(GroupingType, "toPS")
-
-  } else if (GroupingType == "TumorType") {
-    formula <- "TumorType"
-    grouping_variable <- "TumorType"
-    results_table_groups <- c("taxon", "TumorTypeiCC")
-    default_struc0_groups <- c("taxon",
-                               "structural_zero (TumorType = HCC)",
-                               "structural_zero (TumorType = iCC)")
-    comp_file_label <- "TumorType"
-
-  } else if (GroupingType == "PatientSample") {
-    formula <- "SampleType + PatientID"
-    grouping_variable <- "SampleType"
-    results_table_groups <- c("taxon", "SampleTypeTumor")
-
-    if ("NormalTissue" %in% levels(as(sample_data(Grouped_phyloseq), "data.frame")$SampleType)) {
-      default_struc0_groups <- c("taxon", 
-                                "structural_zero (SampleType = NormalTissue)", 
-                                "structural_zero (SampleType = Tumor)")
-    } else if ("Nontumor" %in% levels(as(sample_data(Grouped_phyloseq), "data.frame")$SampleType)) {
-            default_struc0_groups <- c("taxon", 
-                                "structural_zero (SampleType = Nontumor)", 
-                                "structural_zero (SampleType = Tumor)")
-    }
-
-    comp_file_label <- "NTtoT"
+add_result_labels <- function(results_df, grouped_physeq, tax_label_level) {
+  results_df$label <- results_df$taxon
+  tax_df <- as.data.frame(as(tax_table(grouped_physeq), "matrix"), stringsAsFactors = FALSE)
+  if (!tax_label_level %in% names(tax_df)) {
+    return(results_df)
   }
 
-  # STEP 2: Run ANCOM-BC analysis
-  ancombc_output <- ancombc(data = Grouped_phyloseq, 
-                            tax_level = tax_agg_level,
-                            formula = formula,
-                            p_adj_method = "holm",
-                            group = grouping_variable,
-                            struc_zero = TRUE,
-                            alpha = alpha)
-
-  
-  # STEP 3: Construct formatted ANCOM-BC results data frame
-  ancombc_lfc_df <- ancombc_output[["res"]][["lfc"]][, results_table_groups]
-  colnames(ancombc_lfc_df) <- c("taxon", "log2FoldChange")
-
-  ancombc_p_df <- ancombc_output[["res"]][["p_val"]][, results_table_groups]
-  colnames(ancombc_p_df) <- c("taxon", "p")
-
-  ancombc_padj_df <- ancombc_output[["res"]][["q_val"]][, results_table_groups]
-  colnames(ancombc_padj_df) <- c("taxon", "padj")
-
-  ancombc_se_df <- ancombc_output[["res"]][["se"]][, results_table_groups]
-  colnames(ancombc_se_df) <- c("taxon", "se")
-  
-  ancombc_struc0_df <- ancombc_output[["zero_ind"]][, default_struc0_groups]
-  colnames(ancombc_struc0_df) <- c("taxon", "struc0_group1", "struc0_group2")
-
-  ancombc_struc0_df <- ancombc_struc0_df |>
-    mutate(
-      struc0_group1 = as.logical(struc0_group1),
-      struc0_group2 = as.logical(struc0_group2),
-      struc0 = case_when(
-        struc0_group1 & !struc0_group2 ~ "group1",
-        !struc0_group1 & struc0_group2 ~ "group2",
-        TRUE ~ NA
-      )
-    ) |> select(taxon, struc0)
-  
-  ancombc_results_df_list <- list(
-    ancombc_lfc_df,
-    ancombc_p_df,
-    ancombc_padj_df,
-    ancombc_se_df,
-    ancombc_struc0_df
+  tax_df$taxon <- rownames(tax_df)
+  results_df <- left_join(results_df, tax_df[, c("taxon", tax_label_level), drop = FALSE], by = "taxon")
+  label_values <- results_df[[tax_label_level]]
+  results_df$label <- ifelse(
+    is.na(label_values) | label_values == "",
+    results_df$taxon,
+    paste0(label_values, " (", results_df$taxon, ")")
   )
-  
-  ancombc_results_df <- ancombc_results_df_list |>
-    reduce(left_join, by = "taxon")
-
-
- 
-  
-  # STEP 4: Add significance labels
-  ancombc_results_df <- ancombc_results_df |>
-    mutate(
-      log2FoldChange = as.numeric(log2FoldChange),
-      p = as.numeric(p),
-      padj = as.numeric(padj), 
-      se = as.numeric(se),
-      significance = if_else(
-        padj < alpha &
-          (abs(log2FoldChange) > lfc_cutoff |
-             !is.na(struc0)),
-        "Sig",
-        "NotSig"),
-      direction = case_when(
-        log2FoldChange > 0 | struc0 == "group1" ~ "pos",
-        log2FoldChange < 0 | struc0 == "group2" ~ "neg",
-        log2FoldChange == 0 ~ "none")) |>
-    select(taxon, log2FoldChange, p, padj, struc0, se, significance, direction)
-
-
-  # STEP 5: Export results
-  # TODO: shift this responsibility to snakemake
-  if (!dir.exists(paste0(args$out, "/ANCOMBC/", GroupingType))) {
-    dir.create(paste0(args$out, "/ANCOMBC/", GroupingType),
-               recursive = TRUE)
-  }
-  
-  write.table(
-    ancombc_results_df,
-    file = paste0(args$out, "/ANCOMBC/", GroupingType, "/", 
-                  args$trialID, "_", GroupingType, "_ANCOMBCResults.tsv"),
-    sep = "\t",
-    quote = FALSE,
-    row.names = TRUE,
-    col.names = NA 
-  )
-  
-  # STEP 7: Return all ANCOM-BC results
-  ancombc_results_df
-  
+  results_df
 }
 
-LIMMA_VOOM_DA <- function(Grouped_phyloseq,
-                          GroupingType,
-                          norm_method, pseudocount, 
-                          tax_agg_level,
-                          alpha, lfc_cutoff,
-                          lib_size_cutoff = 1) {
-  
-  metadata <- as.data.frame(as.matrix(sample_data(Grouped_phyloseq)))
-  counts <- as.matrix(t(as(otu_table(Grouped_phyloseq), "matrix")))
+plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_id) {
+  plot_df <- results_df |> filter(is.na(struc0))
+  sig_df <- plot_df |> filter(significance == "Sig", !is.na(padj), abs(log2FoldChange) > lfc_cutoff)
 
-  # Filtering out samples that are low count to avoid divisor normalization issues
-  fltrd_lib_sizes <- colSums(counts)
-  low_count_samples <- names(fltrd_lib_sizes[fltrd_lib_sizes < lib_size_cutoff])
-  
-  if (length(low_count_samples) > 0) {
-    warning("Removing extremely low-count samples: ",
-            paste(low_count_samples, collapse = ", "))
-    counts <- counts[, !(colnames(counts) %in% low_count_samples), drop = FALSE]
-    metadata <- metadata[!(rownames(metadata) %in% low_count_samples), , drop = FALSE]
-  }
-
-  if (GroupingType %in% c("CellLineControltoTumor", "CellLineControltoNontumor", "NegativeControl", "AllControl")) {
-    design <- model.matrix(~ ControlStatus,
-                           data = metadata)
-    results_table_header <- "ControlStatusPatientSample"
-    comp_file_label <- paste0(GroupingType, "toPS")
-  } else if (GroupingType == "PatientSample") {
-    design <- model.matrix(~ SampleType + PatientID,
-                          data = metadata)
-    results_table_header <- "SampleTypeTumor"
-    comp_file_label <-  "NTtoT"
-  }
-
-  if (norm_method != "noNorm") {
-    # Currently not functioning properly, need to figure out how to properly filter out 
-    # samples that result in zero divisor issues
-    # Plus looking to eleminate pre-normalization all together if possible
-    counts <- as.matrix(counts_normalization(
-      physeq = Grouped_phyloseq,
-      norm_method = norm_method,
-      pseudocount = pseudocount,
-      tax_agg_level = tax_agg_level
-    ))
-    # Filtering any samples that were removed due to zero divisor problems from metadata
-    metadata <- metadata[colnames(counts), ]
-  } else {
-  # Default to limma/voom's recommended normalization protocol 
-  # when not trying to force out own normalization method through limma/voom
-  # fits better with their assumptions for DA analysis
-    counts <- DGEList(counts = counts)
-    keep <- filterByExpr(counts, design)
-    counts <- counts[keep, ,keep.lib.size=FALSE]
-    counts <- calcNormFactors(counts,
-                              method = "TMM")
-  }
-
-      # TODO: shift this responsibility to snakemake
-  if (!dir.exists(paste0(args$out, "/LIMMA_VOOM/", GroupingType))) {
-    dir.create(paste0(args$out, "/LIMMA_VOOM/", GroupingType),
-               recursive = TRUE)
-  }
-
-  png(paste0(args$out, "/LIMMA_VOOM/", GroupingType, "/",
-             args$trialID, "_", GroupingType, "_", args$norm_method, "_VoomVariance.png"), width = 800, height = 600)
-  voom <- voom(counts, design, plot=TRUE)
-  dev.off()
-
-  fit <-lmFit(voom, design)
-  fit <- eBayes(fit)
-
-  limma_voom_results_df <- topTable(fit,
-                                    coef= results_table_header,
-                                    number= nrow(counts))
-  
-  limma_voom_results_df <- limma_voom_results_df |>
-    rownames_to_column(var="taxon") |>
-    mutate(
-      log2FoldChange = as.numeric(logFC),
-      padj = as.numeric(adj.P.Val), 
-      significance = if_else(
-        (padj < alpha &
-          abs(log2FoldChange) > lfc_cutoff),
-        "Sig",
-        "NotSig"),
-      direction = case_when(
-        log2FoldChange > 0 ~ "pos",
-        log2FoldChange < 0 ~ "neg",
-        log2FoldChange == 0 ~ "none"
-      )) |> 
-      select(taxon, log2FoldChange, padj, significance, direction)
-
-
-  
-  write.table(
-    limma_voom_results_df,
-    file = paste0(args$out, "/LIMMA_VOOM/", GroupingType, "/", 
-                  args$trialID, "_", GroupingType, "_LIMMA_VOOMResults.tsv"),
-    sep = "\t",
-    quote = FALSE,
-    row.names = TRUE,
-    col.names = NA 
-  )
-
-  limma_voom_results_df
-}
-
-label_formatting <- function(DA_results_df,
-                             Grouped_phyloseq,
-                             tax_label_level) {
-  
-  DA_results_df$ASVid <- DA_results_df$taxon
-
-  tax_df <- as.data.frame(as(tax_table(Grouped_phyloseq), "matrix")) |> 
-    rownames_to_column(var = "ASVid")
-
-  DA_results_df <- left_join(DA_results_df, tax_df, by = "ASVid")
-
-  DA_results_df$label <- ifelse(is.na(DA_results_df[[tax_label_level]]) | 
-                                        DA_results_df[[tax_label_level]] == "",
-                                      paste0("UC (", DA_results_df$ASVid, ")"),
-                                      paste0(DA_results_df[[tax_label_level]], 
-                                            "(", DA_results_df$ASVid, ")"))
-  DA_results_df
-}
-
-#--------------------------------------------
-# Volcano Plotting
-#--------------------------------------------
-DA_volcano_plotting <- function(DA_results_df, 
-                                GroupingType, 
-                                alpha, lfc_cutoff, 
-                                DA_method) {
-  #Subset to non-structural zeros
-  nostruc0_DA_results_df <- DA_results_df |> subset(is.na(struc0))
-  #Subset to significant ASVs
-  sig_DA_results_df <- subset(nostruc0_DA_results_df,
-                              significance == "Sig" & !is.na(padj))
-  pos_sig_DA_results_df <- subset(sig_DA_results_df,
-                                  log2FoldChange > 0 & abs(log2FoldChange) > lfc_cutoff)
-  neg_sig_DA_results_df <- subset(sig_DA_results_df,
-                                  log2FoldChange < 0 & abs(log2FoldChange) > lfc_cutoff)
-
-
-  #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("TumorType", "CellLineControltoTumor", "CellLineControltoNontumor")) {
-    comp_file_label <- GroupingType
-    plot_title_label <- GroupingType
-  } else if (GroupingType %in% c("NegativeControl", "AllControl")) {
-    comp_file_label <- paste0(GroupingType, "toPS")
-    plot_title_label <- paste(GroupingType, "vs Patient Samples")
-  } else if (GroupingType == "PatientSample"){
-    comp_file_label <- "NTtoT"
-    plot_title_label <- paste("Normal Tissue vs Tumor")
-  }
-  
-  # Build ggplot object
-  p_volcano <- ggplot(nostruc0_DA_results_df, #exclude structural zeros (make no sense in volcano plot)
-                      aes(x = log2FoldChange,
-                          y = -log10(padj))) +
-    theme(
-      axis.title.x  = element_text(size = 21),
-      axis.title.y  = element_text(size = 21),
-      plot.title    = element_text(size = 25),
-      axis.text     = element_text(size = 18)
-    ) +
+  plot_title <- spec$plot_title %||% spec$name
+  volcano <- ggplot(plot_df, aes(x = log2FoldChange, y = -log10(padj))) +
     geom_point(alpha = 0.6, size = 4, color = "grey40") +
     geom_vline(xintercept = 0) +
     geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "darkred") +
     geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "darkred") +
-    labs(title = paste("Volcano Plot:", plot_title_label),
-         x = "Effect size: log2(Fold Change)",
-         y = "-log10(adjusted p-value)")
-  
-  if (nrow(pos_sig_DA_results_df) > 0) {
-    p_volcano <- p_volcano +
-      geom_point(data = pos_sig_DA_results_df,
-                aes(x = log2FoldChange, y = -log10(padj)),
-                color = "firebrick1",
-                size = 5) +
-      geom_text_repel(data = pos_sig_DA_results_df,
-                      aes(x = log2FoldChange, y = -log10(padj), label = label),
-                      size = 6, 
-                      color = "firebrick1",
-                      force = 3,
-                      max.overlaps = Inf,
-                      box.padding = 0.5,
-                      point.padding = 0.4,
-                      # segment(leader) line style
-                      segment.size = 0.5,
-                      segment.color = "grey40",
-                      segment.alpha = 0.9,
-                      min.segment.length = 0.5)
+    labs(
+      title = paste("Volcano Plot:", plot_title),
+      x = "Effect size: log2(Fold Change)",
+      y = "-log10(adjusted p-value)"
+    ) +
+    theme_bw()
+
+  if (nrow(sig_df) > 0) {
+    volcano <- volcano +
+      geom_point(data = sig_df, aes(color = direction), size = 5) +
+      scale_color_manual(values = c(pos = "firebrick1", neg = "dodgerblue1", none = "grey40")) +
+      geom_text_repel(
+        data = sig_df,
+        aes(label = label, color = direction),
+        size = 5,
+        max.overlaps = Inf,
+        box.padding = 0.5,
+        point.padding = 0.4,
+        segment.size = 0.5,
+        segment.color = "grey40",
+        show.legend = FALSE
+      )
   }
 
-  if (nrow(neg_sig_DA_results_df) > 0) {
-    p_volcano <- p_volcano +
-      geom_point(data = neg_sig_DA_results_df,
-                aes(x = log2FoldChange, y = -log10(padj)),
-                color = "dodgerblue1",
-                size = 5) +
-      geom_text_repel(data = neg_sig_DA_results_df,
-                      aes(x = log2FoldChange, y = -log10(padj), label = label),
-                      size = 6,
-                      color = "dodgerblue1", 
-                      force = 5,
-                      max.overlaps = Inf,
-                      box.padding = 0.5,
-                      point.padding = 0.4,
-                      # segment(leader) line style
-                      segment.size = 0.5,
-                      segment.color = "grey40",
-                      segment.alpha = 0.9,
-                      min.segment.length = 0.5)
-  }
-
-  
-  # Save plot
   ggsave(
-    filename = paste0(args$out, "/", DA_method, "/", GroupingType, "/", 
-                      args$trialID, "_", GroupingType, "_", DA_method, "Volcano.png"),
-    plot = p_volcano,
+    filename = file.path(out_dir, "ANCOMBC", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBCVolcano.png")),
+    plot = volcano,
     width = 14,
     height = 12,
     units = "in",
@@ -523,85 +228,56 @@ DA_volcano_plotting <- function(DA_results_df,
   )
 }
 
-
-
-#--------------------------------------------
-# Heatmap Plotting
-#--------------------------------------------
-# TODO: Change to standardize the normalization we use for visualization
-DA_heatmap_plotting <- function(Grouped_phyloseq,
-                                DA_results_df,
-                                GroupingType,
-                                norm_method, pseudocount,
-                                tax_agg_level, tax_label_level,
-                                alpha, lfc_cutoff,
-                                DA_method) {
-
-  #Create plot title and file labels depending on comparison
-  if (GroupingType %in% c("TumorType", "CellLineControltoTumor", "CellLineControltoNontumor")) {
-    comp_file_label <- GroupingType
-    plot_title_label <- GroupingType
-  } else if (GroupingType %in% c("NegativeControl", "AllControl")) {
-    comp_file_label <- paste0(GroupingType, "toPS")
-    plot_title_label <- paste(GroupingType, "vs Patient Samples")
-  } else if (GroupingType == "PatientSample"){
-    comp_file_label <- "NTtoT"
-    plot_title_label <- paste("Normal Tissue vs Tumor")
-  }
-
-  sig_DA_results_df <- subset(DA_results_df, significance == "Sig")                              
-  sig_taxa <- sig_DA_results_df[, "taxon"]
-
+plot_da_heatmap <- function(grouped_physeq,
+                            results_df,
+                            spec,
+                            da_config,
+                            out_dir,
+                            trial_id) {
+  sig_taxa <- results_df$taxon[results_df$significance == "Sig"]
+  sig_taxa <- intersect(sig_taxa, taxa_names(grouped_physeq))
   if (length(sig_taxa) == 0) {
-    return(NULL)
+    return(invisible(NULL))
   }
 
-  
-  Normalized_phyloseq <-   counts_normalization(physeq = Grouped_phyloseq, 
-                                                norm_method = norm_method, 
-                                                pseudocount = pseudocount)
+  norm_physeq <- counts_normalization(
+    grouped_physeq,
+    norm_method = da_config$norm_method,
+    pseudocount = da_config$pseudocount
+  )
+  pruned_physeq <- prune_taxa(sig_taxa, norm_physeq)
+  pruned_physeq <- prune_samples(sample_sums(pruned_physeq) > 0, pruned_physeq)
 
-  Pruned_phyloseq <- prune_taxa(sig_taxa, Normalized_phyloseq)
-  Pruned_phyloseq <- prune_samples(sample_sums(Pruned_phyloseq) > 0, Pruned_phyloseq)
-
-  if (DA_method == "ANCOMBC" & length(sig_taxa) > 1) {
-    row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange, sig_DA_results_df$struc0)]
-  } else if (DA_method == "LIMMA_VOOM" & length(sig_taxa) > 1) {
-    row_order <- sig_DA_results_df$taxon[order(sig_DA_results_df$log2FoldChange)]
+  metadata_df <- as.data.frame(sample_data(pruned_physeq), stringsAsFactors = FALSE)
+  order_cols <- intersect(c("SampleType", "PatientID"), names(metadata_df))
+  if (length(order_cols) > 0) {
+    column_order <- rownames(metadata_df)[do.call(order, metadata_df[order_cols])]
   } else {
-    row_order = NULL
+    column_order <- rownames(metadata_df)
   }
 
-  column_order <- rownames(sample_data(Pruned_phyloseq))[order(sample_data(Pruned_phyloseq)$SampleType,
-                                                               sample_data(Pruned_phyloseq)$PatientID)]
+  tax_label_level <- spec$tax_label_level %||% da_config$tax_label_level
+  heatmap <- plot_heatmap(
+    pruned_physeq,
+    method = "PCoA",
+    distance = "bray",
+    sample.order = column_order,
+    sample.label = "SampleID",
+    taxa.label = tax_label_level,
+    low = "#000033",
+    high = "#FF3300",
+    na.value = "black"
+  )
 
-  p_heatmap <- plot_heatmap(Pruned_phyloseq,
-                            method = "PCoA",
-                            distance = "bray",
-                            sample.order = column_order,
-                            sample.label = "SampleID",
-                            #taxa.order = row_order,
-                            taxa.label = tax_label_level,
-                            low="#000033", high="#FF3300", na.value = "black")
-  
-  # Adding vertical lines to heatmap to separate sample types
-  type_ordered <- sample_data(Pruned_phyloseq)[column_order, "SampleType"]
-  type_block_sizes <- table(type_ordered)
-  type_block_cuts <- cumsum(type_block_sizes)
-
-  p_heatmap <- p_heatmap + geom_vline(xintercept = type_block_cuts+0.5, linewidth = 1, color = "white")
-
-  # Adding horizontal lines to heatmap to separate taxa by direction of differential abundance
-  neg_lfc_block_size <- sum(sig_DA_results_df$direction == "neg")
-  
-  # if (neg_lfc_block_size > 0 & neg_lfc_block_size < length(row_order)) {
-  #   p_heatmap <- p_heatmap + geom_hline(yintercept = neg_lfc_block_size + 0.5, linewidth = 1, color = "white", linetype = "dashed")
-  # }
+  if ("SampleType" %in% names(metadata_df)) {
+    type_ordered <- metadata_df[column_order, "SampleType"]
+    heatmap <- heatmap +
+      geom_vline(xintercept = cumsum(table(type_ordered)) + 0.5, linewidth = 1, color = "white")
+  }
 
   ggsave(
-    filename = paste0(args$out, "/", DA_method, "/", GroupingType, "/", 
-                  args$trialID, "_", GroupingType, "_", DA_method, "Heatmap.png"),
-    plot = p_heatmap,
+    filename = file.path(out_dir, "ANCOMBC", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBCHeatmap.png")),
+    plot = heatmap,
     width = 14,
     height = 12,
     units = "in",
@@ -609,146 +285,36 @@ DA_heatmap_plotting <- function(Grouped_phyloseq,
   )
 }
 
+select_taxa <- read_select_taxa(args$select_taxa_names)
+CompPhyseq <- load_input_physeq()
 
+for (spec in da_config$comparisons) {
+  message("Running ANCOMBC comparison: ", spec$name)
+  comparison_physeq <- prepare_da_physeq(
+    physeq = CompPhyseq,
+    spec = spec,
+    global_config = da_config,
+    select_taxa = select_taxa
+  )
 
+  alpha <- spec$alpha %||% da_config$alpha
+  lfc_cutoff <- spec$lfc_cutoff %||% da_config$lfc_cutoff
+  results_df <- run_ancombc_comparison(comparison_physeq, spec, da_config)
+  results_for_plots <- add_result_labels(
+    results_df,
+    comparison_physeq,
+    spec$tax_label_level %||% da_config$tax_label_level
+  )
 
-#-----------------------------------------
-# Differential Analysis Wrapper
-#-----------------------------------------
-DAxPlottingWrapper <- function(Grouped_phyloseq, 
-                               DA_method,
-                               GroupingType,
-                               norm_method, pseudocount,
-                               tax_agg_level = "Genus", tax_label_level = "Genus",
-                               alpha = 0.01, lfc_cutoff = 1) {
-  
-  if (DA_method == "ANCOMBC") {
-    DA_results_df <- ANCOMBC_DA(Grouped_phyloseq = Grouped_phyloseq,
-                                GroupingType = GroupingType,
-                                tax_agg_level = tax_agg_level,
-                                alpha = alpha, lfc_cutoff = lfc_cutoff)
-  } else if (DA_method == "LIMMA_VOOM"){
-    DA_results_df <- LIMMA_VOOM_DA(Grouped_phyloseq = Grouped_phyloseq,
-                                   GroupingType = GroupingType,
-                                   norm_method = norm_method, pseudocount = pseudocount,
-                                   tax_agg_level = tax_agg_level,
-                                   alpha = alpha, lfc_cutoff = lfc_cutoff)
-  }
+  result_file <- write_da_results(
+    results_df,
+    out_dir = out_dir,
+    trial_id = trial_id,
+    method = "ANCOMBC",
+    comparison_name = spec$name
+  )
+  message("Wrote DA results: ", result_file)
 
-  # Adding desired taxa level label to have inaddition to ASV's 
-  # (i.e. if tax_agg_level is NULL)
-  if (is.null(tax_agg_level)) {
-    DA_results_df <- label_formatting(
-      DA_results_df = DA_results_df,
-      Grouped_phyloseq = Grouped_phyloseq,
-      tax_label_level = tax_label_level
-    )
-  } else {
-    DA_results_df$label <- DA_results_df$taxon
-  }
-
-  DA_volcano_plotting(DA_results_df = DA_results_df,
-                      GroupingType = GroupingType,
-                      alpha = alpha, lfc_cutoff = lfc_cutoff,
-                      DA_method = DA_method)
-  
-  DA_heatmap_plotting(Grouped_phyloseq = Grouped_phyloseq,
-                      GroupingType = GroupingType,
-                      DA_results_df = DA_results_df,
-                      norm_method = norm_method, pseudocount = pseudocount,
-                      tax_agg_level = tax_agg_level, tax_label_level = tax_label_level,
-                      alpha = alpha, lfc_cutoff = lfc_cutoff,
-                      DA_method = DA_method)
-
+  plot_da_volcano(results_for_plots, spec, alpha, lfc_cutoff, out_dir, trial_id)
+  plot_da_heatmap(comparison_physeq, results_for_plots, spec, da_config, out_dir, trial_id)
 }
-
-
-#----------------------------------
-# Differential Abundance Execution
-#----------------------------------
-all_DA_analysis <- function(phyloseq,
-                            DA_methods,
-                            Comparisons,
-                            norm_method, pseudocount,
-                            tax_agg_level = NULL, tax_label_level = "Genus",
-                            select_taxa = NULL,
-                            alpha, lfc_cutoff) {
-  
-  for (DA_method in DA_methods) {
-    for (Comparison in Comparisons) {
-      Grouped_phyloseq <- SampleGrouping(Ungrouped_phyloseq = phyloseq, 
-                                         GroupingType = Comparison,
-                                         tax_agg_level = tax_agg_level)
-      if (!is.null(select_taxa)) {
-        Grouped_phyloseq <- prune_taxa(select_taxa, Grouped_phyloseq)
-      }
-      
-      if (Comparison == "TumorType") {
-        Grouping_col <- "TumorType"
-      } else {
-        Grouping_col <- "SampleType"
-      }
-
-      if (nsamples(Grouped_phyloseq) == 0 ||
-          is.null(Grouped_phyloseq) ||
-          length(unique(as.matrix(sample_data(Grouped_phyloseq))[, Grouping_col])) < 2) {
-        message_string <- paste("Skipped", DA_method, Comparison, "due to lack of one or more sample-type group(s)")
-        message(message_string)
-
-        if (!dir.exists(paste0(args$out, "/", DA_method, "/", Comparison))) {
-          dir.create(paste0(args$out, "/", DA_method, "/", Comparison),
-                    recursive = TRUE)
-        }
-
-        writeLines(message_string,
-                   paste0(args$out, "/", DA_method, "/", Comparison, "/", 
-                   args$trialID, "_", Comparison, "_", DA_method, "Results.tsv"))
-        next
-      }
-
-      DAxPlottingWrapper(
-        Grouped_phyloseq = Grouped_phyloseq,
-        DA_method = DA_method,
-        norm_method = norm_method, pseudocount = pseudocount,
-        tax_agg_level = tax_agg_level, tax_label_level = tax_label_level,
-        GroupingType = Comparison,
-        alpha = alpha, lfc_cutoff = lfc_cutoff)
-    }
-  }
-}
-
-load(args$B1_physeq)
-B1physeq <- physeq
-
-if (!is.null(args$B2_physeq)) {
-  load(args$B2_physeq)
-  B2physeq <- physeq
-  if (!is.null(args$tax_agg_level)) {
-    B1physeq <- tax_glom(B1physeq, args$tax_agg_level)
-    B2physeq <- tax_glom(B2physeq, args$tax_agg_level)
-    taxa_names(B1physeq) <- as.character(tax_table(B1physeq)[, args$tax_agg_level])
-    taxa_names(B2physeq) <- as.character(tax_table(B2physeq)[, args$tax_agg_level])
-  }
-  CompPhyseq <- merge_phyloseq(B1physeq, B2physeq)
-} else {
-  CompPhyseq <- B1physeq
-}
-# Read in selected taxa names if chosen to subset
-if (!is.null(args$select_taxa_names)) {
-  select_taxa <- unique(unlist(lapply(args$select_taxa_names, function(name_file) {
-    read.csv(name_file, stringsAsFactors = FALSE)[[1]]
-  })))
-} else {
-  select_taxa = NULL
-}
-
-
-all_DA_analysis(phyloseq = CompPhyseq,
-                DA_methods = args$DA_methods,
-                Comparisons = args$DA_comparisons,
-                norm_method = args$norm_method,
-                pseudocount = args$pseudocount,
-                tax_agg_level = args$tax_agg_level,
-                select_taxa = select_taxa,
-                alpha = args$alpha, 
-                lfc_cutoff = args$lfc_cutoff)

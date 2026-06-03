@@ -1,127 +1,88 @@
 library(argparse)
 library(phyloseq)
 
+source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+
 parser <- ArgumentParser()
 
 parser$add_argument("--trial-list",
                     type = "character",
-                    help = "list of trials to compile into single phyloseq object file path")
+                    default = NULL,
+                    help = "Legacy text file with one trial output directory name per line")
+parser$add_argument("--batch-table",
+                    type = "character",
+                    default = NULL,
+                    help = "Canonical batch table with include_analysis column")
+parser$add_argument("--analysis-config",
+                    type = "character",
+                    default = NULL,
+                    help = "Analysis YAML with project.batch_table/base_dir/output_dir settings")
+parser$add_argument("--physeqs",
+                    type = "character",
+                    nargs = "+",
+                    default = NULL,
+                    help = "Explicit list of phyloseq RData paths to compile")
 parser$add_argument("--techrep-avg",
                     action = "store_true",
                     default = FALSE,
-                    help = "Optional flag to average OTU counts between technical replicates")
+                    help = "Average OTU counts between technical replicates after merging")
 parser$add_argument("--out",
                     type = "character",
-                    help = "desired output directory for R session image with complied phyloseq object")
+                    default = NULL,
+                    help = "Output directory for CompPhyseq.RData")
 parser$add_argument("--base-dir",
                     type = "character",
                     default = "Exp_Output",
-                    help = "Base directory containing the trial folders [default: Exp_Output]")
+                    help = "Base directory containing trial output folders")
 
 args <- parser$parse_args()
 
-trials <- readLines(args$trial_list)
-trials <- trimws(trials)
-trials <- trials[nzchar(trials)]
-
-if (length(trials) == 0) {
-  stop("No trial names found in --trial-list.")
+project_config <- list()
+if (!is.null(args$analysis_config)) {
+  cfg <- load_yaml_config(args$analysis_config)
+  project_config <- cfg$project
 }
 
-#Helper to construct the file path to physeq image based on trial naming
-trial_to_rdata <- function(trial, base_dir = "Exp_Output") {
-  trial_dir <- file.path(base_dir, trial)
-  trialID <- sub("_.*$", "", trial)
-  file.path(trial_dir, paste0(trialID, "_physeq.RData"))
-}
-
-#Help to average techincal replicate count values 
-average_by_techrep <- function(physeq) {
-    meta_df <- as(sample_data(physeq), "data.frame")
-    otu_mat <- as(otu_table(physeq), "matrix")
-
-    if (taxa_are_rows(physeq)) {
-        otu_mat <- t(otu_mat)
-    }
-
-    # Make vector for grouping by SampleID (should be identical between technical replicates)
-    meta_df$SampleID <- as.character(meta_df$SampleID)
-    group <- meta_df$SampleID
-
-    # Make explicit factor for SampleID grouping
-    group_levels <- unique(group)
-    group_factor <- factor(group, levels = group_levels)
-    group_counts <- table(group_factor)
-    print(str(group_counts))
-
-    # avergae rows within each unique Sample ID
-    avg_otu_mat <- rowsum(otu_mat, group = group_factor, reorder = FALSE)
-    print(str(avg_otu_mat))
-    avg_otu_mat <- sweep(
-        avg_otu_mat,
-        1,
-        as.numeric(group_counts[rownames(avg_otu_mat)]),
-        FUN = "/"
-    )
-    
-
-    # filter meta data to representative sample rows (1 for each technical replicate pair)
-    avg_meta_df <- meta_df[match(rownames(avg_otu_mat), meta_df$SampleID), , drop = FALSE]
-    rownames(avg_meta_df) <- rownames(avg_otu_mat)
-    
-    phyloseq(
-        otu_table(as.matrix(avg_otu_mat), taxa_are_rows = FALSE),
-        sample_data(avg_meta_df),
-        tax_table(physeq)
-    )
-}
-
-# list to store physeq objects before merging
-physeq_list <- list()
-
-# add loaded phyloseq objects to list
-for (i in seq_along(trials)) {
-  trial <- trials[i]
-  rdata_path <- trial_to_rdata(trial, args$base_dir)
-
-  if (!file.exists(rdata_path)) {
-    stop(sprintf("Missing RData file for trial '%s': %s", trial, rdata_path))
-  }
-
-  e <- new.env(parent = emptyenv())
-  load(rdata_path, envir = e)
-
-  if (!exists("physeq", envir = e, inherits = FALSE)) {
-    stop(sprintf("File does not contain an object named 'physeq': %s", rdata_path))
-  }
-
-  physeq_obj <- get("physeq", envir = e)
-
-  if (!inherits(physeq_obj, "phyloseq")) {
-    stop(sprintf("Object 'physeq' in %s is not a phyloseq object.", rdata_path))
-  }
-
-  physeq_list[[i]] <- physeq_obj
-}
-
-# Merge all phyloseq objects
-if (length(physeq_list) == 1) {
-  CompPhyseq <- physeq_list[[1]]
+base_dir <- if (!is.null(project_config$base_dir)) project_config$base_dir else args$base_dir
+out_dir <- if (!is.null(args$out)) {
+  args$out
+} else if (!is.null(project_config$output_dir)) {
+  project_config$output_dir
 } else {
-  CompPhyseq <- Reduce(function(x, y) merge_phyloseq(x, y), physeq_list)
+  stop("Provide --out or project.output_dir in --analysis-config.", call. = FALSE)
 }
 
-physeq <- CompPhyseq
+techrep_avg <- isTRUE(args$techrep_avg) || truthy_flag(project_config$techrep_avg, default = FALSE)
 
-if (args$techrep_avg) {
+if (!is.null(args$physeqs)) {
+  physeq_paths <- args$physeqs
+} else if (!is.null(args$batch_table) || !is.null(project_config$batch_table)) {
+  batch_table <- if (!is.null(args$batch_table)) args$batch_table else project_config$batch_table
+  physeq_paths <- resolve_batch_physeqs(
+    batch_table = batch_table,
+    base_dir = base_dir,
+    include_column = "include_analysis"
+  )
+} else if (!is.null(args$trial_list)) {
+  trials <- readLines(args$trial_list)
+  trials <- trimws(trials)
+  trials <- trials[nzchar(trials)]
+  if (length(trials) == 0) {
+    stop("No trial names found in --trial-list.", call. = FALSE)
+  }
+  physeq_paths <- vapply(trials, trial_to_rdata, character(1), base_dir = base_dir)
+} else {
+  stop("Provide --physeqs, --batch-table, --analysis-config, or --trial-list.", call. = FALSE)
+}
+
+physeq <- merge_physeqs(load_physeqs(physeq_paths))
+
+if (techrep_avg) {
   physeq <- average_by_techrep(physeq)
 }
 
-# Save output
-if (!dir.exists(args$out)) {
-    dir.create(args$out, recursive = TRUE)
-}
-out_file <- file.path(args$out, "CompPhyseq.RData")
-save(physeq, file = out_file)
+out_file <- file.path(out_dir, "CompPhyseq.RData")
+save_physeq(physeq, out_file)
 
 message("Merged phyloseq object saved to: ", out_file)

@@ -1,409 +1,324 @@
 library(phyloseq)
-library(limma)
-library(edgeR)
 library(dplyr)
 library(ggplot2)
 library(argparse)
-library(sva)
 
+source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
 
 parser <- ArgumentParser()
 
 parser$add_argument("--physeqs",
                     type = "character",
                     nargs = "+",
-                    help = "list of .RData files contatining phyloseq objects named 'physeq' (one for each sequencing batch)")
+                    default = NULL,
+                    help = "List of phyloseq RData files named 'physeq'")
+parser$add_argument("--compiled-physeq",
+                    type = "character",
+                    default = NULL,
+                    help = "Compiled phyloseq RData file")
+parser$add_argument("--batch-table",
+                    type = "character",
+                    default = NULL,
+                    help = "Canonical batch table with include_analysis column")
+parser$add_argument("--analysis-config",
+                    type = "character",
+                    default = NULL,
+                    help = "Analysis YAML with project and heatmap_violin settings")
 parser$add_argument("--patient-sample-batches",
                     type = "character",
                     nargs = "+",
-                    help = "Optional list of sequencing batches included in physeqs that contain patient sample records")
+                    default = NULL,
+                    help = "Sequencing batches with patient sample records")
 parser$add_argument("--DA-results",
                     type = "character",
-                    help = ".tsv file with DA results or composite DA results from meta-analysis of the two batchs")
+                    help = "DA results TSV, either absolute or relative to Exp_Output")
 parser$add_argument("--select-taxa-names",
                     type = "character",
                     nargs = "+",
-                    help = "optional list of files containing lists of taxa to subset differential abundance analysis to (union of all unique names provided)")
+                    default = NULL,
+                    help = "Optional files containing taxa to plot")
 parser$add_argument("--tax-agg-level",
                     type = "character",
                     default = "Genus",
-                    help = "taxonomic level to agglomerate to for DA analysis (e.g. Genus, Family, etc.)")
+                    help = "Taxonomic level to agglomerate to")
 parser$add_argument("--norm-method",
                     type = "character",
                     default = "noNorm",
-                    help = "Normalization method carried out on abundance counts (default = noNorm)")
+                    help = "Normalization method")
 parser$add_argument("--batch-adj",
                     action = "store_true",
                     default = FALSE,
-                    help = "Optional flag to adjust count values based on batching")
+                    help = "Adjust counts by ProcessingBatch or Batch if available")
 parser$add_argument("--limma-voom",
                     action = "store_true",
                     default = FALSE,
-                    help = "Optional flag to normalize counts using TMM and Voom normalization (overides --norm-method to noNorm)")
+                    help = "Normalize counts using TMM and voom")
 parser$add_argument("--pseudocount",
                     type = "double",
                     default = 1.0,
-                    help = "pseudocount value to replace zero counts (default: 1.0)")
+                    help = "Pseudocount for normalization")
 parser$add_argument("--out-dir",
                     type = "character",
-                    help = "output directory within Exp_Output")
+                    default = NULL,
+                    help = "Output directory within Exp_Output")
+parser$add_argument("--base-dir",
+                    type = "character",
+                    default = "Exp_Output",
+                    help = "Base directory containing trial output folders")
 
 args <- parser$parse_args()
 
-batch_adjustment <- function(physeq) {
-    otu_mat <- as(otu_table(physeq), "matrix")
-    meta_df <- as(sample_data(physeq), "data.frame")
-
-    if ("ProcessingBatch" %in% names(meta_df)) {
-        batch = meta_df$ProcessingBatch
-    } else if ("Batch" %in% names(meta_df)) {
-        batch = meta_df$Batch
-    } else {
-        message("Skipping Batch Adjustment: No appropriate batching column found in metadata.")
-        return(physeq)
-    }
-
-    # If there is uneven distribution of sample types across batches, causes ComBat to fail
-    # Example: all cell controls in one processing batch, then SampleType and Batch are not linearly independent
-    #           failing the assumptions of ComBats model, forced to remove covariate model
-    mod <- model.matrix(~ SampleType, data = meta_df)
-
-    if (!taxa_are_rows(physeq)) {
-        otu_mat <- t(otu_mat)
-    }
-
-    adjusted_otu_mat <- ComBat(
-        dat = otu_mat,
-        batch = batch,
-        #mod = mod,
-        mod = NULL,
-        par.prior = TRUE
-    )
-
-    otu_table(physeq) <- otu_table(adjusted_otu_mat, taxa_are_rows = TRUE)
-    return(physeq)
+project_config <- list()
+plot_config <- list()
+if (!is.null(args$analysis_config)) {
+  cfg <- load_yaml_config(args$analysis_config)
+  project_config <- cfg$project
+  plot_config <- cfg$heatmap_violin
 }
 
-counts_normalization <- function(physeq, 
-                                 norm_method, 
-                                 pseudocount) {
+base_dir <- project_config$base_dir %||% args$base_dir
+out_root <- if (!is.null(args$out_dir)) args$out_dir else project_config$output_dir %||% "analysis"
+out_dir <- if (grepl("^/", out_root)) out_root else file.path(base_dir, out_root)
 
+tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else plot_config$tax_agg_level %||% args$tax_agg_level
+norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else plot_config$norm_method %||% args$norm_method
+pseudocount <- plot_config$pseudocount %||% args$pseudocount
+limma_voom <- isTRUE(args$limma_voom) || truthy_flag(plot_config$limma_voom, default = FALSE)
+batch_adj_requested <- isTRUE(args$batch_adj) || truthy_flag(plot_config$batch_adj, default = FALSE)
+patient_sample_batches <- args$patient_sample_batches %||% plot_config$patient_sample_batches
 
-    otu_divide_by_sample_factor <- function(physeq, factor_column) {
-      sample_factors <- sample_data(physeq)[[factor_column]]
-
-      otu_mat <- as(otu_table(physeq), "matrix")
-
-      if (taxa_are_rows(physeq)) {
-          otu_mat <- sweep(otu_mat, 2, sample_factors, FUN = "/")
-      } else {
-          otu_mat <- sweep(otu_mat, 1, sample_factors, FUN = "/")
-      }
-      otu_mat <- otu_mat * 1e6  # scaling factor to bring values back to a more interpretable range
-      otu_table(physeq) <- otu_table(otu_mat, taxa_are_rows = taxa_are_rows(physeq))
-      return(physeq)
-    }
-
-    if (norm_method == "noNorm") {
-        return(physeq)
-    } else if (norm_method == "log2") {
-        return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
-    } else if (norm_method == "RelAbund") {
-        return(transform_sample_counts(physeq, function(x) x / sum(x)))
-    } else if (norm_method == "RawTSS") {
-        return(otu_divide_by_sample_factor(physeq, "Raw_reads"))
-    } else if (norm_method == "HostMapped") {
-        return(otu_divide_by_sample_factor(physeq, "Host_mapped_reads"))
-    } else if (norm_method == "log2HostMapped") {
-        physeq <- otu_divide_by_sample_factor(physeq, "Host_mapped_reads")
-        return(transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
-    } else {
-        message("Unknown normalization method provided for limma voom pre-normlaization, no normalization used.")
-    }
-
-}
-
-
-
-#------------------------
-# Step 1: Phyloseq Preprocessing
-#------------------------
-load_physeq <- function(path) {
-  e <- new.env()
-  load(path, envir = e)
-
-  if (!exists("physeq", envir = e)) {
-    stop("No object named 'physeq' found in: ", path)
+load_input_physeq <- function() {
+  if (!is.null(args$compiled_physeq)) {
+    return(load_physeq(args$compiled_physeq))
   }
-
-  get("physeq", envir = e)
+  if (!is.null(project_config$compiled_physeq) && file.exists(project_config$compiled_physeq)) {
+    return(load_physeq(project_config$compiled_physeq))
+  }
+  if (!is.null(args$physeqs)) {
+    return(merge_physeqs(load_physeqs(args$physeqs)))
+  }
+  if (!is.null(args$batch_table) || !is.null(project_config$batch_table)) {
+    batch_table <- args$batch_table %||% project_config$batch_table
+    physeq_paths <- resolve_batch_physeqs(batch_table, base_dir = base_dir)
+    return(merge_physeqs(load_physeqs(physeq_paths)))
+  }
+  stop("Provide --compiled-physeq, --physeqs, --batch-table, or project.batch_table.", call. = FALSE)
 }
 
-physeq_list <- lapply(args$physeqs, load_physeq)
-CompPhyseq <- Reduce(phyloseq::merge_phyloseq, physeq_list)
-
-# Glomming to desired taxa level
-if (!is.null(args$tax_agg_level)) {
-    GlomPhyseq <- tax_glom(CompPhyseq,
-                           taxrank = args$tax_agg_level)
-    taxa_names(GlomPhyseq) <- as.character(tax_table(GlomPhyseq)[, args$tax_agg_level])
-} else {
-    GlomPhyseq <- CompPhyseq
+resolve_da_results <- function(path) {
+  if (is.null(path)) {
+    stop("Provide --DA-results for heatmap/violin plotting.", call. = FALSE)
+  }
+  if (file.exists(path)) {
+    return(path)
+  }
+  candidate <- file.path(base_dir, path)
+  if (file.exists(candidate)) {
+    return(candidate)
+  }
+  stop("DA results file not found: ", path, call. = FALSE)
 }
 
-# Removing Negative Controls
+choose_batch_column <- function(physeq) {
+  metadata_df <- as.data.frame(sample_data(physeq), stringsAsFactors = FALSE)
+  if ("ProcessingBatch" %in% names(metadata_df)) return("ProcessingBatch")
+  if ("Batch" %in% names(metadata_df)) return("Batch")
+  NULL
+}
+
+CompPhyseq <- load_input_physeq()
+
+GlomPhyseq <- tax_glom_rename(CompPhyseq, tax_agg_level)
 FiltPhyseq <- subset_samples(GlomPhyseq, SampleType != "NegativeControl")
 
-# Normalizing OTU Counts
-if (args$limma_voom) {
-    args$norm_method <- "noNorm"
-}
-
-NormPhyseq <- counts_normalization(physeq = FiltPhyseq, 
-                                   norm_method = args$norm_method, 
-                                   pseudocount = args$pseudocount)
-
-if (args$batch_adj) {
-    NormPhyseq <- batch_adjustment(physeq = NormPhyseq)
-}
-
-# STEP 2: Optionally use limma/voom normalization (mutually exclusive with other normalization methods)
-limma_voom_normalization <- function(prep_physeq) {
-    metadata <- as.data.frame(as.matrix(sample_data(prep_physeq)))
-    counts <- as.matrix(t(as(otu_table(prep_physeq), "matrix")))
-    design <- model.matrix(~ SampleType + PatientID,
-                           data = metadata)
-    
-    counts <- DGEList(counts = counts)
-    counts <- calcNormFactors(counts,
-                              method = "TMM")
-    voom <- voom(counts, design, plot=FALSE)
-
-    norm_counts <- as.matrix(t(voom$E))
-    
-    otu_table(prep_physeq) <- otu_table(norm_counts, taxa_are_rows = FALSE)
-
-    return(prep_physeq)
-}
-
-if (args$limma_voom) {
-    NormPhyseq <- limma_voom_normalization(FiltPhyseq)
-}
-
-#-------------------------------------------------
-# STEP 3: Import differential abundance results
-#-------------------------------------------------
-DA_results_df <- read.delim(paste0("Exp_Output/", args$DA_results), header = TRUE)
-if (!is.null(args$select_taxa_names)) {
-    taxa_of_interest <- unique(unlist(lapply(args$select_taxa_names, function(name_file) {
-        read.csv(name_file, header = FALSE, stringsAsFactors = FALSE)[[1]]
-    })))
+if (limma_voom) {
+  norm_method <- "noNorm"
+  NormPhyseq <- limma_voom_normalization(FiltPhyseq)
 } else {
-    taxa_of_interest <- DA_results_df$taxon[DA_results_df$significance == "Sig"]
+  NormPhyseq <- counts_normalization(
+    physeq = FiltPhyseq,
+    norm_method = norm_method,
+    pseudocount = pseudocount
+  )
 }
 
+if (batch_adj_requested) {
+  NormPhyseq <- batch_adjustment(
+    physeq = NormPhyseq,
+    batch_column = choose_batch_column(NormPhyseq),
+    method = "ComBat"
+  )
+}
 
-#-------------------------------------
-# STEP 4: Melt Phyloseq to Data Fame
-#-------------------------------------
-MeltPhyseq_df <- psmelt(NormPhyseq) |>
-    mutate(
-        SequencingBatch = factor(SequencingBatch),
-        SampleType = factor(SampleType)
-    )
+DA_results_df <- read.delim(resolve_da_results(args$DA_results), header = TRUE)
+if (!is.null(args$select_taxa_names)) {
+  taxa_of_interest <- unique(unlist(lapply(args$select_taxa_names, function(name_file) {
+    read.csv(name_file, header = FALSE, stringsAsFactors = FALSE)[[1]]
+  })))
+} else {
+  taxa_of_interest <- DA_results_df$taxon[DA_results_df$significance == "Sig"]
+}
 
-multibatch_comparison <- length(args$patient_sample_batches) > 1
+if (length(taxa_of_interest) == 0) {
+  stop("No taxa selected for heatmap/violin plotting.", call. = FALSE)
+}
 
-# STEP 5: Violin plotting
-out_dir <- paste0("Exp_Output/", args$out_dir, "/", args$norm_method)
+MeltPhyseq_df <- psmelt(NormPhyseq)
+if (!"SequencingBatch" %in% names(MeltPhyseq_df)) {
+  MeltPhyseq_df$SequencingBatch <- "Unknown"
+}
+MeltPhyseq_df <- MeltPhyseq_df |>
+  mutate(
+    SequencingBatch = factor(SequencingBatch),
+    SampleType = factor(SampleType)
+  )
 
+multibatch_comparison <- length(patient_sample_batches) > 1
+plot_out_dir <- file.path(out_dir, norm_method)
 
 for (taxon in taxa_of_interest) {
-    if (!dir.exists(paste0(out_dir, "/", taxon))) {
-        dir.create(paste0(out_dir, "/", taxon), recursive = TRUE)
-    }
-    single_tax_df <- MeltPhyseq_df |> filter(OTU == taxon)
-    single_tax_DA_results_df <- DA_results_df[DA_results_df$taxon == taxon, ,drop=FALSE]
-    print(str(single_tax_DA_results_df))
+  taxon_dir <- file.path(plot_out_dir, taxon)
+  dir.create(taxon_dir, recursive = TRUE, showWarnings = FALSE)
 
-    if (multibatch_comparison){
+  single_tax_df <- MeltPhyseq_df |> filter(OTU == taxon)
+  single_tax_DA_results_df <- DA_results_df[DA_results_df$taxon == taxon, , drop = FALSE]
 
-        techrep_avg_single_tax_df <- single_tax_df |>
-            group_by(SampleID) |>
-            summarise(
-                Abundance = mean(Abundance, na.rm = FALSE),
-                PatientOutcome = first(PatientOutcome),
-                SampleType = first(SampleType),
-                PatientID = first(PatientID),
-                .groups = "drop"
-            )
+  if (nrow(single_tax_df) == 0) {
+    warning("Skipping taxon absent from melted phyloseq object: ", taxon)
+    next
+  }
 
-        violin_plot <- ggplot(single_tax_df, 
-                            aes(x = SampleType, y = Abundance, fill = SampleType)) +
-            geom_violin(trim = FALSE, alpha = 0.6) +
-            geom_jitter(width =0.2, size = 1.5, alpha = 0.8) +
-            facet_wrap(~SequencingBatch, ncol = 2) +
-            labs(
-                title = paste("Abundance Comparison for", taxon),
-                x = "Sample Type",
-                y = paste0("Normalized Abundance (", args$norm_method, ")")
-            ) +
-            theme_bw() +
-            theme(
-                plot.title = element_text(hjust = 0.5),
-                legend.position = "none"
-            )
+  if (multibatch_comparison && all(c("logFC_b1", "logFC_b2", "adj_p_b1", "adj_p_b2") %in% names(single_tax_DA_results_df))) {
+    techrep_avg_single_tax_df <- single_tax_df |>
+      group_by(SampleID) |>
+      summarise(
+        Abundance = mean(Abundance, na.rm = FALSE),
+        PatientOutcome = if ("PatientOutcome" %in% names(single_tax_df)) first(PatientOutcome) else NA,
+        SampleType = first(SampleType),
+        PatientID = first(PatientID),
+        .groups = "drop"
+      )
 
-        
+    b1_lfc <- round(single_tax_DA_results_df[, "logFC_b1"], 2)
+    b2_lfc <- round(single_tax_DA_results_df[, "logFC_b2"], 2)
+    b1_adj_p <- round(single_tax_DA_results_df[, "adj_p_b1"], 3)
+    b2_adj_p <- round(single_tax_DA_results_df[, "adj_p_b2"], 3)
+    het_q <- if ("het_Q" %in% names(single_tax_DA_results_df)) round(single_tax_DA_results_df[, "het_Q"], 3) else NA
+    het_q_adj <- if ("het_Q_q" %in% names(single_tax_DA_results_df)) round(single_tax_DA_results_df[, "het_Q_q"], 3) else NA
+    fisher_q <- if ("fisher_q" %in% names(single_tax_DA_results_df)) round(single_tax_DA_results_df[, "fisher_q"], 4) else NA
 
-        B1_LFC <- round(single_tax_DA_results_df[, "logFC_b1"], 2)
-        B2_LFC <- round(single_tax_DA_results_df[, "logFC_b2"], 2)
+    violin_plot <- ggplot(single_tax_df, aes(x = SampleType, y = Abundance)) +
+      geom_violin(aes(fill = SampleType, group = SampleType), trim = FALSE, alpha = 0.6) +
+      geom_jitter(aes(fill = SampleType, shape = SequencingBatch), width = 0.2, size = 1.5, alpha = 0.8) +
+      labs(
+        title = paste("Abundance Comparison for", taxon),
+        subtitle = paste0(
+          "LFC Exp1: ", b1_lfc, " (q=", b1_adj_p, "), ",
+          "LFC Exp2: ", b2_lfc, " (q=", b2_adj_p, "); ",
+          "HetQ: ", het_q, " (q=", het_q_adj, ")"
+        ),
+        x = "Sample Type",
+        y = paste0("Normalized Abundance (", norm_method, ")")
+      ) +
+      theme_bw() +
+      theme(plot.title = element_text(hjust = 0.5))
 
-        B1_adj_p <- round(single_tax_DA_results_df[, "adj_p_b1"], 3)
-        B2_adj_p <- round(single_tax_DA_results_df[, "adj_p_b2"], 3)
+    techrep_avg_violin_plot <- ggplot(
+      filter(techrep_avg_single_tax_df, SampleType != "CellLineControl"),
+      aes(x = SampleType, y = Abundance)
+    ) +
+      geom_violin(aes(fill = SampleType, group = SampleType), trim = FALSE, alpha = 0.6) +
+      geom_jitter(aes(fill = SampleType), width = 0.2, size = 1.5, alpha = 0.8) +
+      labs(
+        title = paste("Averaged Abundance Comparison for", taxon),
+        subtitle = paste0("Fisher q-value: ", fisher_q, "; HetQ: ", het_q, " (q=", het_q_adj, ")"),
+        x = "Sample Type",
+        y = paste0("Normalized Avg Abund (", norm_method, ")")
+      ) +
+      theme_bw() +
+      theme(plot.title = element_text(hjust = 0.5))
 
-        het_Q <- round(single_tax_DA_results_df[, "het_Q"], 3)
-        het_Q_q <- round(single_tax_DA_results_df[, "het_Q_q"], 3)
-
-        fisher_q <- round(single_tax_DA_results_df[, "fisher_q"], 4)
-
-        multibatch_violin_plot <- ggplot(single_tax_df, 
-                                        aes(x = SampleType, y = Abundance)) +
-            geom_violin(aes(fill = SampleType, group = SampleType),
-                            trim = FALSE, alpha = 0.6) +
-            geom_jitter(aes(fill = SampleType, shape = SequencingBatch),
-                        width =0.2, size = 1.5, alpha = 0.8) +
-            labs(
-                title = paste("Abundance Comparison for", taxon),
-                subtitle = paste0("LFC Exp1: ", B1_LFC, " (q=", B1_adj_p, "), ",
-                                "LFC Exp2: ", B2_LFC, " (q=", B2_adj_p, "); ",
-                                "HetQ: ", het_Q, " (q=", het_Q_q, ")"),
-                x = "Sample Type",
-                y = paste0("Normalized Abundance (", args$norm_method, ")")
-            ) +
-            theme_bw() +
-            theme(
-                plot.title = element_text(hjust = 0.5),
-            )
-        
-        techrep_avg_violin_plot <- ggplot(filter(techrep_avg_single_tax_df, SampleType != "CellLineControl"), 
-                                        aes(x = SampleType, y = Abundance)) +
-            geom_violin(aes(fill = SampleType, group = SampleType),
-                            trim = FALSE, alpha = 0.6) +
-            geom_jitter(aes(fill = SampleType),
-                        width =0.2, size = 1.5, alpha = 0.8) +
-            labs(
-                title = paste("Averaged Abundance Comparison for", taxon),
-                subtitle = paste0("Fisher q-value: ", fisher_q, "; ",
-                                "HetQ: ", het_Q, " (q=", het_Q_q, ")"),
-                x = "Sample Type",
-                y = paste0("Normalized Avg Abund (", args$norm_method, ")")
-            ) +
-            theme_bw() +
-            theme(
-                plot.title = element_text(hjust = 0.5),
-            )
-
-        ggsave(
-            filename = paste0(out_dir, "/", taxon, "/",
-                            taxon, "_", args$norm_method, "_multibatch_violin_plot.png"),
-            plot = multibatch_violin_plot,
-            width = 8,
-            height = 4
-        )
-
-        ggsave(
-            filename = paste0(out_dir, "/", taxon, "/",
-                            taxon, "_", args$norm_method, "_techrep_avg_violin_plot.png"),
-            plot = techrep_avg_violin_plot,
-            width = 8,
-            height = 4
-        )
-
-    } else {
-        LFC <- round(single_tax_DA_results_df[, "log2FoldChange"], 2)
-        adj_p <- round(single_tax_DA_results_df[, "padj"], 4)
-
-        violin_plot <- ggplot(single_tax_df, 
-                            aes(x = SampleType, y = Abundance, fill = SampleType)) +
-            geom_violin(trim = FALSE, alpha = 0.6) +
-            geom_jitter(width =0.2, size = 1.5, alpha = 0.8) +
-            labs(
-                title = paste("Abundance Comparison for", taxon),
-                subtitle = paste0("Nontumor vs Tumor: LFC = ", LFC, " (adj p-value = ", adj_p, ")"),
-                x = "Sample Type",
-                y = paste0("Normalized Abundance (", args$norm_method, ")")
-            ) +
-            theme_bw()
-    }
     ggsave(
-        filename = paste0(out_dir, "/", taxon, "/",
-                          taxon, "_", args$norm_method,"_violin_plot.png"),
-        plot = violin_plot,
-        width = 8,
-        height = 4
+      filename = file.path(taxon_dir, paste0(taxon, "_", norm_method, "_techrep_avg_violin_plot.png")),
+      plot = techrep_avg_violin_plot,
+      width = 8,
+      height = 4
     )
+  } else {
+    lfc <- if ("log2FoldChange" %in% names(single_tax_DA_results_df)) round(single_tax_DA_results_df[, "log2FoldChange"], 2) else NA
+    adj_p <- if ("padj" %in% names(single_tax_DA_results_df)) round(single_tax_DA_results_df[, "padj"], 4) else NA
 
+    violin_plot <- ggplot(single_tax_df, aes(x = SampleType, y = Abundance, fill = SampleType)) +
+      geom_violin(trim = FALSE, alpha = 0.6) +
+      geom_jitter(width = 0.2, size = 1.5, alpha = 0.8) +
+      labs(
+        title = paste("Abundance Comparison for", taxon),
+        subtitle = paste0("LFC = ", lfc, " (adj p-value = ", adj_p, ")"),
+        x = "Sample Type",
+        y = paste0("Normalized Abundance (", norm_method, ")")
+      ) +
+      theme_bw()
+  }
+
+  ggsave(
+    filename = file.path(taxon_dir, paste0(taxon, "_", norm_method, "_violin_plot.png")),
+    plot = violin_plot,
+    width = 8,
+    height = 4
+  )
 }
 
-# STEP 6: Heat map plotting
-Heat_Mapping <- function(patient_batch_name, 
-                         norm_method,
-                         subset_physeq, 
-                         taxa_of_interest,
-                         out_dir) {
+heat_mapping <- function(patient_batch_name, subset_physeq) {
+  pruned_physeq <- prune_taxa(taxa_of_interest, subset_physeq)
+  pruned_physeq <- prune_samples(sample_sums(pruned_physeq) > 0, pruned_physeq)
+  column_order <- rownames(sample_data(pruned_physeq))[order(
+    sample_data(pruned_physeq)$SampleType,
+    sample_data(pruned_physeq)$PatientID
+  )]
 
-    pruned_physeq <- prune_taxa(taxa_of_interest, subset_physeq)
-    pruned_physeq <- prune_samples(sample_sums(pruned_physeq) > 0, pruned_physeq)
-    column_order <- rownames(sample_data(pruned_physeq))[order(sample_data(pruned_physeq)$SampleType,
-                                                               sample_data(pruned_physeq)$PatientID)]
+  heatmap_plot <- plot_heatmap(
+    pruned_physeq,
+    sample.order = column_order,
+    method = "PCoA",
+    distance = "bray",
+    title = paste0(
+      patient_batch_name,
+      " Select Taxa Heatmap ",
+      ifelse(norm_method == "noNorm", "(Unnormalized)", paste0("(", norm_method, ")"))
+    ),
+    sample.label = "SampleID",
+    taxa.label = tax_agg_level
+  )
 
-    heatmap_plot <- plot_heatmap(pruned_physeq,
-                                 sample.order = column_order,
-                                 method = "PCoA",
-                                 distance = "bray",
-                                 title = paste0(patient_batch_name, " Select Taxa Heatmap ",
-                                                ifelse(norm_method == "noNorm",
-                                                       "(Unnormalized)",
-                                                       paste0("(", norm_method, ")")
-                                                )
-                                         ),
-                                 sample.label = "SampleID",
-                                 taxa.label = "Genus")
-    
-    # Add vertical line separating samples by sample type
-    type_ordered <- sample_data(pruned_physeq)[column_order, "SampleType"]
-    type_block_sizes <- table(type_ordered)
-    type_block_cuts <- cumsum(type_block_sizes)
-    heatmap_plot <- heatmap_plot + geom_vline(xintercept = type_block_cuts+0.5, linewidth = 1, color = "white")
+  type_ordered <- sample_data(pruned_physeq)[column_order, "SampleType"]
+  heatmap_plot <- heatmap_plot +
+    geom_vline(xintercept = cumsum(table(type_ordered)) + 0.5, linewidth = 1, color = "white")
 
-    ggsave(
-        filename = paste0(out_dir, "/", patient_batch_name, "_", norm_method, "_SelectTaxaHeatmap.png"),
-        plot = heatmap_plot,
-        width = 14,
-        height = 12,
-        units = "in",
-        dpi = 300
-    )
+  ggsave(
+    filename = file.path(plot_out_dir, paste0(patient_batch_name, "_", norm_method, "_SelectTaxaHeatmap.png")),
+    plot = heatmap_plot,
+    width = 14,
+    height = 12,
+    units = "in",
+    dpi = 300
+  )
 }
 
 if (multibatch_comparison) {
-    for (patient_batch_name in args$patient_sample_batches) {
-        SubsetPhyseq <- subset_samples(NormPhyseq, 
-                                        SequencingBatch == patient_batch_name | 
-                                        SampleType == "CellLineControl")
-        Heat_Mapping(subset_physeq = SubsetPhyseq,
-                    patient_batch_name = patient_batch_name,
-                    norm_method = args$norm_method,
-                    taxa_of_interest = taxa_of_interest,
-                    out_dir = out_dir)
-    }
+  for (patient_batch_name in patient_sample_batches) {
+    subset_physeq <- subset_samples(
+      NormPhyseq,
+      SequencingBatch == patient_batch_name | SampleType == "CellLineControl"
+    )
+    heat_mapping(patient_batch_name, subset_physeq)
+  }
 } else {
-    SubsetPhyseq <- subset_samples(NormPhyseq,
-                                    SampleType %in% c("Tumor", "Nontumor", "NormalTissue", "CellLineControl"))
-    Heat_Mapping(subset_physeq = SubsetPhyseq,
-                patient_batch_name = "TechRep-Averaged",
-                norm_method = args$norm_method,
-                taxa_of_interest = taxa_of_interest,
-                out_dir = out_dir)    
+  subset_physeq <- subset_samples(
+    NormPhyseq,
+    SampleType %in% c("Tumor", "Nontumor", "NormalTissue", "CellLineControl")
+  )
+  heat_mapping("TechRep-Averaged", subset_physeq)
 }

@@ -1,3 +1,4 @@
+import json
 import os, re, glob
 from pathlib import Path
 
@@ -88,15 +89,6 @@ CONF_CUTOFF = config["conf_cutoff"]
 # Phyloseq Parameters
 ADD_UNCLASSIFIED_PREFIX = config["add_unclassified_prefix"]
 
-# Differential Abundance Parameters
-DA_METHODS = config["da_methods"]
-DA_COMPARISONS = config["da_comparisons"]
-TAX_AGG_LEVEL = config["tax_agg_level"]
-TAX_LABEL_LEVEL = config["tax_label_level"]
-NORM_METHOD = config["norm_method"]
-PSEUDOCOUNT = config["pseudocount"]
-
-
 #------------------------------------
 # Helper Functions
 #------------------------------------
@@ -159,14 +151,15 @@ rule all:
     input:
         phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
 
-rule copy_config:
+rule write_effective_config:
     output:
-        config_copy = f"{OUT_DIR}/config.yaml"
-    shell:
-        r"""
-        set -euo pipefail
-        cp config.yaml {output.config_copy}
-        """
+        effective_config = f"{OUT_DIR}/effective_config.yaml"
+    run:
+        Path(output.effective_config).parent.mkdir(parents=True, exist_ok=True)
+        # JSON is valid YAML 1.2 and records Snakemake's fully merged config state.
+        Path(output.effective_config).write_text(
+            json.dumps(config, indent=2, sort_keys=True) + "\n"
+        )
 
 
 
@@ -523,6 +516,7 @@ rule blast_db_construction:
 
 rule phyloseq_construction:
     input:
+        effective_config = f"{OUT_DIR}/effective_config.yaml",
         kraken_class_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
@@ -593,7 +587,6 @@ rule read_counts:
             --bacterial-names {input.bacterial_names} \
             --combined-counts {output.library_counts}
         """
-
 
 
 

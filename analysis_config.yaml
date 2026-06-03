@@ -1,0 +1,72 @@
+project:
+  name: "low_biomass_analysis"
+  batch_table: "experiment_batch_configs.tsv"
+  base_dir: "Exp_Output"
+  output_dir: "Exp_Output/analysis"
+  compiled_physeq: "Exp_Output/analysis/CompPhyseq.RData"
+  techrep_avg: false
+
+ordination:
+  trialID: "analysis"
+  norm_method: "noNorm"
+  pseudocount: 1
+  tax_agg_level: "Genus"
+  batch_adj: null
+  dist_metrics: null
+
+heatmap_violin:
+  norm_method: "noNorm"
+  pseudocount: 1
+  tax_agg_level: "Genus"
+  batch_adj: false
+  limma_voom: false
+
+differential_abundance:
+  trialID: "analysis"
+  methods: ["ANCOMBC"]
+  output_dir: "Exp_Output/analysis"
+  norm_method: "noNorm"
+  pseudocount: 1
+  tax_agg_level: "Genus"
+  tax_label_level: "Genus"
+  alpha: 0.05
+  lfc_cutoff: 1
+  comparisons:
+    - name: "NegativeControl"
+      sample_filter:
+        SampleType: ["NegativeControl", "Tumor", "Nontumor", "NormalTissue"]
+      factor_levels:
+        ControlStatus: ["Control", "PatientSample"]
+      formula: "ControlStatus"
+      group: "ControlStatus"
+      coefficient: "ControlStatusPatientSample"
+      structural_zero_groups:
+        - "structural_zero (ControlStatus = Control)"
+        - "structural_zero (ControlStatus = PatientSample)"
+      plot_title: "NegativeControl vs Patient Samples"
+
+    - name: "PatientSample"
+      sample_filter:
+        SampleType: ["Nontumor", "NormalTissue", "Tumor"]
+      factor_levels:
+        SampleType: ["Nontumor", "NormalTissue", "Tumor"]
+      formula: "SampleType + PatientID"
+      group: "SampleType"
+      coefficient: "SampleTypeTumor"
+      structural_zero_groups:
+        - "structural_zero (SampleType = Nontumor)"
+        - "structural_zero (SampleType = Tumor)"
+      plot_title: "Nontumor/Normal Tissue vs Tumor"
+
+    - name: "TumorType"
+      sample_filter:
+        SampleType: ["Tumor"]
+      factor_levels:
+        TumorType: ["HCC", "iCC"]
+      formula: "TumorType"
+      group: "TumorType"
+      coefficient: "TumorTypeiCC"
+      structural_zero_groups:
+        - "structural_zero (TumorType = HCC)"
+        - "structural_zero (TumorType = iCC)"
+      plot_title: "Tumor Type"

@@ -6,6 +6,8 @@ library(stringr)
 library(tidyr)
 library(argparse)
 
+source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
+
 parser <- ArgumentParser()
 
 parser$add_argument("--seq-table",
@@ -53,9 +55,13 @@ metadata_df <- metadata_df |>
   filter(SampleName %in% sample_names)
 
 if (length(setdiff(sample_names, metadata_df$SampleName)) > 0) {
-  message(paste("No metadata information found for:", paste(unlist(setdiff(sample_names, metadata_df$SampleName)), collapse = ", ")))
-  counts_df <- counts_df[rownames(counts_df) %in% metadata_df$SampleName, , drop = FALSE]
-} 
+  stop(
+    paste("No metadata information found for:", paste(unlist(setdiff(sample_names, metadata_df$SampleName)), collapse = ", ")),
+    call. = FALSE
+  )
+}
+
+metadata_df <- validate_metadata_df(metadata_df, context = args$metadata)
 
   # Use ProcessingBatch as batch for Step 1 of micRoclean if cases where it exists in metadata
   #   If it is missing from meta data, set to default value with one level, will automatically skip

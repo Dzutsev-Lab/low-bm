@@ -10,23 +10,95 @@ source myconda
 mamba activate low-bm-base
 cd /data/$USER/low-bm
 
-line=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" experiment_batch_configs.tsv)
-IFS=$'\t' read -r trialID trial_descript exp_dir metadata <<< "$line"
-RUN_CONFIG_DIR="experiment_batch_configs/"
+BASE_CONFIG="${BASE_CONFIG:-config.yaml}"
+BATCH_TABLE="${BATCH_TABLE:-experiment_batch_configs.tsv}"
+RUN_CONFIG_DIR="${RUN_CONFIG_DIR:-experiment_batch_configs}"
 mkdir -p "$RUN_CONFIG_DIR"
-RUN_CONFIG_FILE="${RUN_CONFIG_DIR}/${trialID}_runconfig.yaml"
 
-cat > "$RUN_CONFIG_FILE" <<EOF
-trialID: "$trialID"
-trial_descript: "$trial_descript"
-exp_dir: "$exp_dir"
-metadata: "$metadata"
-EOF
+mapfile -t batch_info < <(python3 - "$BATCH_TABLE" "$SLURM_ARRAY_TASK_ID" "$RUN_CONFIG_DIR" <<'PY'
+import csv
+import os
+import sys
+
+batch_table, task_id, run_config_dir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+canonical_cols = [
+    "trialID",
+    "trial_descript",
+    "exp_dir",
+    "metadata",
+    "batch_label",
+    "include_processing",
+    "include_analysis",
+]
+
+def truthy(value):
+    return str(value).strip().lower() not in {"", "0", "false", "f", "no", "n"}
+
+with open(batch_table, newline="") as handle:
+    rows = list(csv.reader(handle, delimiter="\t"))
+
+if not rows:
+    raise SystemExit(f"Batch table is empty: {batch_table}")
+
+has_header = rows[0][:4] == canonical_cols[:4] or rows[0][0] == "trialID"
+
+if has_header:
+    with open(batch_table, newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        records = list(reader)
+    if task_id >= len(records):
+        raise SystemExit(f"SLURM_ARRAY_TASK_ID {task_id} is outside {len(records)} batch rows.")
+    row = {key: (records[task_id].get(key, "") or "").strip() for key in canonical_cols}
+else:
+    if task_id >= len(rows):
+        raise SystemExit(f"SLURM_ARRAY_TASK_ID {task_id} is outside {len(rows)} batch rows.")
+    values = [field.strip() for field in rows[task_id]]
+    if len(values) < 4:
+        raise SystemExit("Legacy batch rows must contain trialID, trial_descript, exp_dir, metadata.")
+    row = dict(zip(canonical_cols[:4], values[:4]))
+    row["batch_label"] = row["trial_descript"]
+    row["include_processing"] = "true"
+    row["include_analysis"] = "true"
+
+for required in canonical_cols[:4]:
+    if not row.get(required):
+        raise SystemExit(f"Missing required batch table value: {required}")
+
+if not truthy(row.get("include_processing", "true")):
+    print("__SKIP__")
+    print(row["trialID"])
+    raise SystemExit(0)
+
+os.makedirs(run_config_dir, exist_ok=True)
+run_config_file = os.path.join(run_config_dir, f"{row['trialID']}_runconfig.yaml")
+
+def yaml_quote(value):
+    value = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{value}"'
+
+with open(run_config_file, "w", newline="\n") as out:
+    for key in canonical_cols:
+        default = "true" if key in {"include_processing", "include_analysis"} else ""
+        out.write(f"{key}: {yaml_quote(row.get(key, default))}\n")
+
+print(run_config_file)
+print(row["trialID"])
+PY
+)
+
+RUN_CONFIG_FILE="${batch_info[0]}"
+trialID="${batch_info[1]}"
+
+if [[ "$RUN_CONFIG_FILE" == "__SKIP__" ]]; then
+    echo "Skipping ${trialID}: include_processing is false in ${BATCH_TABLE}."
+    exit 0
+fi
 
 LOG_DIR="snakemake_logs/${trialID}"
 mkdir -p "$LOG_DIR"
 
 snakemake --use-conda --cores "${SLURM_CPUS_PER_TASK}" all\
+    --configfile "$BASE_CONFIG" \
     --configfile "$RUN_CONFIG_FILE" \
     --rerun-incomplete \
     2> "$LOG_DIR/snakemake.out"

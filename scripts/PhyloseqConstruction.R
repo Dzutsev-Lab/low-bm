@@ -12,6 +12,8 @@ library(phyloseq)
 library(Biostrings)
 library(taxonomizr)
 
+source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
+
 
 
 # Keep ggplot from producing Rplots.pdf
@@ -83,16 +85,18 @@ sample_names <- sample_names[sample_names != ""]
 
 sample_meta_data_df <- read_excel(args$metadata)
 sample_meta_data_df <- sample_meta_data_df |>
-  filter(SampleName %in% sample_names) |>
-  mutate(
-    IsControl = str_detect(SampleType, "Control"),
-    IsControl = as.logical(IsControl),
-    ControlStatus = ifelse(IsControl,
-                           "Control",
-                           "PatientSample"),
-    SampleType = as.factor(SampleType),
-    PatientID = as.factor(PatientID),
-    SampleID = as.factor(SampleID)) 
+  filter(SampleName %in% sample_names)
+
+missing_metadata <- setdiff(sample_names, sample_meta_data_df$SampleName)
+if (length(missing_metadata) > 0) {
+  stop(
+    "Metadata file is missing sample(s): ",
+    paste(missing_metadata, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+sample_meta_data_df <- validate_metadata_df(sample_meta_data_df, context = args$metadata)
 
 library_counts_df <- read.delim(args$library_counts, sep = "\t", header = TRUE)
 library_counts_df <- library_counts_df |>
