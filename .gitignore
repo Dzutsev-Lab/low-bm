@@ -14,3 +14,4 @@ experiment_batch_configs.tsv
 .vscode/
 .Rhistory
 .DS_Store
+analysis_config.yaml

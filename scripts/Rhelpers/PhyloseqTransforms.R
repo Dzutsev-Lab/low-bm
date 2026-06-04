@@ -162,7 +162,7 @@ batch_adjustment <- function(physeq,
     return(physeq)
   }
 
-  metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
+  metadata_df <- as(phyloseq::sample_data(physeq), "data.frame")
   if (!batch_column %in% names(metadata_df)) {
     message("Skipping batch adjustment: metadata column not found: ", batch_column)
     return(physeq)
