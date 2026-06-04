@@ -166,10 +166,10 @@ read_select_taxa <- function(paths) {
   })))
 }
 
-add_result_labels <- function(results_df, grouped_physeq, tax_label_level) {
+add_result_labels <- function(results_df, grouped_physeq, tax_label_level, tax_agg_level) {
   results_df$label <- results_df$taxon
   tax_df <- as.data.frame(as(tax_table(grouped_physeq), "matrix"), stringsAsFactors = FALSE)
-  if (!tax_label_level %in% names(tax_df)) {
+  if ((!tax_label_level %in% names(tax_df)) | (tax_label_level == tax_agg_level)) {
     return(results_df)
   }
 
@@ -248,7 +248,7 @@ plot_da_heatmap <- function(grouped_physeq,
   pruned_physeq <- prune_taxa(sig_taxa, norm_physeq)
   pruned_physeq <- prune_samples(sample_sums(pruned_physeq) > 0, pruned_physeq)
 
-  metadata_df <- as.data.frame(sample_data(pruned_physeq), stringsAsFactors = FALSE)
+  metadata_df <- as(sample_data(pruned_physeq), "data.frame")
   order_cols <- intersect(c("SampleType", "PatientID"), names(metadata_df))
   if (length(order_cols) > 0) {
     column_order <- rownames(metadata_df)[do.call(order, metadata_df[order_cols])]
@@ -303,7 +303,8 @@ for (spec in da_config$comparisons) {
   results_for_plots <- add_result_labels(
     results_df,
     comparison_physeq,
-    spec$tax_label_level %||% da_config$tax_label_level
+    spec$tax_label_level %||% da_config$tax_label_level,
+    spec$tax_agg_level %||% da_config$tax_agg_level
   )
 
   result_file <- write_da_results(
