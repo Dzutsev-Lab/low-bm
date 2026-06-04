@@ -36,7 +36,7 @@ tax_glom_rename <- function(physeq, tax_agg_level = NULL) {
     stop("Taxonomic rank not found in tax_table: ", tax_agg_level, call. = FALSE)
   }
 
-  physeq <- phyloseq::tax_glom(physeq, taxrank = tax_agg_level, NArm = FALSE)
+  physeq <- phyloseq::tax_glom(physeq, taxrank = tax_agg_level)
   labels <- as.character(phyloseq::tax_table(physeq)[, tax_agg_level])
   labels[is.na(labels) | labels == ""] <- phyloseq::taxa_names(physeq)[is.na(labels) | labels == ""]
   phyloseq::taxa_names(physeq) <- make.unique(labels)
