@@ -70,19 +70,46 @@ average_by_techrep <- function(physeq, sample_id_col = "SampleID") {
   )
 }
 
-divide_by_sample_factor <- function(physeq, factor_column, scale = 1e6) {
+divide_by_sample_factor <- function(physeq,
+                                    factor_column,
+                                    scale = 1e6,
+                                    drop_invalid = TRUE) {
   metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
   fail_missing_columns(names(metadata_df), factor_column, "phyloseq sample_data")
 
   factors <- suppressWarnings(as.numeric(metadata_df[[factor_column]]))
   bad <- is.na(factors) | !is.finite(factors) | factors <= 0
   if (any(bad)) {
-    stop(
-      "Cannot normalize by ",
+    bad_samples <- rownames(metadata_df)[bad]
+    if (!drop_invalid) {
+      stop(
+        "Cannot normalize by ",
+        factor_column,
+        ": all values must be positive and finite.",
+        call. = FALSE
+      )
+    }
+    if (all(bad)) {
+      stop(
+        "Cannot normalize by ",
+        factor_column,
+        ": all samples have missing, non-finite, zero, or negative values.",
+        call. = FALSE
+      )
+    }
+
+    warning(
+      "Dropping ",
+      length(bad_samples),
+      " sample(s) before ",
       factor_column,
-      ": all values must be positive and finite.",
+      " normalization because their divisor is missing, non-finite, zero, or negative: ",
+      paste(bad_samples, collapse = ", "),
       call. = FALSE
     )
+    physeq <- phyloseq::prune_samples(!bad, physeq)
+    metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
+    factors <- suppressWarnings(as.numeric(metadata_df[[factor_column]]))
   }
 
   otu_mat <- otu_samples_by_taxa(physeq)
@@ -181,4 +208,3 @@ limma_voom_normalization <- function(physeq, design_formula = "~ SampleType + Pa
 
   set_otu_samples_by_taxa(physeq, t(as.matrix(voom_out$E)))
 }
-

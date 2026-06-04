@@ -37,7 +37,14 @@ batch_row_to_physeq_path <- function(batch_row, base_dir = "Exp_Output") {
 read_batch_table <- function(path,
                              include_column = NULL,
                              require_canonical = TRUE) {
-  batch_df <- read.delim(path, sep = "\t", header = TRUE, stringsAsFactors = FALSE)
+  batch_df <- read.delim(
+    path,
+    sep = "\t",
+    header = TRUE,
+    stringsAsFactors = FALSE,
+    colClasses = "character",
+    check.names = FALSE
+  )
   canonical <- c(
     "trialID",
     "trial_descript",
@@ -129,4 +136,3 @@ load_yaml_config <- function(path) {
   }
   yaml::read_yaml(path)
 }
-

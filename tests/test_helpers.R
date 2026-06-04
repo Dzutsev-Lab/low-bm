@@ -50,6 +50,7 @@ make_test_physeq <- function() {
     SampleType = c("Tumor", "Tumor", "Nontumor", "NegativeControl"),
     PatientID = c("P1", "P1", "P2", "Control"),
     ProcessingBatch = c("B1", "B1", "B2", "B2"),
+    Host_mapped_reads = c(100, 200, 0, 50),
     stringsAsFactors = FALSE,
     row.names = rownames(otu)
   )
@@ -105,6 +106,15 @@ rel_mat <- otu_samples_by_taxa(rel)
 stopifnot(all(abs(rowSums(rel_mat) - 1) < 1e-8))
 
 expect_error(divide_by_sample_factor(physeq, "MissingColumn"), "missing required")
+host_norm <- suppressWarnings(divide_by_sample_factor(physeq, "Host_mapped_reads"))
+stopifnot(!"SampleB" %in% sample_names(host_norm))
+stopifnot(nsamples(host_norm) == nsamples(physeq) - 1)
+host_norm_mat <- otu_samples_by_taxa(host_norm)
+stopifnot(host_norm_mat["SampleA_rep1", "ASV1"] == 10 / 100 * 1e6)
+expect_error(
+  divide_by_sample_factor(physeq, "Host_mapped_reads", drop_invalid = FALSE),
+  "all values must be positive"
+)
 
 spec <- legacy_comparison_spec("PatientSample")
 prepared <- prepare_da_physeq(physeq, spec, build_legacy_da_config(
@@ -120,6 +130,40 @@ expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")),
 
 fake_ancombc <- list(res = list(lfc = data.frame(taxon = "a", other = 1)))
 expect_error(extract_ancombc_table(fake_ancombc, "lfc", "missing_coef"), "missing required")
+
+batch_table_file <- file.path(tempdir(), "batch_table.tsv")
+writeLines(
+  c(
+    paste(
+      c(
+        "trialID",
+        "trial_descript",
+        "exp_dir",
+        "metadata",
+        "batch_label",
+        "include_processing",
+        "include_analysis"
+      ),
+      collapse = "\t"
+    ),
+    paste(
+      c(
+        "051926.1",
+        "TIGER062822_PrelimAnalysis",
+        "exp",
+        "metadata.xlsx",
+        "TIGER062822",
+        "false",
+        "true"
+      ),
+      collapse = "\t"
+    )
+  ),
+  batch_table_file
+)
+batch_df <- read_batch_table(batch_table_file)
+stopifnot(identical(batch_df$trialID[[1]], "051926.1"))
+stopifnot(identical(batch_row_to_trial_name(batch_df[1, , drop = FALSE]), "051926.1_TIGER062822_PrelimAnalysis"))
 
 if (requireNamespace("ANCOMBC", quietly = TRUE)) {
   message("ANCOMBC is available; full model smoke tests can be added for project fixtures.")
