@@ -2,12 +2,12 @@ project:
   name: "low_biomass_analysis"
   batch_table: "experiment_batch_configs.tsv"
   base_dir: "Exp_Output"
-  output_dir: "Exp_Output/analysis"
-  compiled_physeq: "Exp_Output/analysis/CompPhyseq.RData"
+  output_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
   techrep_avg: false
 
 ordination:
-  trialID: "analysis"
+  trialID: "060426.1"
   norm_method: "noNorm"
   pseudocount: 1
   tax_agg_level: "Genus"
@@ -22,9 +22,9 @@ heatmap_violin:
   limma_voom: false
 
 differential_abundance:
-  trialID: "analysis"
+  trialID: "060426.1"
   methods: ["ANCOMBC"]
-  output_dir: "Exp_Output/analysis"
+  output_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
   norm_method: "noNorm"
   pseudocount: 1
   tax_agg_level: "Genus"
