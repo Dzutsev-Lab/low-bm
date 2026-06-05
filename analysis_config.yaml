@@ -78,4 +78,14 @@ blast_confirmation:
   trialID: "060426.1"
   io_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
   taxa_level: "Genus"
-
+  reference_db: "ncbi20_k2"
+  ref_base_dir: "Ref_Data"
+  tax_db_sql: "Ref_Data/taxdump/tax_db.sqlite"
+  max_target_seqs: 5
+  num_threads: null
+  min_pident: 90
+  min_qcovs: 90
+  max_evalue: 1e-20
+  top_n_asvs: 20
+  min_rel_abund: 0.05
+  plot_ranks: ["genus", "species"]

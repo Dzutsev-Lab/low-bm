@@ -2,7 +2,6 @@ library(phyloseq)
 library(Biostrings)
 library(data.table)
 library(tibble)
-library(stringr)
 library(argparse)
 
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
@@ -15,192 +14,331 @@ parser <- ArgumentParser()
 parser$add_argument("--analysis-config",
                     type = "character",
                     default = NULL,
-                    help = "Analysis YAML with differential_abundance comparison specs")
-
+                    help = "Analysis YAML with blast_confirmation settings")
 parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
-                    help = "Choice of differential abunance comprisons to pull significant taxa from [CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample, TumorType]")
+                    help = "Differential abundance comparisons to pull significant taxa from")
 parser$add_argument("--DA-method",
                     type = "character",
                     help = "Differential abundance method used to perform comparisons")
 parser$add_argument("--compiled-asv-fasta",
                     type = "character",
-                    help = "FASTA file with all ASV sequences (ASV IDs as headers)")
+                    help = "FASTA file with all ASV sequences using ASV IDs as headers")
 parser$add_argument("--io-dir",
                     type = "character",
-                    help = "Directory to store output manifests and select ASV fasta's within base directory")
+                    help = "Analysis output directory")
 parser$add_argument("--trialID",
                     type = "character")
 parser$add_argument("--taxa-level",
-                    type = "character")
+                    type = "character",
+                    default = "Genus",
+                    help = "Taxonomic level used by DA results and BLAST candidate selection")
 parser$add_argument("--compiled-physeq",
                     type = "character")
 parser$add_argument("--base-dir",
                     type = "character",
                     default = "Exp_Output",
-                    help = "Base directory containing the trial directory")
+                    help = "Base directory containing per-batch phyloseq outputs")
 
 args <- parser$parse_args()
 
+cfg <- list()
 project_config <- list()
-ordination_config <- list()
+blast_config <- list()
 if (!is.null(args$analysis_config)) {
   cfg <- load_yaml_config(args$analysis_config)
-  project_config <- cfg$project
-  blast_config <- cfg$blast_confirmation
+  project_config <- cfg$project %||% list()
+  blast_config <- cfg$blast_confirmation %||% list()
+}
+
+is_missing_value <- function(x) {
+  is.null(x) ||
+    length(x) == 0 ||
+    all(is.na(x)) ||
+    all(!nzchar(trimws(as.character(x))))
+}
+
+fail_missing_input <- function(required_input, context) {
+  missing_input <- names(required_input)[vapply(required_input, is_missing_value, logical(1))]
+  if (length(missing_input) > 0) {
+    stop(
+      "Missing required ",
+      context,
+      ": ",
+      paste(missing_input, collapse = ", "),
+      call. = FALSE
+    )
+  }
+}
+
+sanitize_path_component <- function(x, fallback = "taxon") {
+  x <- as.character(x)
+  if (length(x) == 0 || is.na(x) || !nzchar(trimws(x))) {
+    x <- fallback
+  }
+  x <- trimws(x)
+  x <- gsub("[[:space:]/\\\\:;,*?\"<>|]+", "_", x)
+  x <- gsub("[^A-Za-z0-9._+=@-]", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- sub("^_+", "", x)
+  x <- sub("_+$", "", x)
+  if (!nzchar(x)) fallback else x
 }
 
 load_input_physeq <- function() {
-    if (!is.null(args$compiled_physeq)) {
-        return(load_physeq(args$compiled_physeq))
-    }
-    if (!is.null(project_config$compiled_physeq) && file.exists(project_config$compiled_physeq)) {
-        return(load_physeq(project_config$compiled_physeq))
-    }
-    if (!is.null(project_config$batch_table)) {
-        batch_table <- project_config$batch_table
-        physeq_paths <- resolve_batch_physeqs(batch_table, base_dir = base_dir)
-        return(merge_physeqs(load_physeqs(physeq_paths)))
-    }
-    stop("Provide --compiled-physeq script argument or project.compiled_physeq or project.batch_table in --analysis-config.", call. = FALSE)
+  if (!is.null(args$compiled_physeq)) {
+    return(load_physeq(args$compiled_physeq))
+  }
+  if (!is.null(project_config$compiled_physeq) && file.exists(project_config$compiled_physeq)) {
+    return(load_physeq(project_config$compiled_physeq))
+  }
+  if (!is.null(project_config$batch_table)) {
+    base_dir <- project_config$base_dir %||% args$base_dir
+    physeq_paths <- resolve_batch_physeqs(project_config$batch_table, base_dir = base_dir)
+    return(merge_physeqs(load_physeqs(physeq_paths)))
+  }
+  stop(
+    "Provide --compiled-physeq, project.compiled_physeq, or project.batch_table in --analysis-config.",
+    call. = FALSE
+  )
 }
 
-#-----------------------------
-# Main export function
-#-----------------------------
-export_significant_genus_asvs <- function(ps,
+read_significant_taxa <- function(io_dir, DA_method, trialID, comparisons) {
+  sig_taxa_by_comparison <- list()
+
+  for (comparison in comparisons) {
+    results_file <- file.path(
+      io_dir,
+      DA_method,
+      comparison,
+      paste0(trialID, "_", comparison, "_", DA_method, "Results.tsv")
+    )
+
+    if (!file.exists(results_file)) {
+      stop("Missing differential abundance results file: ", results_file, call. = FALSE)
+    }
+
+    DA_results_df <- read.delim(results_file, stringsAsFactors = FALSE)
+    missing_columns <- setdiff(c("taxon", "significance"), names(DA_results_df))
+    if (length(missing_columns) > 0) {
+      stop(
+        "Missing required column(s) in ",
+        results_file,
+        ": ",
+        paste(missing_columns, collapse = ", "),
+        call. = FALSE
+      )
+    }
+
+    sig_mask <- !is.na(DA_results_df$significance) & DA_results_df$significance == "Sig"
+    sig_taxa <- DA_results_df[sig_mask, "taxon"]
+    sig_taxa <- unique(as.character(sig_taxa[!is.na(sig_taxa) & nzchar(trimws(sig_taxa))]))
+    sig_taxa_by_comparison[[comparison]] <- sig_taxa
+  }
+
+  sig_taxa_by_comparison
+}
+
+export_significant_taxon_asvs <- function(ps,
                                           asv_fasta,
-                                          sig_genera_by_comparison,
+                                          sig_taxa_by_comparison,
                                           out_dir,
                                           taxa_level_col = "Genus") {
+  all_asv_fasta <- readDNAStringSet(asv_fasta)
 
-    # Read All ASV FASTA
-    asv_fasta <- readDNAStringSet(asv_fasta)
+  tax_df <- as.data.frame(as(tax_table(ps), "matrix"), stringsAsFactors = FALSE)
+  tax_df <- rownames_to_column(tax_df, "ASVid")
 
-    # Extract taxonomy (first as matrix then convert to data frame)
-    tax_df <- as.data.frame(as(tax_table(ps), "matrix")) |>
-        rownames_to_column("ASVid")
+  if (!taxa_level_col %in% colnames(tax_df)) {
+    stop("Taxonomic level '", taxa_level_col, "' not found in tax_table(ps).", call. = FALSE)
+  }
 
-    if (!taxa_level_col %in% colnames(tax_df)) {
-        stop("taxa_level_col = '", taxa_level_col, "' not found in tax_table(ps).")
+  abund <- otu_totals_by_taxa(ps)
+  abund <- abund[tax_df$ASVid]
+  if (any(is.na(abund))) {
+    stop("Some ASV IDs in the tax table were not found in the OTU table.", call. = FALSE)
+  }
+
+  tax_df$TotalCount <- as.numeric(abund)
+  all_manifests <- list()
+
+  for (comparison_name in names(sig_taxa_by_comparison)) {
+    comp_taxa <- unique(sig_taxa_by_comparison[[comparison_name]])
+    comp_taxa <- comp_taxa[!is.na(comp_taxa) & nzchar(trimws(comp_taxa))]
+    comp_dir <- file.path(out_dir, "BlastAnalysis", comparison_name)
+    dir.create(comp_dir, recursive = TRUE, showWarnings = FALSE)
+
+    if (length(comp_taxa) == 0) {
+      warning("No significant taxa found for comparison '", comparison_name, "'.", call. = FALSE)
+      next
     }
 
-    # Extract abundance
-    abund <- otu_totals_by_taxa(ps)
-    abund <- abund[tax_df$ASVid]
-    if (any(is.na(abund))) {
-        stop("Some ASV IDs in the tax table were not found in the OTU table.")
+    taxon_path_names <- make.unique(
+      vapply(comp_taxa, sanitize_path_component, character(1), fallback = "taxon"),
+      sep = "_"
+    )
+    names(taxon_path_names) <- comp_taxa
+    comp_manifest_list <- list()
+
+    for (taxon in comp_taxa) {
+      taxon_path_name <- taxon_path_names[[taxon]]
+      taxon_dir <- file.path(comp_dir, taxon_path_name)
+      dir.create(taxon_dir, recursive = TRUE, showWarnings = FALSE)
+
+      taxon_values <- as.character(tax_df[[taxa_level_col]])
+      taxon_asvs <- tax_df$ASVid[!is.na(taxon_values) & taxon_values == taxon]
+
+      if (length(taxon_asvs) == 0) {
+        warning(
+          "No ASVs found for ",
+          taxa_level_col,
+          " '",
+          taxon,
+          "' in comparison '",
+          comparison_name,
+          "'.",
+          call. = FALSE
+        )
+        next
+      }
+
+      missing_fasta_asvs <- setdiff(taxon_asvs, names(all_asv_fasta))
+      if (length(missing_fasta_asvs) > 0) {
+        warning(
+          "Skipping ",
+          length(missing_fasta_asvs),
+          " ASV(s) for ",
+          taxa_level_col,
+          " '",
+          taxon,
+          "' because they are missing from the compiled ASV FASTA.",
+          call. = FALSE
+        )
+      }
+      taxon_asvs <- intersect(taxon_asvs, names(all_asv_fasta))
+      if (length(taxon_asvs) == 0) {
+        warning(
+          "No FASTA sequences available for ",
+          taxa_level_col,
+          " '",
+          taxon,
+          "' in comparison '",
+          comparison_name,
+          "'.",
+          call. = FALSE
+        )
+        next
+      }
+
+      taxon_fasta <- all_asv_fasta[taxon_asvs]
+      m <- tax_df[match(taxon_asvs, tax_df$ASVid), , drop = FALSE]
+      m$Comparison <- comparison_name
+      m$TaxaLevel <- taxa_level_col
+      m$Taxon <- taxon
+      m$TaxonPathName <- taxon_path_name
+      m$Sequence <- as.character(taxon_fasta)
+      taxon_total_count <- sum(m$TotalCount, na.rm = TRUE)
+      if (taxon_total_count <= 0) {
+        warning(
+          "Skipping ",
+          taxa_level_col,
+          " '",
+          taxon,
+          "' because selected ASVs have no positive total counts.",
+          call. = FALSE
+        )
+        next
+      }
+      m$RelativeAbundanceWithinTaxon <- m$TotalCount / taxon_total_count
+      if (taxa_level_col == "Genus") {
+        m$RelativeAbundanceWithinGenus <- m$RelativeAbundanceWithinTaxon
+      }
+
+      priority_cols <- c(
+        "Comparison",
+        "TaxaLevel",
+        "Taxon",
+        "TaxonPathName",
+        taxa_level_col,
+        "ASVid",
+        "TotalCount",
+        "RelativeAbundanceWithinTaxon",
+        if (taxa_level_col == "Genus") "RelativeAbundanceWithinGenus",
+        "Sequence"
+      )
+      priority_cols <- unique(priority_cols[priority_cols %in% colnames(m)])
+      m <- m[, c(priority_cols, setdiff(colnames(m), priority_cols)), drop = FALSE]
+
+      manifest_file <- file.path(taxon_dir, paste0(taxon_path_name, "_ASV_manifest.tsv"))
+      fasta_file <- file.path(taxon_dir, paste0(taxon_path_name, "_ASV.fasta"))
+
+      fwrite(as.data.table(m), file = manifest_file, sep = "\t", quote = FALSE)
+      writeXStringSet(taxon_fasta, filepath = fasta_file)
+
+      comp_manifest_list[[taxon_path_name]] <- m
     }
 
-    tax_df$TotalCount <- as.numeric(abund)
+    if (length(comp_manifest_list) > 0) {
+      comp_manifest <- rbindlist(lapply(comp_manifest_list, as.data.table), fill = TRUE)
+      comp_manifest_file <- file.path(comp_dir, paste0(comparison_name, "_AllTaxa_ASV_manifest.tsv"))
+      fwrite(comp_manifest, file = comp_manifest_file, sep = "\t", quote = FALSE)
 
-    all_manifests <- list()
+      if (taxa_level_col == "Genus") {
+        legacy_manifest_file <- file.path(comp_dir, paste0(comparison_name, "_AllGenera_ASV_manifest.tsv"))
+        fwrite(comp_manifest, file = legacy_manifest_file, sep = "\t", quote = FALSE)
+      }
 
-    for (comparison_name in names(sig_genera_by_comparison)) {
-        comp_genera <- sig_genera_by_comparison[[comparison_name]]
-        comp_dir <- file.path(out_dir, "BlastAnalysis", comparison_name)
-        dir.create(comp_dir, recursive = TRUE, showWarnings = FALSE)
-
-        comp_manifest_list <- list()
-
-        for (genus in comp_genera) {
-
-            dir.create(file.path(comp_dir,genus), recursive = TRUE, showWarnings = FALSE)
-
-            genus_asvs <- tax_df$ASVid[!is.na(tax_df$Genus) & tax_df$Genus == genus]
-
-            if (length(genus_asvs) == 0) {
-                warning("No ASVs found for genus '", genus, "' in comparison '", comparison_name, "'.")
-                next
-            }
-
-            # Subset FASTA
-            genus_fasta <- asv_fasta[genus_asvs]
-
-            # Build manifest
-            m <- tax_df[match(genus_asvs, tax_df$ASVid), , drop = FALSE]
-            m$Comparison <- comparison_name
-            m$Sequence <- as.character(genus_fasta)
-            m$RelativeAbundanceWithinGenus <- m$TotalCount / sum(m$TotalCount)
-
-            # Reorder columns for readability
-            m <- m[, c(
-                "Comparison", taxa_level_col,
-                "ASVid",
-                "TotalCount", "RelativeAbundanceWithinGenus",
-                "Sequence",
-                setdiff(colnames(m), c(
-                "Comparison", taxa_level_col,
-                "ASVid",
-                "TotalCount", "RelativeAbundanceWithinGenus",
-                "Sequence"
-                ))
-            )]
-
-            manifest_file <- file.path(comp_dir, genus, paste0(genus, "_ASV_manifest.tsv"))
-            fasta_file <- file.path(comp_dir, genus, paste0(genus, "_ASV.fasta"))
-
-            fwrite(as.data.table(m), file = manifest_file, sep = "\t", quote = FALSE)
-            writeXStringSet(genus_fasta, filepath = fasta_file)
-
-            comp_manifest_list[[genus]] <- m
-        }
-
-        if (length(comp_manifest_list) > 0) {
-            comp_manifest <- rbindlist(lapply(comp_manifest_list, as.data.table), fill = TRUE)
-            comp_manifest_file <- file.path(comp_dir, paste0(comparison_name, "_AllGenera_ASV_manifest.tsv"))
-            fwrite(comp_manifest, file = comp_manifest_file, sep = "\t", quote = FALSE)
-            all_manifests[[comparison_name]] <- comp_manifest
-        }
+      all_manifests[[comparison_name]] <- comp_manifest
     }
+  }
 
-    invisible(all_manifests)
+  invisible(all_manifests)
+}
+
+if (!is.null(args$analysis_config)) {
+  trialID <- blast_config$trialID
+  io_dir <- blast_config$io_dir
+  DA_comparisons <- blast_config$DA_comparisons
+  DA_method <- blast_config$DA_method
+  taxa_level <- blast_config$taxa_level %||% "Genus"
+  compiled_asv_fasta <- project_config$compiled_asv_fasta
+} else {
+  trialID <- args$trialID
+  io_dir <- args$io_dir
+  DA_comparisons <- args$DA_comparisons
+  DA_method <- args$DA_method
+  taxa_level <- args$taxa_level
+  compiled_asv_fasta <- args$compiled_asv_fasta
+}
+
+required_input <- list(
+  trialID = trialID,
+  io_dir = io_dir,
+  DA_comparisons = DA_comparisons,
+  DA_method = DA_method,
+  taxa_level = taxa_level,
+  compiled_asv_fasta = compiled_asv_fasta
+)
+fail_missing_input(required_input, "BLAST candidate preparation input")
+
+if (!file.exists(compiled_asv_fasta)) {
+  stop("Missing compiled ASV FASTA: ", compiled_asv_fasta, call. = FALSE)
 }
 
 CompPhyseq <- load_input_physeq()
 
-if (!is.null(args$analysis_config)) {
-    trialID <- blast_config$trialID
-    io_dir <- blast_config$io_dir
-    DA_comparisons <- blast_config$DA_comparisons
-    DA_method <- blast_config$DA_method
-    taxa_level <- blast_config$taxa_level
-    compiled_asv_fasta <- project_config$compiled_asv_fasta
-} else {
-    trialID <- args$trialID
-    io_dir <- args$io_dir
-    DA_comparisons <- args$DA_comparisons
-    DA_method <- args$DA_method
-    taxa_level <- args$taxa_level
-    compiled_asv_fasta <- args$compiled_asv_fasta
-}
+sig_taxa_by_comparison <- read_significant_taxa(
+  io_dir = io_dir,
+  DA_method = DA_method,
+  trialID = trialID,
+  comparisons = DA_comparisons
+)
 
-#-------------------------
-# Input Check
-#-------------------------
-required_input <- list(trialID, io_dir, DA_comparisons, DA_method, taxa_level, compiled_asv_fasta)
-names(required_input) <- c("--trialID", "--io-dir", "--DA-comparisons", "--DA-method", "--taxa-level", "--compiled-asv-fasta")
-missing_input <- names(required_input)[sapply(required_input, is.null)]
-if (length(missing_input) > 0) {
-    stop(sprintf("Missing required input. Provide: %s as script argument(s) or in --analysis-config.", paste(unlist(missing_input), collapse = ", ")))
-}
-
-
-
-
-sig_genera_by_comparison <- list()
-for (comparison in DA_comparisons) {
-    DA_results_df <- read.delim(file.path(io_dir, DA_method, comparison, 
-                                          paste0(trialID, "_", comparison, "_", DA_method, "Results.tsv")))
-    sig_genera <- DA_results_df[DA_results_df$significance == "Sig", "taxon"]
-    sig_genera_by_comparison[[comparison]] <- sig_genera
-}
-
-export_significant_genus_asvs(
-    ps = CompPhyseq,
-    asv_fasta = compiled_asv_fasta,
-    sig_genera_by_comparison = sig_genera_by_comparison,
-    out_dir = io_dir,
-    taxa_level_col = taxa_level
+export_significant_taxon_asvs(
+  ps = CompPhyseq,
+  asv_fasta = compiled_asv_fasta,
+  sig_taxa_by_comparison = sig_taxa_by_comparison,
+  out_dir = io_dir,
+  taxa_level_col = taxa_level
 )
