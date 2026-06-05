@@ -14,6 +14,17 @@ ordination:
   tax_agg_level: "Genus"
   batch_adj: "Hospital"
   dist_metrics: null
+  groupings:
+    - name: "SampleType"
+      variable: "SampleType"
+    - name: "TumorType"
+      variable: "TumorType"
+      sample_filter:
+        SampleType: ["Tumor"]
+    - name: "cCluster"
+      variable: "cCluster"
+      sample_filter:
+        SampleType: ["Tumor"]
 
 heatmap_violin:
   norm_method: "noNorm"

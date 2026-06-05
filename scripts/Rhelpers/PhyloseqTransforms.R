@@ -79,6 +79,31 @@ average_by_techrep <- function(physeq, sample_id_col = "SampleID") {
   )
 }
 
+apply_sample_filter <- function(physeq, sample_filter) {
+  if (is.null(sample_filter) || length(sample_filter) == 0) {
+    return(physeq)
+  }
+
+  metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
+  keep <- rep(TRUE, nrow(metadata_df))
+
+  for (column in names(sample_filter)) {
+    fail_missing_columns(names(metadata_df), column, "phyloseq sample_data")
+    values <- unlist(sample_filter[[column]], use.names = FALSE)
+    if (length(values) == 1 && values == "*") {
+      keep <- keep & !is.na(metadata_df[[column]]) & nzchar(trimws(as.character(metadata_df[[column]])))
+    } else {
+      keep <- keep & as.character(metadata_df[[column]]) %in% as.character(values)
+    }
+  }
+
+  if (!any(keep)) {
+    stop("Sample filter selected zero samples.", call. = FALSE)
+  }
+
+  phyloseq::prune_samples(keep, physeq)
+}
+
 divide_by_sample_factor <- function(physeq,
                                     factor_column,
                                     scale = 1e6,
