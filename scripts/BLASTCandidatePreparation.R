@@ -87,7 +87,7 @@ export_significant_genus_asvs <- function(ps,
     }
 
     # Extract abundance
-    abund <- otu_totals_by_taxa()(ps)
+    abund <- otu_totals_by_taxa(ps)
     abund <- abund[tax_df$ASVid]
     if (any(is.na(abund))) {
         stop("Some ASV IDs in the tax table were not found in the OTU table.")
@@ -161,7 +161,7 @@ export_significant_genus_asvs <- function(ps,
 CompPhyseq <- load_input_physeq()
 
 if (!is.null(args$analysis_config)) {
-    trialID <- blast_config$trialdID
+    trialID <- blast_config$trialID
     io_dir <- blast_config$io_dir
     DA_comparisons <- blast_config$DA_comparisons
     DA_method <- blast_config$DA_method
@@ -182,8 +182,10 @@ if (!is.null(args$analysis_config)) {
 required_input <- list(trialID, io_dir, DA_comparisons, DA_method, taxa_level, compiled_asv_fasta)
 names(required_input) <- c("--trialID", "--io-dir", "--DA-comparisons", "--DA-method", "--taxa-level", "--compiled-asv-fasta")
 missing_input <- names(required_input)[sapply(required_input, is.null)]
+if (length(missing_input) > 0) {
+    stop(sprintf("Missing required input. Provide: %s as script argument(s) or in --analysis-config.", paste(unlist(missing_input), collapse = ", ")))
+}
 
-stop(sprintf("Missing required input. Provide: %s as script argument(s) or in in --analysis-config.", paste(unlist(missing_input), collapse = ", ")))
 
 
 
