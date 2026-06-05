@@ -144,6 +144,10 @@ rank_col <- function(rank) {
   paste0("Blast", paste0(toupper(substr(rank, 1, 1)), substr(rank, 2, nchar(rank))))
 }
 
+blast_rank_cols <- function(plot_ranks) {
+  unname(vapply(plot_ranks, rank_col, character(1)))
+}
+
 rank_label <- function(rank) {
   paste0(toupper(substr(rank, 1, 1)), substr(rank, 2, nchar(rank)))
 }
@@ -286,7 +290,7 @@ filter_blast_hits <- function(hits,
 resolve_taxid_labels <- function(taxids, sql_db, plot_ranks) {
   taxids <- unique(as.integer(taxids))
   taxids <- taxids[!is.na(taxids) & taxids > 0L]
-  rank_cols <- vapply(plot_ranks, rank_col, character(1))
+  rank_cols <- blast_rank_cols(plot_ranks)
 
   if (length(taxids) == 0) {
     out <- data.table(taxid = integer(0))
@@ -313,7 +317,7 @@ resolve_taxid_labels <- function(taxids, sql_db, plot_ranks) {
 }
 
 collapse_hits_to_weights <- function(hits, plot_ranks) {
-  rank_cols <- vapply(plot_ranks, rank_col, character(1))
+  rank_cols <- blast_rank_cols(plot_ranks)
 
   if (nrow(hits) == 0) {
     out <- data.table(qseqid = character(0))
@@ -357,7 +361,7 @@ no_acceptable_hit_input <- function(manifest, plot_ranks) {
 }
 
 build_alluvial_input <- function(manifest, hits_weighted, plot_ranks) {
-  rank_cols <- vapply(plot_ranks, rank_col, character(1))
+  rank_cols <- blast_rank_cols(plot_ranks)
   manifest_cols <- c(
     "ASVid",
     "TaxaLevel",
@@ -397,7 +401,7 @@ plot_taxon_alluvial <- function(alluvial_df,
     return(invisible(NULL))
   }
 
-  rank_cols <- vapply(plot_ranks, rank_col, character(1))
+  rank_cols <- blast_rank_cols(plot_ranks)
   plot_df <- alluvial_df[RelativeAbundanceWithinTaxon >= min_rel_abund]
   if (nrow(plot_df) == 0) {
     warning(
