@@ -5,7 +5,17 @@ library(tibble)
 library(stringr)
 library(argparse)
 
+source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
 parser <- ArgumentParser()
+
+parser$add_argument("--analysis-config",
+                    type = "character",
+                    default = NULL,
+                    help = "Analysis YAML with differential_abundance comparison specs")
 
 parser$add_argument("--DA-comparisons",
                     type = "character",
@@ -14,15 +24,18 @@ parser$add_argument("--DA-comparisons",
 parser$add_argument("--DA-method",
                     type = "character",
                     help = "Differential abundance method used to perform comparisons")
-parser$add_argument("--in-trial",
-                    type = "character",
-                    help = "Trial with differential abundance analyses to pull significant taxa from")
-parser$add_argument("--all-asv-fasta",
+parser$add_argument("--compiled-asv-fasta",
                     type = "character",
                     help = "FASTA file with all ASV sequences (ASV IDs as headers)")
-parser$add_argument("--out-trial",
+parser$add_argument("--io-dir",
                     type = "character",
                     help = "Directory to store output manifests and select ASV fasta's within base directory")
+parser$add_argument("--trialID",
+                    type = "character")
+parser$add_argument("--taxa-level",
+                    type = "character")
+parser$add_argument("--compiled-physeq",
+                    type = "character")
 parser$add_argument("--base-dir",
                     type = "character",
                     default = "Exp_Output",
@@ -30,19 +43,28 @@ parser$add_argument("--base-dir",
 
 args <- parser$parse_args()
 
-
-#-----------------------------
-# Helpers
-#-----------------------------
-get_asv_abundance <- function(ps) {
-  otu <- as(otu_table(ps), "matrix")
-  if (taxa_are_rows(ps)) {
-    rowSums(otu)
-  } else {
-    colSums(otu)
-  }
+project_config <- list()
+ordination_config <- list()
+if (!is.null(args$analysis_config)) {
+  cfg <- load_yaml_config(args$analysis_config)
+  project_config <- cfg$project
+  blast_config <- cfg$blast_confirmation
 }
 
+load_input_physeq <- function() {
+    if (!is.null(args$compiled_physeq)) {
+        return(load_physeq(args$compiled_physeq))
+    }
+    if (!is.null(project_config$compiled_physeq) && file.exists(project_config$compiled_physeq)) {
+        return(load_physeq(project_config$compiled_physeq))
+    }
+    if (!is.null(project_config$batch_table)) {
+        batch_table <- project_config$batch_table
+        physeq_paths <- resolve_batch_physeqs(batch_table, base_dir = base_dir)
+        return(merge_physeqs(load_physeqs(physeq_paths)))
+    }
+    stop("Provide --compiled-physeq script argument or project.compiled_physeq or project.batch_table in --analysis-config.", call. = FALSE)
+}
 
 #-----------------------------
 # Main export function
@@ -52,7 +74,6 @@ export_significant_genus_asvs <- function(ps,
                                           sig_genera_by_comparison,
                                           out_dir,
                                           taxa_level_col = "Genus") {
-    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
     # Read All ASV FASTA
     asv_fasta <- readDNAStringSet(asv_fasta)
@@ -66,7 +87,7 @@ export_significant_genus_asvs <- function(ps,
     }
 
     # Extract abundance
-    abund <- get_asv_abundance(ps)
+    abund <- otu_totals_by_taxa()(ps)
     abund <- abund[tax_df$ASVid]
     if (any(is.na(abund))) {
         stop("Some ASV IDs in the tax table were not found in the OTU table.")
@@ -78,7 +99,7 @@ export_significant_genus_asvs <- function(ps,
 
     for (comparison_name in names(sig_genera_by_comparison)) {
         comp_genera <- sig_genera_by_comparison[[comparison_name]]
-        comp_dir <- file.path(out_dir, comparison_name)
+        comp_dir <- file.path(out_dir, "BlastAnalysis", comparison_name)
         dir.create(comp_dir, recursive = TRUE, showWarnings = FALSE)
 
         comp_manifest_list <- list()
@@ -137,23 +158,47 @@ export_significant_genus_asvs <- function(ps,
     invisible(all_manifests)
 }
 
-sig_genera_by_comparison <- list()
-input_trial_id_num <- sub("_.*", "", args$in_trial)
-input_dir <- file.path(args$base_dir, args$in_trial)
-output_dir <- file.path(args$base_dir, args$out_trial)
+CompPhyseq <- load_input_physeq()
 
-for (comparison in args$DA_comparisons) {
-    DA_results_df <- read.delim(file.path(input_dir, args$DA_method, comparison, paste0(input_trial_id_num, "_", comparison, "_", args$DA_method, "Results.tsv")))
+if (!is.null(args$analysis_config)) {
+    trialID <- blast_config$trialdID
+    io_dir <- blast_config$io_dir
+    DA_comparisons <- blast_config$DA_comparisons
+    DA_method <- blast_config$DA_method
+    taxa_level <- blast_config$taxa_level
+    compiled_asv_fasta <- project_config$compiled_asv_fasta
+} else {
+    trialID <- args$trialID
+    io_dir <- args$io_dir
+    DA_comparisons <- args$DA_comparisons
+    DA_method <- args$DA_method
+    taxa_level <- args$taxa_level
+    compiled_asv_fasta <- args$compiled_asv_fasta
+}
+
+#-------------------------
+# Input Check
+#-------------------------
+required_input <- list(trialID, io_dir, DA_comparisons, DA_method, taxa_level, compiled_asv_fasta)
+names(required_input) <- c("--trialID", "--io-dir", "--DA-comparisons", "--DA-method", "--taxa-level", "--compiled-asv-fasta")
+missing_input <- names(required_input)[sapply(required_input, is.null)]
+
+stop(sprintf("Missing required input. Provide: %s as script argument(s) or in in --analysis-config.", paste(unlist(missing_input), collapse = ", ")))
+
+
+
+sig_genera_by_comparison <- list()
+for (comparison in DA_comparisons) {
+    DA_results_df <- read.delim(file.path(io_dir, DA_method, comparison, 
+                                          paste0(trialID, "_", comparison, "_", DA_method, "Results.tsv")))
     sig_genera <- DA_results_df[DA_results_df$significance == "Sig", "taxon"]
     sig_genera_by_comparison[[comparison]] <- sig_genera
 }
 
-load(file.path(input_dir, "CompPhyseq.RData"))
-
 export_significant_genus_asvs(
-    ps = physeq,
-    asv_fasta = args$all_asv_fasta,
+    ps = CompPhyseq,
+    asv_fasta = compiled_asv_fasta,
     sig_genera_by_comparison = sig_genera_by_comparison,
-    out_dir = output_dir,
-    taxa_level_col = "Genus"
+    out_dir = io_dir,
+    taxa_level_col = taxa_level
 )

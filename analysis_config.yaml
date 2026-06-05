@@ -4,6 +4,7 @@ project:
   base_dir: "Exp_Output"
   output_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
   compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
+  compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
   techrep_avg: false
 
 ordination:
@@ -70,3 +71,11 @@ differential_abundance:
         - "structural_zero (TumorType = HCC)"
         - "structural_zero (TumorType = iCC)"
       plot_title: "Tumor Type"
+
+blast_confirmation:
+  DA_comparisons: ["NegativeControl", "PatientSample", "TumorType"]
+  DA_method: "ANCOMBC"
+  trialID: "060426.1"
+  io_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  taxa_level: "Genus"
+

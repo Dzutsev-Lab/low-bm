@@ -14,6 +14,15 @@ otu_samples_by_taxa <- function(physeq) {
   as.matrix(otu_mat)
 }
 
+otu_totals_by_taxa <- function(physeq) {
+  otu_mat <- as(phyloseq::otu_table(physeq), "matrix")
+  if (phyloseq::taxa_are_rows(physeq)) {
+    rowSums(otu_mat)
+  } else {
+    colSums(otu_mat)
+  }
+}
+
 set_otu_samples_by_taxa <- function(physeq, otu_mat) {
   phyloseq::otu_table(physeq) <- phyloseq::otu_table(as.matrix(otu_mat), taxa_are_rows = FALSE)
   physeq
