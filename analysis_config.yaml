@@ -21,6 +21,10 @@ ordination:
       variable: "TumorType"
       sample_filter:
         SampleType: ["Tumor"]
+    - name: "TumorNontumorType"
+      variable: "TumorType"
+      sample_filter:
+        SampleType: ["Tumor", "Nontumor"]
     - name: "cCluster"
       variable: "cCluster"
       sample_filter:
@@ -100,3 +104,9 @@ blast_confirmation:
   top_n_asvs: 20
   min_rel_abund: 0.05
   plot_ranks: ["genus", "species"]
+
+xgboost_classification: 
+  trialID: "060426.1"
+  io_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  tax_agg_level: "Genus"
+  class_factor: "TumorType"
