@@ -88,6 +88,7 @@ NormPhyseq <- counts_normalization(
     norm_method = norm_method, 
     pseudocount = pseudocount
 )
+# TODO: fix to account for samples dropped due to zero divisor problems in normalization 
 AdjPhyseq <- batch_adjustment(
     physeq = NormPhyseq, 
     batch_column = batch_adj_covar, 

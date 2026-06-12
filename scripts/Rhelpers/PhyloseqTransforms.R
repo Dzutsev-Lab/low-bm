@@ -188,10 +188,21 @@ counts_normalization <- function(physeq, norm_method = "noNorm", pseudocount = 1
 
 batch_adjustment <- function(physeq,
                              batch_column = NULL,
-                             method = c("LimmaRemoveBatchEffect", "ComBat"),
+                             method = c("removeBatchEffect", "LimmaRemoveBatchEffect", "ComBat"),
                              design_formula = "~ SampleType") {
+  if (is.null(method) || length(method) == 0 || all(is.na(method))) {
+    method <- "removeBatchEffect"
+  }
   method <- match.arg(method)
-  if (is.null(batch_column) || is.na(batch_column) || batch_column == "") {
+  if (method == "LimmaRemoveBatchEffect") {
+    method <- "removeBatchEffect"
+  }
+
+  if (is.null(batch_column) ||
+      length(batch_column) == 0 ||
+      isFALSE(batch_column) ||
+      is.na(batch_column) ||
+      batch_column == "") {
     message("Skipping batch adjustment: no batch column provided.")
     return(physeq)
   }
@@ -211,7 +222,7 @@ batch_adjustment <- function(physeq,
   otu_mat <- t(otu_samples_by_taxa(physeq))
   design <- stats::model.matrix(stats::as.formula(design_formula), data = metadata_df)
 
-  if (method == "LimmaRemoveBatchEffect") {
+  if (method == "removeBatchEffect") {
     if (!requireNamespace("limma", quietly = TRUE)) {
       stop("The R package 'limma' is required for removeBatchEffect.", call. = FALSE)
     }
