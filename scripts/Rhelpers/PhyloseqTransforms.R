@@ -188,7 +188,7 @@ counts_normalization <- function(physeq, norm_method = "noNorm", pseudocount = 1
 
 batch_adjustment <- function(physeq,
                              batch_column = NULL,
-                             method = c("removeBatchEffect", "ComBat"),
+                             method = c("LimmaRemoveBatchEffect", "ComBat"),
                              design_formula = "~ SampleType") {
   method <- match.arg(method)
   if (is.null(batch_column) || is.na(batch_column) || batch_column == "") {
@@ -211,16 +211,19 @@ batch_adjustment <- function(physeq,
   otu_mat <- t(otu_samples_by_taxa(physeq))
   design <- stats::model.matrix(stats::as.formula(design_formula), data = metadata_df)
 
-  if (method == "removeBatchEffect") {
+  if (method == "LimmaRemoveBatchEffect") {
     if (!requireNamespace("limma", quietly = TRUE)) {
       stop("The R package 'limma' is required for removeBatchEffect.", call. = FALSE)
     }
     adjusted <- limma::removeBatchEffect(otu_mat, batch = batch, design = design)
-  } else {
+  } else if (method == "ComBat") {
     if (!requireNamespace("sva", quietly = TRUE)) {
       stop("The R package 'sva' is required for ComBat.", call. = FALSE)
     }
-    adjusted <- sva::ComBat(dat = otu_mat, batch = batch, mod = NULL, par.prior = TRUE)
+    adjusted <- sva::ComBat(dat = otu_mat, batch = batch, mod = design, par.prior = TRUE)
+  } else {
+    message("Skipping batch adjustment: ", method, " is not a valid batch adjustment method")
+    return(physeq)
   }
 
   set_otu_samples_by_taxa(physeq, t(adjusted))

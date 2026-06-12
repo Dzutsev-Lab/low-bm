@@ -12,7 +12,7 @@ ordination:
   norm_method: "log2HostMapped"
   pseudocount: 1
   tax_agg_level: "Genus"
-  batch_adj: "Hospital"
+  batch_adj_covar: "Hospital"
   dist_metrics: null
   groupings:
     - name: "SampleType"
@@ -109,4 +109,9 @@ xgboost_classification:
   trialID: "060426.1"
   io_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
   tax_agg_level: "Genus"
+  norm_method: log2
+  pseudocount: 1
   class_factor: "TumorType"
+  batch_adj_formula: "~ TumorType"
+  batch_adj_covar: "Hospital"
+  batch_adj_method: "LimmaRemoveBatchEffect"

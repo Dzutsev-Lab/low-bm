@@ -32,7 +32,12 @@ if (!is.null(args$analysis_config)) {
 io_dir <- xgboost_config$io_dir
 trialID <- xgboost_config$trialID
 tax_agg_level <- xgboost_config$tax_agg_level
+norm_method <- xgboost_config$norm_method
+pseudocount <- xgboost_config$pseudocount
 class_factor <- xgboost_config$class_factor
+batch_adj_covar <- xgboost_config$batch_adj_covar
+batch_adj_formula <- xgboost_config$batch_adj_formula
+batch_adj_method <- xgboost_config$batch_adj_method
 
 CompPhyseq <- load_physeq(project_config$compiled_physeq)
 
@@ -74,19 +79,33 @@ SubPhyseq <- prune_samples(meta$SampleID, CompPhyseq)
 # Reorder metadata to match sample order in phyloseq object
 meta <- meta[match(sample_names(SubPhyseq), meta$SampleID), ]
 
+# -----------------------------------------
+# 2) Normalize and adjust OTU
+# -----------------------------------------
+GlomPhyseq <- tax_glom_rename(SubPhyseq, tax_agg_level = tax_agg_level)
+NormPhyseq <- counts_normalization(
+    physeq = GlomPhyseq, 
+    norm_method = norm_method, 
+    pseudocount = pseudocount
+)
+AdjPhyseq <- batch_adjustment(
+    physeq = NormPhyseq, 
+    batch_column = batch_adj_covar, 
+    design_formula = batch_adj_formula,
+    method = batch_adj_method
+)
 
 # ----------------------------------------------
-# 2) Extract OTU table as samples x taxa matrix
+# 3) Extract OTU table as samples x taxa matrix
 # ----------------------------------------------
-GlomPhyseq <- tax_glom_rename(SubPhyseq, tax_agg_level = tax_agg_level)
-otu <- as(otu_table(GlomPhyseq), "matrix")
-if (taxa_are_rows(GlomPhyseq)) {
+otu <- as(otu_table(AdjPhyseq), "matrix")
+if (taxa_are_rows(AdjPhyseq)) {
   otu <- t(otu)
 }
 
 
 # ------------------------------------------
-# 3) Patient-level train/test split
+# 4) Patient-level train/test split
 #   -  Staring 80:20 training:testing split
 # ------------------------------------------
 patients <- unique(meta$PatientID)
@@ -95,27 +114,13 @@ test_patients <- sample(patients, size = ceiling(0.2 * length(patients)))
 train_idx <- !(meta$PatientID %in% test_patients)
 test_idx  <-  (meta$PatientID %in% test_patients)
 
-otu_train <- otu[train_idx, , drop = FALSE]
-otu_test  <- otu[test_idx, , drop = FALSE]
+X_train <- otu[train_idx, , drop = FALSE]
+X_test  <- otu[test_idx, , drop = FALSE]
 
 y_train <- meta$class[train_idx]
 y_test  <- meta$class[test_idx]
 
 patient_train <- meta$PatientID[train_idx]
-
-
-# -----------------------------------------
-# 4) Feature transformation
-#    - CLR-like transform with pseudocount
-# -----------------------------------------
-# TODO: Revisit transformation approach (maybe use HostMapped)
-clr_transform <- function(mat, pseudocount = 0.5) {
-  log_mat <- log(mat + pseudocount)
-  sweep(log_mat, 1, rowMeans(log_mat), FUN = "-")
-}
-
-X_train <- clr_transform(otu_train, pseudocount = 0.5)
-X_test  <- clr_transform(otu_test, pseudocount = 0.5)
 
 # Convert to sparse matrices for xgboost
 dtrain <- xgb.DMatrix(data = as.matrix(X_train), label = y_train)
@@ -233,3 +238,7 @@ imp_plot <- xgb.ggplot.importance(imp[1:min(20, nrow(imp)), ]) +
 ggsave(
     filename = file.path(io_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ImportancePlot.png"))
 )
+
+# ----------------------------
+# 9) Feature importance
+# ----------------------------
