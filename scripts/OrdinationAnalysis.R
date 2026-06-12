@@ -103,8 +103,8 @@ out_dir <- if (!is.null(args$out)) {
 norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else ordination_config$norm_method %||% args$norm_method
 pseudocount <- ordination_config$pseudocount %||% args$pseudocount
 tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else ordination_config$tax_agg_level %||% args$tax_agg_level
-batch_adj_covar <- if (!is.null(args$batch_adj)) args$batch_adj else ordination_config$batch_adj_covar %||% ordination_config$batch_adj
-batch_adj_method <- ordination_config$batch_adj_method %||% "removeBatchEffect"
+batch_adj_covar <- if (!is.null(args$batch_adj)) args$batch_adj else ordination_config$batch_adj_covar
+batch_adj_method <- ordination_config$batch_adj_method %||% "LimmaRemoveBatchEffect"
 batch_adj_formula <- ordination_config$batch_adj_formula %||% "~ SampleType"
 dist_metrics <- if (!is.null(args$dist_metric)) args$dist_metric else ordination_config$dist_metrics
 techrep_avg <- isTRUE(args$techrep_avg) || truthy_flag(ordination_config$techrep_avg, default = FALSE)
@@ -205,7 +205,7 @@ resolve_batch_adj_method <- function(grouping) {
     return(as.character(batch_adj_method[[1]]))
   }
 
-  "removeBatchEffect"
+  "LimmaRemoveBatchEffect"
 }
 
 prepare_grouped_physeq <- function(physeq, grouping, data_label) {

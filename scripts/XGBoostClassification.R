@@ -39,6 +39,57 @@ batch_adj_covar <- xgboost_config$batch_adj_covar
 batch_adj_formula <- xgboost_config$batch_adj_formula
 batch_adj_method <- xgboost_config$batch_adj_method
 
+is_missing_config_value <- function(x) {
+    is.null(x) ||
+        length(x) == 0 ||
+        all(is.na(x)) ||
+        all(!nzchar(trimws(as.character(x))))
+}
+
+target_metadata_vars <- function(class_factor) {
+    target_vars <- c("class", "class_factor", class_factor)
+    if (identical(class_factor, "PatientSample")) {
+        target_vars <- c(target_vars, "TumorType", "SampleType")
+    }
+    unique(target_vars[!is.na(target_vars) & nzchar(target_vars)])
+}
+
+if (is_missing_config_value(batch_adj_method)) {
+    batch_adj_method <- "removeBatchEffect"
+}
+
+if (is_missing_config_value(batch_adj_formula)) {
+    batch_adj_formula <- NULL
+    message(
+        "XGBoost batch adjustment will use native package-default model design for ",
+        batch_adj_method,
+        "."
+    )
+} else {
+    batch_adj_formula <- as.character(batch_adj_formula[[1]])
+    formula_vars <- tryCatch(
+        all.vars(stats::as.formula(batch_adj_formula)),
+        error = function(e) {
+            warning(
+                "Could not parse xgboost_classification.batch_adj_formula for target-leakage screening: ",
+                conditionMessage(e),
+                call. = FALSE
+            )
+            character()
+        }
+    )
+    risky_vars <- intersect(formula_vars, target_metadata_vars(class_factor))
+    if (length(risky_vars) > 0) {
+        warning(
+            "xgboost_classification.batch_adj_formula references target-related variable(s): ",
+            paste(risky_vars, collapse = ", "),
+            ". This can inflate classifier performance because labels influence preprocessing.",
+            call. = FALSE
+        )
+    }
+    message("XGBoost batch adjustment formula: ", batch_adj_formula)
+}
+
 CompPhyseq <- load_physeq(project_config$compiled_physeq)
 
 dir.create(file.path(io_dir,"XGBoostClassification"), recursive = TRUE, showWarnings = FALSE)

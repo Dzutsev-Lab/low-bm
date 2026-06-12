@@ -188,16 +188,12 @@ counts_normalization <- function(physeq, norm_method = "noNorm", pseudocount = 1
 
 batch_adjustment <- function(physeq,
                              batch_column = NULL,
-                             method = c("removeBatchEffect", "LimmaRemoveBatchEffect", "ComBat"),
+                             method = c("LimmaRemoveBatchEffect", "ComBat"),
                              design_formula = "~ SampleType") {
   if (is.null(method) || length(method) == 0 || all(is.na(method))) {
-    method <- "removeBatchEffect"
+    method <- "LimmaRemoveBatchEffect"
   }
   method <- match.arg(method)
-  if (method == "LimmaRemoveBatchEffect") {
-    method <- "removeBatchEffect"
-  }
-
   if (is.null(batch_column) ||
       length(batch_column) == 0 ||
       isFALSE(batch_column) ||
@@ -220,13 +216,24 @@ batch_adjustment <- function(physeq,
   }
 
   otu_mat <- t(otu_samples_by_taxa(physeq))
-  design <- stats::model.matrix(stats::as.formula(design_formula), data = metadata_df)
+  use_default_design <- is.null(design_formula) ||
+    length(design_formula) == 0 ||
+    all(is.na(design_formula)) ||
+    all(!nzchar(trimws(as.character(design_formula))))
+  design <- NULL
+  if (!use_default_design) {
+    design <- stats::model.matrix(stats::as.formula(design_formula), data = metadata_df)
+  }
 
-  if (method == "removeBatchEffect") {
+  if (method == "LimmaRemoveBatchEffect") {
     if (!requireNamespace("limma", quietly = TRUE)) {
       stop("The R package 'limma' is required for removeBatchEffect.", call. = FALSE)
     }
-    adjusted <- limma::removeBatchEffect(otu_mat, batch = batch, design = design)
+    adjusted <- if (is.null(design)) {
+      limma::removeBatchEffect(otu_mat, batch = batch)
+    } else {
+      limma::removeBatchEffect(otu_mat, batch = batch, design = design)
+    }
   } else if (method == "ComBat") {
     if (!requireNamespace("sva", quietly = TRUE)) {
       stop("The R package 'sva' is required for ComBat.", call. = FALSE)
