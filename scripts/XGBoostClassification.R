@@ -236,9 +236,32 @@ print(head(imp, 20))
 imp_plot <- xgb.ggplot.importance(imp[1:min(20, nrow(imp)), ]) +
             labs(title = paste0(plot_title, " Importance by ", if (!is.null(tax_agg_level)) tax_agg_level else "ASV"))
 ggsave(
-    filename = file.path(io_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ImportancePlot.png"))
+    filename = file.path(io_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ImportancePlot.png")),
+    plot = imp_plot
 )
 
 # ----------------------------
-# 9) Feature importance
+# 9) SHAP summary plot
 # ----------------------------
+shap_top_n <- min(20L, ncol(X_test))
+shap_plot_file <- file.path(
+    io_dir,
+    "XGBoostClassification",
+    paste0(trialID, "_", class_factor, "_SHAPSummaryPlot.png")
+)
+
+png(shap_plot_file, width = 1100, height = 900, res = 140)
+shap_plot <- xgb.plot.shap.summary(
+    data = as.matrix(X_test),
+    model = final_fit,
+    top_n = shap_top_n
+)
+if (inherits(shap_plot, "ggplot")) {
+    print(
+        shap_plot +
+            labs(title = paste0(plot_title, " SHAP summary by ", if (!is.null(tax_agg_level)) tax_agg_level else "ASV"))
+    )
+}
+dev.off()
+
+cat("Saved SHAP summary plot:", shap_plot_file, "\n")
