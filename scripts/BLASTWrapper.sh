@@ -29,8 +29,8 @@ load_config() {
     Rscript -e '
 args <- commandArgs(trailingOnly = TRUE)
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
-`%||%` <- function(x, y) if (is.null(x)) y else x
 cfg <- load_yaml_config(args[1])
+project <- cfg$project %||% list()
 blast <- cfg$blast_confirmation
 if (is.null(blast)) {
   stop("analysis_config.yaml is missing blast_confirmation.", call. = FALSE)
@@ -38,8 +38,12 @@ if (is.null(blast)) {
 is_missing <- function(x) {
   is.null(x) || length(x) == 0 || all(is.na(x)) || all(!nzchar(trimws(as.character(x))))
 }
-required <- c("io_dir", "DA_comparisons", "reference_db")
-missing <- required[vapply(required, function(k) is_missing(blast[[k]]), logical(1))]
+io_dir <- analysis_output_dir(project, blast, section_keys = c("io_dir", "output_dir", "out_dir"))
+required <- c("DA_comparisons", "reference_db")
+missing <- required[vapply(required, function(k) is_missing(config_value(blast, k)), logical(1))]
+if (is_missing(io_dir)) {
+  missing <- c("project.output_dir or blast_confirmation.io_dir", missing)
+}
 if (length(missing) > 0) {
   stop("blast_confirmation is missing required field(s): ", paste(missing, collapse = ", "), call. = FALSE)
 }
@@ -47,12 +51,12 @@ emit <- function(key, value) {
   if (is_missing(value)) value <- ""
   cat(key, "\t", paste(as.character(value), collapse = ","), "\n", sep = "")
 }
-emit("TRIAL_DIR", file.path(blast$io_dir, "BlastAnalysis"))
-emit("REFERENCE_DB", blast$reference_db)
-emit("REF_BASE_DIR", blast$ref_base_dir %||% "Ref_Data")
-emit("NUM_THREADS", blast$num_threads)
-emit("MAX_TARGET_SEQS", blast$max_target_seqs %||% 5)
-for (comparison in blast$DA_comparisons) {
+emit("TRIAL_DIR", file.path(io_dir, "BlastAnalysis"))
+emit("REFERENCE_DB", config_value(blast, "reference_db"))
+emit("REF_BASE_DIR", config_value(blast, "ref_base_dir") %||% "Ref_Data")
+emit("NUM_THREADS", config_value(blast, "num_threads"))
+emit("MAX_TARGET_SEQS", config_value(blast, "max_target_seqs") %||% 5)
+for (comparison in config_value(blast, "DA_comparisons")) {
   emit("COMPARISON", comparison)
 }
 ' "$analysis_config"

@@ -29,15 +29,11 @@ if (!is.null(args$analysis_config)) {
     stop("Please provide valid analysis config file")
 }
 
-config_value <- function(config, name) {
-    config[[name, exact = TRUE]]
-}
-
-out_dir <- config_value(xgboost_config, "out_dir")
-trialID <- config_value(xgboost_config, "trialID")
-tax_agg_level <- config_value(xgboost_config, "tax_agg_level")
-norm_method <- config_value(xgboost_config, "norm_method")
-pseudocount <- config_value(xgboost_config, "pseudocount")
+out_dir <- analysis_output_dir(project_config, xgboost_config, section_keys = c("out_dir", "output_dir"))
+trialID <- analysis_config_value(project_config, xgboost_config, "trialID", "analysis")
+tax_agg_level <- analysis_config_value(project_config, xgboost_config, "tax_agg_level", "Genus")
+norm_method <- analysis_config_value(project_config, xgboost_config, "norm_method", "noNorm")
+pseudocount <- analysis_config_value(project_config, xgboost_config, "pseudocount", 1)
 class_factors_config <- config_value(xgboost_config, "class_factors") %||% config_value(xgboost_config, "class_factor")
 batch_adj_covar <- config_value(xgboost_config, "batch_adj_covar")
 batch_adj_formula <- config_value(xgboost_config, "batch_adj_formula")

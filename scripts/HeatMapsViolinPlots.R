@@ -75,17 +75,17 @@ project_config <- list()
 plot_config <- list()
 if (!is.null(args$analysis_config)) {
   cfg <- load_yaml_config(args$analysis_config)
-  project_config <- cfg$project
-  plot_config <- cfg$heatmap_violin
+  project_config <- cfg$project %||% list()
+  plot_config <- cfg$heatmap_violin %||% list()
 }
 
 base_dir <- project_config$base_dir %||% args$base_dir
-out_root <- if (!is.null(args$out_dir)) args$out_dir else project_config$output_dir %||% "analysis"
-out_dir <- if (grepl("^/", out_root)) out_root else file.path(base_dir, out_root)
+out_root <- if (!is.null(args$out_dir)) args$out_dir else analysis_output_dir(project_config, plot_config, default = "analysis")
+out_dir <- resolve_output_path(out_root, base_dir = base_dir)
 
-tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else plot_config$tax_agg_level %||% args$tax_agg_level
-norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else plot_config$norm_method %||% args$norm_method
-pseudocount <- plot_config$pseudocount %||% args$pseudocount
+tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else analysis_config_value(project_config, plot_config, "tax_agg_level", args$tax_agg_level)
+norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else analysis_config_value(project_config, plot_config, "norm_method", args$norm_method)
+pseudocount <- analysis_config_value(project_config, plot_config, "pseudocount", args$pseudocount)
 limma_voom <- isTRUE(args$limma_voom) || truthy_flag(plot_config$limma_voom, default = FALSE)
 batch_adj_requested <- isTRUE(args$batch_adj) || truthy_flag(plot_config$batch_adj, default = FALSE)
 patient_sample_batches <- args$patient_sample_batches %||% plot_config$patient_sample_batches

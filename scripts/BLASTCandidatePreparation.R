@@ -297,11 +297,11 @@ export_significant_taxon_asvs <- function(ps,
 }
 
 if (!is.null(args$analysis_config)) {
-  trialID <- blast_config$trialID
-  io_dir <- blast_config$io_dir
+  trialID <- analysis_config_value(project_config, blast_config, "trialID")
+  io_dir <- analysis_output_dir(project_config, blast_config, section_keys = c("io_dir", "output_dir", "out_dir"))
   DA_comparisons <- blast_config$DA_comparisons
   DA_method <- blast_config$DA_method
-  taxa_level <- blast_config$taxa_level %||% "Genus"
+  taxa_level <- analysis_config_value(project_config, blast_config, "taxa_level", analysis_config_value(project_config, blast_config, "tax_agg_level", "Genus"))
   compiled_asv_fasta <- project_config$compiled_asv_fasta
 } else {
   trialID <- args$trialID

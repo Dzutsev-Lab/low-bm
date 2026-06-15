@@ -85,8 +85,8 @@ if (!is.null(args$analysis_config)) {
 
 trial_id <- if (!is.null(args$trialID)) {
   args$trialID
-} else if (!is.null(ordination_config$trialID)) {
-  ordination_config$trialID
+} else if (!is.null(analysis_config_value(project_config, ordination_config, "trialID"))) {
+  analysis_config_value(project_config, ordination_config, "trialID")
 } else {
   "analysis"
 }
@@ -94,15 +94,15 @@ trial_id <- if (!is.null(args$trialID)) {
 base_dir <- project_config$base_dir %||% args$base_dir
 out_dir <- if (!is.null(args$out)) {
   args$out
-} else if (!is.null(project_config$output_dir)) {
-  project_config$output_dir
+} else if (!is.null(analysis_output_dir(project_config, ordination_config))) {
+  analysis_output_dir(project_config, ordination_config)
 } else {
   stop("Provide --out or project.output_dir in --analysis-config.", call. = FALSE)
 }
 
-norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else ordination_config$norm_method %||% args$norm_method
-pseudocount <- ordination_config$pseudocount %||% args$pseudocount
-tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else ordination_config$tax_agg_level %||% args$tax_agg_level
+norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else analysis_config_value(project_config, ordination_config, "norm_method", args$norm_method)
+pseudocount <- analysis_config_value(project_config, ordination_config, "pseudocount", args$pseudocount)
+tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else analysis_config_value(project_config, ordination_config, "tax_agg_level", args$tax_agg_level)
 batch_adj_covar <- if (!is.null(args$batch_adj)) args$batch_adj else ordination_config$batch_adj_covar
 batch_adj_method <- ordination_config$batch_adj_method %||% "LimmaRemoveBatchEffect"
 batch_adj_formula <- ordination_config$batch_adj_formula %||% "~ SampleType"

@@ -540,16 +540,18 @@ process_taxon <- function(manifest_file,
 
 if (!is.null(args$analysis_config)) {
   cfg <- load_yaml_config(args$analysis_config)
+  project_config <- cfg$project %||% list()
   blast_config <- cfg$blast_confirmation %||% list()
+  io_dir <- analysis_output_dir(project_config, blast_config, section_keys = c("io_dir", "output_dir", "out_dir"))
 
-  trial_dir <- if (!is_missing_value(blast_config$io_dir)) {
-    file.path(blast_config$io_dir, "BlastAnalysis")
+  trial_dir <- if (!is_missing_value(io_dir)) {
+    file.path(io_dir, "BlastAnalysis")
   } else {
     NULL
   }
   comparisons <- blast_config$DA_comparisons
   tax_db_sql <- blast_config$tax_db_sql
-  taxa_level <- blast_config$taxa_level %||% "Genus"
+  taxa_level <- analysis_config_value(project_config, blast_config, "taxa_level", analysis_config_value(project_config, blast_config, "tax_agg_level", "Genus"))
   plot_ranks <- blast_config$plot_ranks %||% args$plot_ranks
   min_pident <- as_config_number(blast_config$min_pident, args$min_pident)
   min_qcovs <- as_config_number(blast_config$min_qcovs, args$min_qcovs)

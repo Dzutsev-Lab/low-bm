@@ -96,9 +96,15 @@ args <- parser$parse_args()
 load_project_and_da_config <- function() {
   if (!is.null(args$analysis_config)) {
     full_config <- load_yaml_config(args$analysis_config)
+    project_config <- full_config$project %||% list()
+    da_config <- apply_project_config_defaults(
+      full_config$differential_abundance,
+      project_config,
+      c("trialID", "output_dir", "norm_method", "pseudocount", "tax_agg_level")
+    )
     return(list(
-      project = full_config$project %||% list(),
-      da = normalize_da_config(full_config$differential_abundance)
+      project = project_config,
+      da = normalize_da_config(da_config)
     ))
   }
 
@@ -127,9 +133,9 @@ config_bundle <- load_project_and_da_config()
 project_config <- config_bundle$project
 da_config <- config_bundle$da
 
-trial_id <- args$trialID %||% da_config$trialID %||% "analysis"
+trial_id <- args$trialID %||% analysis_config_value(project_config, da_config, "trialID", "analysis")
 base_dir <- project_config$base_dir %||% args$base_dir
-out_dir <- args$out %||% da_config$output_dir %||% project_config$output_dir %||% file.path(base_dir, "analysis")
+out_dir <- args$out %||% analysis_output_dir(project_config, da_config, default = file.path(base_dir, "analysis"))
 
 load_input_physeq <- function() {
   if (!is.null(args$compiled_physeq)) {

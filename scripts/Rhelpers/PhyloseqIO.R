@@ -6,6 +6,62 @@ source_if_needed <- function(path) {
 
 source_if_needed(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
 
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
+config_value <- function(config, name) {
+  if (is.null(config)) {
+    return(NULL)
+  }
+  config[[name, exact = TRUE]]
+}
+
+analysis_config_value <- function(project_config,
+                                  section_config,
+                                  name,
+                                  default = NULL) {
+  config_value(section_config, name) %||% config_value(project_config, name) %||% default
+}
+
+apply_project_config_defaults <- function(section_config,
+                                          project_config,
+                                          keys) {
+  section_config <- section_config %||% list()
+  for (key in keys) {
+    if (is.null(config_value(section_config, key)) && !is.null(config_value(project_config, key))) {
+      section_config[[key]] <- config_value(project_config, key)
+    }
+  }
+  section_config
+}
+
+analysis_output_dir <- function(project_config,
+                                section_config = list(),
+                                section_keys = c("output_dir", "io_dir", "out_dir"),
+                                default = NULL) {
+  for (key in section_keys) {
+    value <- config_value(section_config, key)
+    if (!is.null(value)) {
+      return(value)
+    }
+  }
+  config_value(project_config, "output_dir") %||% default
+}
+
+resolve_output_path <- function(path, base_dir = "Exp_Output") {
+  if (is.null(path)) {
+    return(NULL)
+  }
+  path <- as.character(path[[1]])
+  if (grepl("^/", path)) {
+    return(path)
+  }
+  base_dir <- sub("/+$", "", base_dir)
+  if (identical(path, base_dir) || startsWith(path, paste0(base_dir, .Platform$file.sep))) {
+    return(path)
+  }
+  file.path(base_dir, path)
+}
+
 truthy_flag <- function(value, default = TRUE) {
   if (is.null(value) || is.na(value) || trimws(as.character(value)) == "") {
     return(default)
