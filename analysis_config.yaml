@@ -2,13 +2,13 @@ project:
   name: "low_biomass_analysis"
   batch_table: "experiment_batch_configs.tsv"
   base_dir: "Exp_Output"
-  output_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  output_dir: "Exp_Output/061526.1_TIGERAllExpComp_XGBoostBatchAdj"
   compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
   compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
   techrep_avg: false
 
 ordination:
-  trialID: "060426.1"
+  trialID: "061526.1"
   norm_method: "log2HostMapped"
   pseudocount: 1
   tax_agg_level: "Genus"
@@ -44,9 +44,9 @@ heatmap_violin:
   limma_voom: false
 
 differential_abundance:
-  trialID: "060426.1"
+  trialID: "061526.1"
   methods: ["ANCOMBC"]
-  output_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  output_dir: "Exp_Output/061526.1_TIGERAllExpComp_XGBoostBatchAdj"
   norm_method: "log2HostMapped"
   pseudocount: 1
   tax_agg_level: "Genus"
@@ -96,8 +96,8 @@ differential_abundance:
 blast_confirmation:
   DA_comparisons: ["NegativeControl", "PatientSample", "TumorType"]
   DA_method: "ANCOMBC"
-  trialID: "060426.1"
-  io_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  trialID: "061526.1"
+  io_dir: "Exp_Output/061526.1_TIGERAllExpComp_XGBoostBatchAdj"
   taxa_level: "Genus"
   reference_db: "ncbi20_k2"
   ref_base_dir: "Ref_Data"
@@ -112,12 +112,12 @@ blast_confirmation:
   plot_ranks: ["genus", "species"]
 
 xgboost_classification: 
-  trialID: "060426.1"
-  io_dir: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial"
+  trialID: "061526.1"
+  out_dir: "Exp_Output/061526.1_TIGERAllExpComp_XGBoostBatchAdj"
   tax_agg_level: "Genus"
-  norm_method: log2
+  norm_method: log2HostMapped
   pseudocount: 1
-  class_factor: "TumorType"
+  class_factor: "PatientSample"
   batch_adj_formula: null
   batch_adj_covar: "Hospital"
   batch_adj_method: "LimmaRemoveBatchEffect"

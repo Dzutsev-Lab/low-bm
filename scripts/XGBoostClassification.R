@@ -29,7 +29,7 @@ if (!is.null(args$analysis_config)) {
     stop("Please provide valid analysis config file")
 }
 
-io_dir <- xgboost_config$io_dir
+out_dir <- xgboost_config$out_dir
 trialID <- xgboost_config$trialID
 tax_agg_level <- xgboost_config$tax_agg_level
 norm_method <- xgboost_config$norm_method
@@ -92,12 +92,31 @@ if (is_missing_config_value(batch_adj_formula)) {
 
 CompPhyseq <- load_physeq(project_config$compiled_physeq)
 
-dir.create(file.path(io_dir,"XGBoostClassification"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(out_dir,"XGBoostClassification"), recursive = TRUE, showWarnings = FALSE)
 
-set.seed(32)
+set.seed(42)
+
+
+
+# -----------------------------------------
+# 1) Normalize and adjust OTU
+# -----------------------------------------
+GlomPhyseq <- tax_glom_rename(CompPhyseq, tax_agg_level = tax_agg_level)
+NormPhyseq <- counts_normalization(
+    physeq = GlomPhyseq, 
+    norm_method = norm_method, 
+    pseudocount = pseudocount
+)
+# TODO: fix to account for samples dropped due to zero divisor problems in normalization 
+AdjPhyseq <- batch_adjustment(
+    physeq = NormPhyseq, 
+    batch_column = batch_adj_covar, 
+    design_formula = batch_adj_formula,
+    method = batch_adj_method
+)
 
 # ----------------------------
-# 1) Extract metadata and make binary label
+# 2) Extract metadata and make binary label
 # ----------------------------
 meta <- as(sample_data(CompPhyseq), "data.frame")
 meta$SampleID <- rownames(meta)
@@ -125,33 +144,16 @@ if (class_factor == "PatientSample") {
 }
 
 # Keep only samples in the filtered metadata
-SubPhyseq <- prune_samples(meta$SampleID, CompPhyseq)
+SubPhyseq <- prune_samples(meta$SampleID, AdjPhyseq)
 
 # Reorder metadata to match sample order in phyloseq object
 meta <- meta[match(sample_names(SubPhyseq), meta$SampleID), ]
 
-# -----------------------------------------
-# 2) Normalize and adjust OTU
-# -----------------------------------------
-GlomPhyseq <- tax_glom_rename(SubPhyseq, tax_agg_level = tax_agg_level)
-NormPhyseq <- counts_normalization(
-    physeq = GlomPhyseq, 
-    norm_method = norm_method, 
-    pseudocount = pseudocount
-)
-# TODO: fix to account for samples dropped due to zero divisor problems in normalization 
-AdjPhyseq <- batch_adjustment(
-    physeq = NormPhyseq, 
-    batch_column = batch_adj_covar, 
-    design_formula = batch_adj_formula,
-    method = batch_adj_method
-)
-
 # ----------------------------------------------
 # 3) Extract OTU table as samples x taxa matrix
 # ----------------------------------------------
-otu <- as(otu_table(AdjPhyseq), "matrix")
-if (taxa_are_rows(AdjPhyseq)) {
+otu <- as(otu_table(SubPhyseq), "matrix")
+if (taxa_are_rows(SubPhyseq)) {
   otu <- t(otu)
 }
 
@@ -257,7 +259,7 @@ cat("Accuracy:", round(accuracy, 3), "\n")
 cat("Sensitivity:", round(sensitivity, 3), "\n")
 cat("Specificity:", round(specificity, 3), "\n")
 
-png(file.path(io_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ROCPlot.png")), width = 800, height = 800, res = 120)
+png(file.path(out_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ROCPlot.png")), width = 800, height = 800, res = 120)
 if (class_factor == "PatientSample") {
     plot_title <- "Tumor vs Nontumor"
 } else if (class_factor == "TumorType") {
@@ -288,7 +290,7 @@ print(head(imp, 20))
 imp_plot <- xgb.ggplot.importance(imp[1:min(20, nrow(imp)), ]) +
             labs(title = paste0(plot_title, " Importance by ", if (!is.null(tax_agg_level)) tax_agg_level else "ASV"))
 ggsave(
-    filename = file.path(io_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ImportancePlot.png")),
+    filename = file.path(out_dir, "XGBoostClassification", paste0(trialID, "_", class_factor, "_ImportancePlot.png")),
     plot = imp_plot
 )
 
@@ -297,7 +299,7 @@ ggsave(
 # ----------------------------
 shap_top_n <- min(20L, ncol(X_test))
 shap_plot_file <- file.path(
-    io_dir,
+    out_dir,
     "XGBoostClassification",
     paste0(trialID, "_", class_factor, "_SHAPSummaryPlot.png")
 )

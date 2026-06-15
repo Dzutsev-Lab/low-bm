@@ -369,11 +369,7 @@ plot_alpha_diversity <- function(alpha_physeq, grouping, group_path, group_dirs)
 }
 
 plot_pca <- function(norm_physeq, grouping, group_path, group_dirs) {
-  grouped_physeq <- prepare_grouped_physeq(norm_physeq, grouping, "PCA")
-  if (!has_enough_groups(grouped_physeq, grouping, "PCA")) {
-    return(invisible(NULL))
-  }
-
+  
   group_batch_method <- resolve_batch_adj_method(grouping)
   group_batch_formula <- resolve_batch_adj_formula(grouping)
   message(
@@ -387,9 +383,9 @@ plot_pca <- function(norm_physeq, grouping, group_path, group_dirs) {
     group_batch_formula
   )
 
-  grouped_physeq <- tryCatch(
+  adjusted_physeq <- tryCatch(
     batch_adjustment(
-      physeq = grouped_physeq,
+      physeq = norm_physeq,
       batch_column = batch_adj_covar,
       method = group_batch_method,
       design_formula = group_batch_formula
@@ -405,15 +401,20 @@ plot_pca <- function(norm_physeq, grouping, group_path, group_dirs) {
       NULL
     }
   )
-  if (is.null(grouped_physeq)) {
+  if (is.null(adjusted_physeq)) {
     return(invisible(NULL))
   }
 
   if (techrep_avg) {
-    grouped_physeq <- average_by_techrep(grouped_physeq)
-    if (!has_enough_groups(grouped_physeq, grouping, "PCA")) {
+    adjusted_physeq <- average_by_techrep(adjusted_physeq)
+    if (!has_enough_groups(adjusted_physeq, grouping, "PCA")) {
       return(invisible(NULL))
     }
+  }
+
+  grouped_physeq <- prepare_grouped_physeq(adjusted_physeq, grouping, "PCA")
+  if (!has_enough_groups(grouped_physeq, grouping, "PCA")) {
+    return(invisible(NULL))
   }
 
   otu_mat <- otu_samples_by_taxa(grouped_physeq)
