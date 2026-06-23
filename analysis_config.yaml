@@ -2,8 +2,8 @@ project:
   name: "low_biomass_analysis"
   batch_table: "experiment_batch_configs.tsv"
   base_dir: "Exp_Output"
-  trialID: "061526.1"
-  output_dir: "Exp_Output/061526.1_TIGERAllExpComp_XGBoostBatchAdj"
+  trialID: "062326.1"
+  output_dir: "Exp_Output/062326.1_TIGERAllExpComp_DACovariates"
   compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
   compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
   norm_method: "log2HostMapped"
@@ -65,7 +65,7 @@ differential_abundance:
         SampleType: ["Nontumor", "NormalTissue", "Tumor"]
       factor_levels:
         SampleType: ["Nontumor", "NormalTissue", "Tumor"]
-      formula: "SampleType + PatientID"
+      formula: "SampleType + PatientID + Hospital"
       group: "SampleType"
       coefficient: "SampleTypeTumor"
       structural_zero_groups:
@@ -78,7 +78,7 @@ differential_abundance:
         SampleType: ["Tumor"]
       factor_levels:
         TumorType: ["HCC", "iCC"]
-      formula: "TumorType"
+      formula: "TumorType + Hospital"
       group: "TumorType"
       coefficient: "TumorTypeiCC"
       structural_zero_groups:
