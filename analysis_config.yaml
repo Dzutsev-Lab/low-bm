@@ -86,6 +86,17 @@ differential_abundance:
         - "structural_zero (TumorType = iCC)"
       plot_title: "Tumor Type"
 
+lefse_analysis:
+  source_comparisons: "differential_abundance"
+  abundance_scale: "project_norm_to_relative_abundance"
+  p_adjust_method: "BH"
+  kruskal_threshold: 0.05
+  wilcox_threshold: 0.05
+  lda_threshold: 2
+  filter: "nonzero"
+  subclass_col: null
+  seed: 42
+
 blast_confirmation:
   DA_comparisons: ["NegativeControl", "PatientSample", "TumorType"]
   DA_method: "ANCOMBC"

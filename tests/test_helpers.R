@@ -4,6 +4,7 @@ source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
 source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
+source(file.path("scripts", "Rhelpers", "LEfSeAnalysis.R"))
 
 expect_error <- function(expr, pattern = NULL) {
   err <- tryCatch(
@@ -116,6 +117,13 @@ expect_error(
   "all values must be positive"
 )
 
+lefse_config <- normalize_lefse_config(list(), project_config = list(norm_method = "log2HostMapped", tax_agg_level = "Genus"))
+stopifnot(identical(lefse_config$source_comparisons, "differential_abundance"))
+stopifnot(identical(lefse_config$abundance_scale, "project_norm_to_relative_abundance"))
+stopifnot(identical(lefse_config$p_adjust_method, "BH"))
+stopifnot(identical(lefse_config$filter, "nonzero"))
+stopifnot(identical(resolve_lefse_norm_method(lefse_config, list(norm_method = "log2HostMapped")), "log2HostMapped"))
+
 spec <- legacy_comparison_spec("PatientSample")
 prepared <- prepare_da_physeq(physeq, spec, build_legacy_da_config(
   trial_id = "test",
@@ -127,6 +135,45 @@ stopifnot(inherits(prepared, "phyloseq"))
 bad_spec <- spec
 bad_spec$factor_levels <- list(SampleType = c("Tumor"))
 expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")), "absent")
+
+lefse_prepared <- prepare_lefse_physeq(
+  physeq,
+  spec,
+  modifyList(lefse_config, list(norm_method = "noNorm")),
+  project_config = list()
+)
+stopifnot(inherits(lefse_prepared$physeq, "phyloseq"))
+stopifnot(identical(lefse_prepared$class_levels, c("Nontumor", "Tumor")))
+stopifnot(validate_relative_abundance_closure(lefse_prepared$physeq))
+stopifnot(ntaxa(filter_lefse_taxa(physeq, "nonzero")) == 3)
+
+three_level_spec <- spec
+three_level_spec$sample_filter <- list(SampleType = "*")
+three_level_spec$factor_levels <- NULL
+expect_error(
+  prepare_lefse_physeq(physeq, three_level_spec, modifyList(lefse_config, list(norm_method = "noNorm")), project_config = list()),
+  "exactly two observed"
+)
+
+mapped_spec <- three_level_spec
+mapped_spec$class_map <- list(Control = "NegativeControl", Case = c("Tumor", "Nontumor"))
+mapped_prepared <- prepare_lefse_physeq(
+  physeq,
+  mapped_spec,
+  modifyList(lefse_config, list(norm_method = "noNorm")),
+  project_config = list()
+)
+stopifnot(identical(mapped_prepared$class_levels, c("Control", "Case")))
+stopifnot(validate_relative_abundance_closure(mapped_prepared$physeq))
+
+rel_se <- physeq_to_lefse_se(lefse_prepared$physeq)
+stopifnot(inherits(rel_se, "SummarizedExperiment"))
+stopifnot("relative_abundance" %in% names(SummarizedExperiment::assays(rel_se)))
+
+fake_lefse <- data.frame(features = c("g__B", "g__A"), scores = c(-2.5, 3.1))
+formatted_lefse <- format_lefse_results(fake_lefse, c("Nontumor", "Tumor"))
+stopifnot(identical(formatted_lefse$taxon[[1]], "g__A"))
+stopifnot(identical(formatted_lefse$enriched_class[[1]], "Tumor"))
 
 fake_ancombc <- list(res = list(lfc = data.frame(taxon = "a", other = 1)))
 expect_error(extract_ancombc_table(fake_ancombc, "lfc", "missing_coef"), "missing required")
@@ -169,6 +216,22 @@ if (requireNamespace("ANCOMBC", quietly = TRUE)) {
   message("ANCOMBC is available; full model smoke tests can be added for project fixtures.")
 } else {
   message("Skipping ANCOMBC model smoke test because ANCOMBC is not installed.")
+}
+
+if (requireNamespace("lefser", quietly = TRUE)) {
+  set.seed(as.integer(lefse_config$seed))
+  smoke_res <- lefser::lefser(
+    relab = rel_se,
+    classCol = lefse_prepared$class_col,
+    kruskal.threshold = lefse_config$kruskal_threshold,
+    wilcox.threshold = lefse_config$wilcox_threshold,
+    lda.threshold = lefse_config$lda_threshold,
+    assay = "relative_abundance",
+    method = lefse_config$p_adjust_method
+  )
+  stopifnot(is.data.frame(smoke_res))
+} else {
+  message("Skipping lefser smoke test because lefser is not installed.")
 }
 
 message("helper tests passed")
