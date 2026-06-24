@@ -25,6 +25,8 @@ normalize_lefse_config <- function(config = list(),
   if (is.null(config$wilcox_threshold)) config$wilcox_threshold <- 0.05
   if (is.null(config$lda_threshold)) config$lda_threshold <- 2
   if (is.null(config$filter)) config$filter <- "nonzero"
+  if (is.null(config$lda_safe_filter)) config$lda_safe_filter <- TRUE
+  if (is.null(config$relative_abundance_scale)) config$relative_abundance_scale <- 1e6
   if (is.null(config$subclass_col)) config$subclass_col <- NULL
   if (is.null(config$seed)) config$seed <- 1234
   if (is.null(config$tax_agg_level)) config$tax_agg_level <- project_config$tax_agg_level %||% "Genus"
@@ -196,6 +198,51 @@ filter_lefse_taxa <- function(physeq, filter = "nonzero") {
   phyloseq::prune_taxa(phyloseq::taxa_sums(physeq) > 0, physeq)
 }
 
+filter_lefse_lda_safe_taxa <- function(physeq,
+                                       class_col,
+                                       class_levels = NULL,
+                                       min_variance = 0) {
+  metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
+  fail_missing_columns(names(metadata_df), class_col, "phyloseq sample_data")
+
+  class_values <- as.character(metadata_df[[class_col]])
+  if (!is_missing_lefse_value(class_levels)) {
+    class_levels <- as.character(unlist(class_levels, use.names = FALSE))
+  } else {
+    class_levels <- unique(class_values[!is.na(class_values) & nzchar(trimws(class_values))])
+  }
+  if (length(class_levels) != 2) {
+    stop("LEfSe LDA-safe filter requires exactly two class levels.", call. = FALSE)
+  }
+
+  class_factor <- factor(class_values, levels = class_levels)
+  otu_mat <- otu_samples_by_taxa(physeq)
+  keep_taxa <- vapply(seq_len(ncol(otu_mat)), function(i) {
+    feature_values <- otu_mat[, i]
+    all(vapply(class_levels, function(level) {
+      group_values <- feature_values[class_factor == level]
+      group_values <- group_values[is.finite(group_values)]
+      length(group_values) > 1 &&
+        is.finite(stats::var(group_values)) &&
+        stats::var(group_values) > min_variance
+    }, logical(1)))
+  }, logical(1))
+
+  if (!any(keep_taxa)) {
+    stop(
+      "LEfSe LDA-safe filter removed all taxa because no taxa had nonzero within-class variance in both classes.",
+      call. = FALSE
+    )
+  }
+
+  list(
+    physeq = phyloseq::prune_taxa(colnames(otu_mat)[keep_taxa], physeq),
+    before_taxa = ncol(otu_mat),
+    retained_taxa = sum(keep_taxa),
+    removed_taxa = sum(!keep_taxa)
+  )
+}
+
 validate_lefse_abundance_matrix <- function(otu_mat,
                                             comparison_name,
                                             abundance_scale,
@@ -223,11 +270,36 @@ validate_lefse_abundance_matrix <- function(otu_mat,
   invisible(TRUE)
 }
 
+close_lefse_relative_abundance <- function(physeq,
+                                           comparison_name,
+                                           relative_abundance_scale = 1e6) {
+  if (!is.finite(relative_abundance_scale) || relative_abundance_scale <= 0) {
+    stop("LEfSe relative_abundance_scale must be positive and finite.", call. = FALSE)
+  }
+
+  otu_mat <- otu_samples_by_taxa(physeq)
+  row_totals <- rowSums(otu_mat)
+  keep <- is.finite(row_totals) & row_totals > 0
+  if (!any(keep)) {
+    stop("LEfSe comparison '", comparison_name, "' has zero samples with positive abundance.", call. = FALSE)
+  }
+  if (any(!keep)) {
+    physeq <- phyloseq::prune_samples(keep, physeq)
+    otu_mat <- otu_samples_by_taxa(physeq)
+    row_totals <- rowSums(otu_mat)
+  }
+
+  rel_mat <- sweep(otu_mat, 1, row_totals, FUN = "/")
+  rel_mat <- rel_mat * relative_abundance_scale
+  set_otu_samples_by_taxa(physeq, rel_mat)
+}
+
 physeq_to_relative_abundance <- function(physeq,
                                          comparison_name,
                                          abundance_scale,
                                          norm_method,
-                                         pseudocount) {
+                                         pseudocount,
+                                         relative_abundance_scale = 1e6) {
   if (!identical(abundance_scale, "project_norm_to_relative_abundance") &&
       !identical(abundance_scale, "raw_relative_abundance")) {
     stop("Unsupported LEfSe abundance_scale: ", abundance_scale, call. = FALSE)
@@ -249,19 +321,11 @@ physeq_to_relative_abundance <- function(physeq,
     norm_method = norm_method
   )
 
-  row_totals <- rowSums(otu_mat)
-  keep <- is.finite(row_totals) & row_totals > 0
-  if (!any(keep)) {
-    stop("LEfSe comparison '", comparison_name, "' has zero samples with positive abundance.", call. = FALSE)
-  }
-  if (any(!keep)) {
-    physeq <- phyloseq::prune_samples(keep, physeq)
-    otu_mat <- otu_samples_by_taxa(physeq)
-    row_totals <- rowSums(otu_mat)
-  }
-
-  rel_mat <- sweep(otu_mat, 1, row_totals, FUN = "/")
-  set_otu_samples_by_taxa(physeq, rel_mat)
+  close_lefse_relative_abundance(
+    physeq,
+    comparison_name = comparison_name,
+    relative_abundance_scale = relative_abundance_scale
+  )
 }
 
 prepare_lefse_physeq <- function(physeq,
@@ -283,16 +347,38 @@ prepare_lefse_physeq <- function(physeq,
   abundance_scale <- as.character(lefse_config$abundance_scale)
   norm_method <- resolve_lefse_norm_method(lefse_config, project_config)
   pseudocount <- resolve_lefse_pseudocount(lefse_config, project_config)
+  relative_abundance_scale <- as.numeric(lefse_config$relative_abundance_scale)
 
   physeq <- physeq_to_relative_abundance(
     physeq,
     comparison_name = spec$name,
     abundance_scale = abundance_scale,
     norm_method = norm_method,
-    pseudocount = pseudocount
+    pseudocount = pseudocount,
+    relative_abundance_scale = relative_abundance_scale
   )
   physeq <- filter_lefse_taxa(physeq, lefse_config$filter)
   physeq <- prune_empty_physeq(physeq)
+  lda_filter <- list(
+    enabled = FALSE,
+    before_taxa = ntaxa(physeq),
+    retained_taxa = ntaxa(physeq),
+    removed_taxa = 0
+  )
+  if (truthy_flag(lefse_config$lda_safe_filter, default = TRUE)) {
+    lda_filter <- filter_lefse_lda_safe_taxa(
+      physeq,
+      class_col = class_info$class_col,
+      class_levels = class_info$class_levels
+    )
+    physeq <- lda_filter$physeq
+    lda_filter$enabled <- TRUE
+  }
+  physeq <- close_lefse_relative_abundance(
+    physeq,
+    comparison_name = spec$name,
+    relative_abundance_scale = relative_abundance_scale
+  )
 
   list(
     physeq = physeq,
@@ -300,7 +386,9 @@ prepare_lefse_physeq <- function(physeq,
     class_levels = class_info$class_levels,
     norm_method = norm_method,
     pseudocount = pseudocount,
-    abundance_scale = abundance_scale
+    abundance_scale = abundance_scale,
+    relative_abundance_scale = relative_abundance_scale,
+    lda_filter = lda_filter
   )
 }
 
@@ -323,10 +411,13 @@ physeq_to_lefse_se <- function(physeq) {
   )
 }
 
-validate_relative_abundance_closure <- function(physeq, tolerance = 1e-8) {
+validate_relative_abundance_closure <- function(physeq,
+                                                target_sum = 1e6,
+                                                tolerance = 1e-8) {
   otu_mat <- otu_samples_by_taxa(physeq)
   row_sums <- rowSums(otu_mat)
-  all(is.finite(row_sums)) && all(abs(row_sums - 1) <= tolerance)
+  allowed_error <- tolerance * max(1, abs(target_sum))
+  all(is.finite(row_sums)) && all(abs(row_sums - target_sum) <= allowed_error)
 }
 
 format_lefse_results <- function(results_df, class_levels) {

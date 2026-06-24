@@ -3,7 +3,7 @@ project:
   batch_table: "experiment_batch_configs.tsv"
   base_dir: "Exp_Output"
   trialID: "061526.1"
-  output_dir: "Exp_Output/061526.1_TIGERAllExpComp_XGBoostBatchAdj"
+  output_dir: "Exp_Output/062426.1_TIGERAllExpComp_LEfSe"
   compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
   compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
   norm_method: "log2HostMapped"
@@ -88,8 +88,8 @@ differential_abundance:
 
 lefse_analysis:
   source_comparisons: "differential_abundance"
-  abundance_scale: "project_norm_to_relative_abundance"
-  p_adjust_method: "BH"
+  abundance_scale: "raw_relative_abundance"
+  p_adjust_method: "none"
   kruskal_threshold: 0.05
   wilcox_threshold: 0.05
   lda_threshold: 2

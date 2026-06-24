@@ -33,25 +33,26 @@ make_test_physeq <- function() {
   otu <- matrix(
     c(
       10, 0, 5,
-      20, 0, 5,
+      20, 0, 6,
       0, 30, 10,
+      0, 40, 12,
       0, 40, 10
     ),
-    nrow = 4,
+    nrow = 5,
     byrow = TRUE,
     dimnames = list(
-      c("SampleA_rep1", "SampleA_rep2", "SampleB", "NegCtl"),
+      c("SampleA_rep1", "SampleA_rep2", "SampleB", "SampleC", "NegCtl"),
       c("ASV1", "ASV2", "ASV3")
     )
   )
 
   metadata <- data.frame(
     SampleName = rownames(otu),
-    SampleID = c("SampleA", "SampleA", "SampleB", "NegCtl"),
-    SampleType = c("Tumor", "Tumor", "Nontumor", "NegativeControl"),
-    PatientID = c("P1", "P1", "P2", "Control"),
-    ProcessingBatch = c("B1", "B1", "B2", "B2"),
-    Host_mapped_reads = c(100, 200, 0, 50),
+    SampleID = c("SampleA", "SampleA", "SampleB", "SampleC", "NegCtl"),
+    SampleType = c("Tumor", "Tumor", "Nontumor", "Nontumor", "NegativeControl"),
+    PatientID = c("P1", "P1", "P2", "P3", "Control"),
+    ProcessingBatch = c("B1", "B1", "B2", "B2", "B2"),
+    Host_mapped_reads = c(100, 200, 0, 300, 50),
     stringsAsFactors = FALSE,
     row.names = rownames(otu)
   )
@@ -122,6 +123,8 @@ stopifnot(identical(lefse_config$source_comparisons, "differential_abundance"))
 stopifnot(identical(lefse_config$abundance_scale, "project_norm_to_relative_abundance"))
 stopifnot(identical(lefse_config$p_adjust_method, "BH"))
 stopifnot(identical(lefse_config$filter, "nonzero"))
+stopifnot(isTRUE(lefse_config$lda_safe_filter))
+stopifnot(identical(as.numeric(lefse_config$relative_abundance_scale), 1e6))
 stopifnot(identical(resolve_lefse_norm_method(lefse_config, list(norm_method = "log2HostMapped")), "log2HostMapped"))
 
 spec <- legacy_comparison_spec("PatientSample")
@@ -145,6 +148,9 @@ lefse_prepared <- prepare_lefse_physeq(
 stopifnot(inherits(lefse_prepared$physeq, "phyloseq"))
 stopifnot(identical(lefse_prepared$class_levels, c("Nontumor", "Tumor")))
 stopifnot(validate_relative_abundance_closure(lefse_prepared$physeq))
+stopifnot(all(abs(rowSums(otu_samples_by_taxa(lefse_prepared$physeq)) - 1e6) < 1e-2))
+stopifnot(isTRUE(lefse_prepared$lda_filter$enabled))
+stopifnot(lefse_prepared$lda_filter$retained_taxa == ntaxa(lefse_prepared$physeq))
 stopifnot(ntaxa(filter_lefse_taxa(physeq, "nonzero")) == 3)
 
 three_level_spec <- spec
@@ -160,7 +166,7 @@ mapped_spec$class_map <- list(Control = "NegativeControl", Case = c("Tumor", "No
 mapped_prepared <- prepare_lefse_physeq(
   physeq,
   mapped_spec,
-  modifyList(lefse_config, list(norm_method = "noNorm")),
+  modifyList(lefse_config, list(norm_method = "noNorm", lda_safe_filter = FALSE)),
   project_config = list()
 )
 stopifnot(identical(mapped_prepared$class_levels, c("Control", "Case")))
@@ -227,6 +233,7 @@ if (requireNamespace("lefser", quietly = TRUE)) {
     wilcox.threshold = lefse_config$wilcox_threshold,
     lda.threshold = lefse_config$lda_threshold,
     assay = "relative_abundance",
+    checkAbundances = TRUE,
     method = lefse_config$p_adjust_method
   )
   stopifnot(is.data.frame(smoke_res))

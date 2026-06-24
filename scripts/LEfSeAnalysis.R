@@ -100,6 +100,8 @@ make_run_note <- function(spec,
   pseudocount <- if (is.null(prepared)) resolve_lefse_pseudocount(lefse_config, project_config) else prepared$pseudocount
   class_levels <- if (is.null(prepared)) character(0) else prepared$class_levels
   class_col <- if (is.null(prepared)) comparison_class_col(spec) else prepared$class_col
+  relative_abundance_scale <- if (is.null(prepared)) lefse_config$relative_abundance_scale else prepared$relative_abundance_scale
+  lda_filter <- if (is.null(prepared)) NULL else prepared$lda_filter
   physeq <- prepared$physeq %||% NULL
 
   lines <- c(
@@ -111,9 +113,14 @@ make_run_note <- function(spec,
     paste0("Subclass column: ", spec$subclass_col %||% lefse_config$subclass_col %||% "none"),
     paste0("Taxonomic aggregation level: ", spec$tax_agg_level %||% lefse_config$tax_agg_level),
     paste0("Abundance scale: ", lefse_config$abundance_scale),
+    paste0("Relative abundance target sum: ", relative_abundance_scale),
     paste0("Normalization method: ", norm_method),
     paste0("Pseudocount: ", pseudocount),
     paste0("Filter: ", lefse_config$filter),
+    paste0("LDA-safe filter: ", if (is.null(lda_filter)) "not available" else lda_filter$enabled),
+    paste0("LDA-safe filter before taxa: ", if (is.null(lda_filter)) "not available" else lda_filter$before_taxa),
+    paste0("LDA-safe filter retained taxa: ", if (is.null(lda_filter)) "not available" else lda_filter$retained_taxa),
+    paste0("LDA-safe filter removed taxa: ", if (is.null(lda_filter)) "not available" else lda_filter$removed_taxa),
     paste0("Kruskal-Wallis threshold: ", lefse_config$kruskal_threshold),
     paste0("Wilcoxon threshold: ", lefse_config$wilcox_threshold),
     paste0("LDA threshold: ", lefse_config$lda_threshold),
@@ -121,7 +128,7 @@ make_run_note <- function(spec,
     paste0("Seed: ", lefse_config$seed),
     paste0("Sample count: ", if (is.null(physeq)) "not available" else nsamples(physeq)),
     paste0("Retained taxon count: ", if (is.null(physeq)) "not available" else ntaxa(physeq)),
-    paste0("Relative abundance closure: ", if (is.null(physeq)) "not available" else validate_relative_abundance_closure(physeq)),
+    paste0("Relative abundance closure: ", if (is.null(physeq)) "not available" else validate_relative_abundance_closure(physeq, target_sum = relative_abundance_scale)),
     paste0("lefser version: ", version_or_missing("lefser")),
     paste0("SummarizedExperiment version: ", version_or_missing("SummarizedExperiment"))
   )
@@ -147,8 +154,13 @@ run_lefse_comparison <- function(comp_physeq, spec) {
     lefse_config = lefse_config,
     project_config = project_config
   )
-  if (!validate_relative_abundance_closure(prepared$physeq)) {
-    stop("Prepared LEfSe relative abundance matrix does not sum to 1 for every sample.", call. = FALSE)
+  if (!validate_relative_abundance_closure(prepared$physeq, target_sum = prepared$relative_abundance_scale)) {
+    stop(
+      "Prepared LEfSe relative abundance matrix does not sum to ",
+      prepared$relative_abundance_scale,
+      " for every sample.",
+      call. = FALSE
+    )
   }
 
   se <- physeq_to_lefse_se(prepared$physeq)
@@ -166,6 +178,7 @@ run_lefse_comparison <- function(comp_physeq, spec) {
     classCol = prepared$class_col,
     subclassCol = subclass_col,
     assay = "relative_abundance",
+    checkAbundances = TRUE,
     method = as.character(lefse_config$p_adjust_method)
   )
 
