@@ -429,6 +429,7 @@ rule micRoclean_decontamination_detection:
         decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
         decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names",
         filtering_report = f"{MICROCLEAN_DECONTAM_DIR}/DecontamFilterReport.tsv",
+        missing_metadata_report = f"{MICROCLEAN_DECONTAM_DIR}/DroppedSamplesMissingMetadata.tsv",
         
     threads: 8
     log:    f"{LOG_DIR}/07.1_micRoclean_decontam.log"
@@ -587,6 +588,5 @@ rule read_counts:
             --bacterial-names {input.bacterial_names} \
             --combined-counts {output.library_counts}
         """
-
 
 

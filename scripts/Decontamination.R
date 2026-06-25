@@ -31,6 +31,8 @@ parser$add_argument("--out",
 
 args <- parser$parse_args()
 
+dir.create(args$out, recursive = TRUE, showWarnings = FALSE)
+
 sample_names <- readLines(args$sample_names)
 sample_names <- trimws(sample_names)
 sample_names <- sample_names[sample_names != ""]
@@ -54,14 +56,39 @@ metadata_df <- read_excel(args$metadata)
 metadata_df <- metadata_df |> 
   filter(SampleName %in% sample_names)
 
-if (length(setdiff(sample_names, metadata_df$SampleName)) > 0) {
+missing_metadata <- setdiff(sample_names, metadata_df$SampleName)
+missing_metadata_report <- data.frame(
+  SampleName = missing_metadata,
+  Reason = rep("missing_metadata", length(missing_metadata)),
+  stringsAsFactors = FALSE
+)
+write.table(
+  missing_metadata_report,
+  file = file.path(args$out, "DroppedSamplesMissingMetadata.tsv"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
+if (length(missing_metadata) > 0) {
+  warning(
+    "Dropping ",
+    length(missing_metadata),
+    " sample(s) before decontamination because no metadata was found: ",
+    paste(missing_metadata, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+if (nrow(metadata_df) == 0) {
   stop(
-    paste("No metadata information found for:", paste(unlist(setdiff(sample_names, metadata_df$SampleName)), collapse = ", ")),
+    "No samples with metadata remain after dropping samples missing metadata.",
     call. = FALSE
   )
 }
 
 metadata_df <- validate_metadata_df(metadata_df, context = args$metadata)
+counts_df <- counts_df[as.character(metadata_df$SampleName), , drop = FALSE]
 
   # Use ProcessingBatch as batch for Step 1 of micRoclean if cases where it exists in metadata
   #   If it is missing from meta data, set to default value with one level, will automatically skip
