@@ -525,7 +525,8 @@ rule phyloseq_construction:
         metadata_sheet = METADATA,
         library_counts = f"{TRACK_DIR}/combined_read_counts.tsv"
     output:
-        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
+        phyloseq_object = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData",
+        missing_metadata_report = f"{PHYLOSEQ_DIR}/DroppedSamplesMissingMetadata.tsv"
     params:
         dump_dir = f"{REF_DIR}/taxdump",        
         unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
@@ -588,5 +589,4 @@ rule read_counts:
             --bacterial-names {input.bacterial_names} \
             --combined-counts {output.library_counts}
         """
-
 

@@ -57,6 +57,8 @@ parser$add_argument("--out",
 
 args <- parser$parse_args()
 
+dir.create(args$out, recursive = TRUE, showWarnings = FALSE)
+
 
 
 #----------------------------------------
@@ -88,10 +90,32 @@ sample_meta_data_df <- sample_meta_data_df |>
   filter(SampleName %in% sample_names)
 
 missing_metadata <- setdiff(sample_names, sample_meta_data_df$SampleName)
+missing_metadata_report <- data.frame(
+  SampleName = missing_metadata,
+  Reason = rep("missing_metadata", length(missing_metadata)),
+  stringsAsFactors = FALSE
+)
+write.table(
+  missing_metadata_report,
+  file = file.path(args$out, "DroppedSamplesMissingMetadata.tsv"),
+  sep = "\t",
+  quote = FALSE,
+  row.names = FALSE
+)
+
 if (length(missing_metadata) > 0) {
-  stop(
-    "Metadata file is missing sample(s): ",
+  warning(
+    "Dropping ",
+    length(missing_metadata),
+    " sample(s) before phyloseq construction because no metadata was found: ",
     paste(missing_metadata, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+if (nrow(sample_meta_data_df) == 0) {
+  stop(
+    "No samples with metadata remain after dropping samples missing metadata.",
     call. = FALSE
   )
 }
