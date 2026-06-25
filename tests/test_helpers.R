@@ -98,7 +98,10 @@ invisible(validate_metadata_df(sample_level_diff))
 
 bad_patient_meta <- as(sample_data(physeq), "data.frame")
 bad_patient_meta$Age[[2]] <- "61"
-expect_error(validate_metadata_df(bad_patient_meta), "inconsistent patient-level")
+expect_error(assert_patient_metadata_consistency(bad_patient_meta), "inconsistent patient-level")
+dropped_patient_meta <- suppressWarnings(validate_metadata_df(bad_patient_meta))
+stopifnot(!"P1" %in% as.character(dropped_patient_meta$PatientID))
+stopifnot(nrow(dropped_patient_meta) == nrow(bad_patient_meta) - 2)
 
 tmp_file <- file.path(tempdir(), "test_physeq.RData")
 saved_file <- save_physeq(physeq, tmp_file)
@@ -114,6 +117,16 @@ sample_data(legacy_physeq) <- sample_data(legacy_meta)
 legacy_loaded <- validate_physeq_metadata(legacy_physeq)
 legacy_loaded_meta <- as(sample_data(legacy_loaded), "data.frame")
 stopifnot(is.na(legacy_loaded_meta$Age[[1]]))
+
+inconsistent_physeq <- physeq
+inconsistent_meta <- as(sample_data(inconsistent_physeq), "data.frame")
+inconsistent_meta$Age[[2]] <- "61"
+sample_data(inconsistent_physeq) <- sample_data(inconsistent_meta)
+pruned_inconsistent <- suppressWarnings(validate_physeq_metadata(inconsistent_physeq))
+pruned_meta <- as(sample_data(pruned_inconsistent), "data.frame")
+stopifnot(!"P1" %in% as.character(pruned_meta$PatientID))
+stopifnot(nsamples(pruned_inconsistent) == nsamples(inconsistent_physeq) - 2)
+stopifnot(!any(c("SampleA_rep1", "SampleA_rep2") %in% sample_names(pruned_inconsistent)))
 
 merged <- merge_physeqs(list(physeq, physeq))
 stopifnot(inherits(merged, "phyloseq"))
@@ -189,10 +202,8 @@ expect_error(
 )
 bad_surv_meta <- as(sample_data(physeq), "data.frame")
 bad_surv_meta$SurvivalDays[[2]] <- 101
-expect_error(
-  validate_metadata_df(bad_surv_meta),
-  "inconsistent patient-level"
-)
+dropped_surv_meta <- suppressWarnings(validate_metadata_df(bad_surv_meta))
+stopifnot(!"P1" %in% as.character(dropped_surv_meta$PatientID))
 
 patient_physeq <- collapse_physeq_by_patient(physeq, patient_id_col = "PatientID")
 stopifnot(nsamples(patient_physeq) == length(unique(as(sample_data(physeq), "data.frame")$PatientID)))

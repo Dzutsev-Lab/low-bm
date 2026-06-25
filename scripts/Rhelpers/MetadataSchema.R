@@ -82,11 +82,11 @@ patient_consistency_columns <- function(metadata_df,
   setdiff(names(metadata_df), unique(c(patient_id_col, exclude)))
 }
 
-assert_patient_metadata_consistency <- function(metadata_df,
-                                                patient_id_col = "PatientID",
-                                                columns = NULL,
-                                                exclude = patient_consistency_excluded_columns,
-                                                context = "metadata") {
+patient_metadata_inconsistencies <- function(metadata_df,
+                                             patient_id_col = "PatientID",
+                                             columns = NULL,
+                                             exclude = patient_consistency_excluded_columns,
+                                             context = "metadata") {
   metadata_df <- as.data.frame(metadata_df, stringsAsFactors = FALSE)
   fail_missing_columns(names(metadata_df), patient_id_col, context)
 
@@ -97,13 +97,23 @@ assert_patient_metadata_consistency <- function(metadata_df,
 
   check_columns <- patient_consistency_columns(metadata_df, patient_id_col, exclude, columns)
   if (length(check_columns) == 0) {
-    return(invisible(TRUE))
+    return(data.frame(
+      PatientID = character(0),
+      column = character(0),
+      values = character(0),
+      stringsAsFactors = FALSE
+    ))
   }
 
   patient_ids <- as.character(metadata_df[[patient_id_col]])
   duplicated_patients <- unique(patient_ids[duplicated(patient_ids) | duplicated(patient_ids, fromLast = TRUE)])
   if (length(duplicated_patients) == 0) {
-    return(invisible(TRUE))
+    return(data.frame(
+      PatientID = character(0),
+      column = character(0),
+      values = character(0),
+      stringsAsFactors = FALSE
+    ))
   }
 
   issues <- list()
@@ -124,33 +134,105 @@ assert_patient_metadata_consistency <- function(metadata_df,
     }
   }
 
-  if (length(issues) > 0) {
-    issue_df <- do.call(rbind, issues)
-    preview_n <- min(10, nrow(issue_df))
-    preview <- paste(
-      paste0(
-        issue_df$PatientID[seq_len(preview_n)],
-        " / ",
-        issue_df$column[seq_len(preview_n)],
-        " = [",
-        issue_df$values[seq_len(preview_n)],
-        "]"
-      ),
-      collapse = "; "
-    )
-    more <- if (nrow(issue_df) > preview_n) paste0("; ... and ", nrow(issue_df) - preview_n, " more") else ""
+  if (length(issues) == 0) {
+    return(data.frame(
+      PatientID = character(0),
+      column = character(0),
+      values = character(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  do.call(rbind, issues)
+}
+
+format_patient_consistency_issues <- function(issue_df, preview_n = 10) {
+  if (is.null(issue_df) || nrow(issue_df) == 0) {
+    return("")
+  }
+  preview_n <- min(preview_n, nrow(issue_df))
+  preview <- paste(
+    paste0(
+      issue_df$PatientID[seq_len(preview_n)],
+      " / ",
+      issue_df$column[seq_len(preview_n)],
+      " = [",
+      issue_df$values[seq_len(preview_n)],
+      "]"
+    ),
+    collapse = "; "
+  )
+  more <- if (nrow(issue_df) > preview_n) paste0("; ... and ", nrow(issue_df) - preview_n, " more") else ""
+  paste0(preview, more)
+}
+
+assert_patient_metadata_consistency <- function(metadata_df,
+                                                patient_id_col = "PatientID",
+                                                columns = NULL,
+                                                exclude = patient_consistency_excluded_columns,
+                                                context = "metadata") {
+  issue_df <- patient_metadata_inconsistencies(
+    metadata_df,
+    patient_id_col = patient_id_col,
+    columns = columns,
+    exclude = exclude,
+    context = context
+  )
+  if (nrow(issue_df) > 0) {
     stop(
       context,
       " contains inconsistent patient-level value(s) within ",
       patient_id_col,
       ": ",
-      preview,
-      more,
+      format_patient_consistency_issues(issue_df),
       call. = FALSE
     )
   }
-
   invisible(TRUE)
+}
+
+drop_inconsistent_patient_metadata <- function(metadata_df,
+                                               patient_id_col = "PatientID",
+                                               columns = NULL,
+                                               exclude = patient_consistency_excluded_columns,
+                                               context = "metadata") {
+  metadata_df <- as.data.frame(metadata_df, stringsAsFactors = FALSE)
+  issue_df <- patient_metadata_inconsistencies(
+    metadata_df,
+    patient_id_col = patient_id_col,
+    columns = columns,
+    exclude = exclude,
+    context = context
+  )
+  if (nrow(issue_df) == 0) {
+    return(metadata_df)
+  }
+
+  patient_ids <- as.character(metadata_df[[patient_id_col]])
+  dropped_patients <- unique(issue_df$PatientID)
+  dropped_samples <- rownames(metadata_df)[patient_ids %in% dropped_patients]
+  warning(
+    context,
+    " contains inconsistent patient-level value(s) within ",
+    patient_id_col,
+    ". Dropping ",
+    length(dropped_patients),
+    " patient(s) and ",
+    length(dropped_samples),
+    " associated sample(s): ",
+    format_patient_consistency_issues(issue_df),
+    call. = FALSE
+  )
+
+  metadata_df <- metadata_df[!patient_ids %in% dropped_patients, , drop = FALSE]
+  if (nrow(metadata_df) == 0) {
+    stop(
+      context,
+      " has no samples remaining after dropping inconsistent patient-level entries.",
+      call. = FALSE
+    )
+  }
+  metadata_df
 }
 
 derive_control_status <- function(metadata_df) {
@@ -208,7 +290,7 @@ validate_metadata_df <- function(metadata_df,
   fail_missing_columns(names(metadata_df), required, context)
   metadata_df <- standardize_metadata_missing_df(metadata_df)
   fail_empty_required_values(metadata_df, required, context)
-  assert_patient_metadata_consistency(metadata_df, context = context)
+  metadata_df <- drop_inconsistent_patient_metadata(metadata_df, context = context)
 
   metadata_df <- derive_control_status(metadata_df)
   coerce_metadata_schema(metadata_df)
@@ -225,12 +307,15 @@ validate_physeq_metadata <- function(physeq,
   fail_missing_columns(names(metadata_df), required, context)
   metadata_df <- standardize_metadata_missing_df(metadata_df)
   fail_empty_required_values(metadata_df, required, context)
-  assert_patient_metadata_consistency(metadata_df, context = context)
+  metadata_df <- drop_inconsistent_patient_metadata(metadata_df, context = context)
 
   if (!"ControlStatus" %in% names(metadata_df)) {
     metadata_df <- derive_control_status(metadata_df)
   }
   metadata_df <- coerce_metadata_schema(metadata_df)
+  if (!all(phyloseq::sample_names(physeq) %in% rownames(metadata_df))) {
+    physeq <- phyloseq::prune_samples(rownames(metadata_df), physeq)
+  }
   phyloseq::sample_data(physeq) <- phyloseq::sample_data(metadata_df)
 
   physeq

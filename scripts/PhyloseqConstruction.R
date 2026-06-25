@@ -111,6 +111,7 @@ library_counts_df <- library_counts_df |>
 sample_meta_data_df <- sample_meta_data_df |>
   left_join(library_counts_df, by = "SampleName") |>
   column_to_rownames(var = "SampleName")
+raw_seq_table <- raw_seq_table[rownames(sample_meta_data_df), , drop = FALSE]
 
 #------------------------------------
 # Kraken Taxonomy Table Construction
