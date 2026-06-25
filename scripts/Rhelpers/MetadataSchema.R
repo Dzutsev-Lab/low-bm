@@ -82,6 +82,27 @@ patient_consistency_columns <- function(metadata_df,
   setdiff(names(metadata_df), unique(c(patient_id_col, exclude)))
 }
 
+patient_consistency_sample_mask <- function(metadata_df) {
+  metadata_df <- as.data.frame(metadata_df, stringsAsFactors = FALSE)
+
+  if ("SampleType" %in% names(metadata_df)) {
+    sample_type <- standardize_metadata_missing(metadata_df$SampleType)
+    return(!is_metadata_missing_like(sample_type) & !grepl("Control", as.character(sample_type)))
+  }
+
+  if ("ControlStatus" %in% names(metadata_df)) {
+    control_status <- standardize_metadata_missing(metadata_df$ControlStatus)
+    return(!is_metadata_missing_like(control_status) & as.character(control_status) == "PatientSample")
+  }
+
+  if ("IsControl" %in% names(metadata_df)) {
+    is_control <- as.logical(metadata_df$IsControl)
+    return(is.na(is_control) | !is_control)
+  }
+
+  rep(TRUE, nrow(metadata_df))
+}
+
 patient_metadata_inconsistencies <- function(metadata_df,
                                              patient_id_col = "PatientID",
                                              columns = NULL,
@@ -93,6 +114,17 @@ patient_metadata_inconsistencies <- function(metadata_df,
   metadata_df[[patient_id_col]] <- standardize_metadata_missing(metadata_df[[patient_id_col]])
   if (any(is_metadata_missing_like(metadata_df[[patient_id_col]]))) {
     stop(context, " contains empty value(s) in patient ID column: ", patient_id_col, call. = FALSE)
+  }
+
+  sample_mask <- patient_consistency_sample_mask(metadata_df)
+  metadata_df <- metadata_df[sample_mask, , drop = FALSE]
+  if (nrow(metadata_df) == 0) {
+    return(data.frame(
+      PatientID = character(0),
+      column = character(0),
+      values = character(0),
+      stringsAsFactors = FALSE
+    ))
   }
 
   check_columns <- patient_consistency_columns(metadata_df, patient_id_col, exclude, columns)
@@ -209,8 +241,10 @@ drop_inconsistent_patient_metadata <- function(metadata_df,
   }
 
   patient_ids <- as.character(metadata_df[[patient_id_col]])
+  sample_mask <- patient_consistency_sample_mask(metadata_df)
   dropped_patients <- unique(issue_df$PatientID)
-  dropped_samples <- rownames(metadata_df)[patient_ids %in% dropped_patients]
+  drop_rows <- sample_mask & patient_ids %in% dropped_patients
+  dropped_samples <- rownames(metadata_df)[drop_rows]
   warning(
     context,
     " contains inconsistent patient-level value(s) within ",
@@ -224,7 +258,7 @@ drop_inconsistent_patient_metadata <- function(metadata_df,
     call. = FALSE
   )
 
-  metadata_df <- metadata_df[!patient_ids %in% dropped_patients, , drop = FALSE]
+  metadata_df <- metadata_df[!drop_rows, , drop = FALSE]
   if (nrow(metadata_df) == 0) {
     stop(
       context,

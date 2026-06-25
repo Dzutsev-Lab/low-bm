@@ -96,6 +96,19 @@ sample_level_diff$SampleType[[2]] <- "Nontumor"
 sample_level_diff$TumorType <- c("HCC", "HCC-NT", "iCC-NT", "iCC-NT", "NegativeControl")
 invisible(validate_metadata_df(sample_level_diff))
 
+control_diff <- as(sample_data(physeq), "data.frame")
+control_extra <- control_diff["NegCtl", , drop = FALSE]
+rownames(control_extra) <- "NegCtl_rep2"
+control_extra$SampleName <- "NegCtl_rep2"
+control_extra$SampleID <- "NegCtl_rep2"
+control_extra$Age <- "90"
+control_extra$Gender <- "Male"
+control_diff <- rbind(control_diff, control_extra)
+control_validated <- validate_metadata_df(control_diff)
+stopifnot(nrow(control_validated) == nrow(control_diff))
+stopifnot(sum(as.character(control_validated$PatientID) == "Control") == 2)
+assert_patient_metadata_consistency(control_diff)
+
 bad_patient_meta <- as(sample_data(physeq), "data.frame")
 bad_patient_meta$Age[[2]] <- "61"
 expect_error(assert_patient_metadata_consistency(bad_patient_meta), "inconsistent patient-level")
