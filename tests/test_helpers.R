@@ -5,6 +5,7 @@ source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
 source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
 source(file.path("scripts", "Rhelpers", "LEfSeAnalysis.R"))
+source(file.path("scripts", "Rhelpers", "SurvivalAnalysis.R"))
 
 expect_error <- function(expr, pattern = NULL) {
   err <- tryCatch(
@@ -53,6 +54,10 @@ make_test_physeq <- function() {
     PatientID = c("P1", "P1", "P2", "P3", "Control"),
     ProcessingBatch = c("B1", "B1", "B2", "B2", "B2"),
     Host_mapped_reads = c(100, 200, 0, 300, 50),
+    SurvivalStatus = c(1, 1, 0, 1, 0),
+    SurvivalDays = c(100, 100, 200, 300, 400),
+    Age = c("60", "NA", "65", "70", "80"),
+    Gender = c("Female", "Female", "Male", "Female", "NA"),
     stringsAsFactors = FALSE,
     row.names = rownames(otu)
   )
@@ -82,7 +87,18 @@ physeq <- make_test_physeq()
 
 validated <- validate_metadata_df(as(sample_data(physeq), "data.frame"))
 stopifnot("ControlStatus" %in% names(validated))
+stopifnot(is.na(validated$Age[[2]]))
+stopifnot(is.na(validated$Gender[[5]]))
 expect_error(validate_metadata_df(data.frame(SampleName = "A")), "missing required")
+
+sample_level_diff <- as(sample_data(physeq), "data.frame")
+sample_level_diff$SampleType[[2]] <- "Nontumor"
+sample_level_diff$TumorType <- c("HCC", "HCC-NT", "iCC-NT", "iCC-NT", "NegativeControl")
+invisible(validate_metadata_df(sample_level_diff))
+
+bad_patient_meta <- as(sample_data(physeq), "data.frame")
+bad_patient_meta$Age[[2]] <- "61"
+expect_error(validate_metadata_df(bad_patient_meta), "inconsistent patient-level")
 
 tmp_file <- file.path(tempdir(), "test_physeq.RData")
 saved_file <- save_physeq(physeq, tmp_file)
@@ -90,6 +106,14 @@ stopifnot(saved_file == tmp_file)
 loaded <- load_physeq(tmp_file)
 stopifnot(inherits(loaded, "phyloseq"))
 stopifnot(nsamples(loaded) == nsamples(physeq))
+
+legacy_physeq <- physeq
+legacy_meta <- as(sample_data(legacy_physeq), "data.frame")
+legacy_meta$Age[[1]] <- "N/A"
+sample_data(legacy_physeq) <- sample_data(legacy_meta)
+legacy_loaded <- validate_physeq_metadata(legacy_physeq)
+legacy_loaded_meta <- as(sample_data(legacy_loaded), "data.frame")
+stopifnot(is.na(legacy_loaded_meta$Age[[1]]))
 
 merged <- merge_physeqs(list(physeq, physeq))
 stopifnot(inherits(merged, "phyloseq"))
@@ -138,6 +162,108 @@ stopifnot(inherits(prepared, "phyloseq"))
 bad_spec <- spec
 bad_spec$factor_levels <- list(SampleType = c("Tumor"))
 expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")), "absent")
+
+surv_meta <- prepare_survival_metadata(
+  as(sample_data(physeq), "data.frame"),
+  time_col = "SurvivalDays",
+  status_col = "SurvivalStatus",
+  patient_id_col = "PatientID",
+  covariates = c("Age", "Gender")
+)
+stopifnot(all(na.omit(surv_meta$.survival_status) %in% c(0, 1)))
+stopifnot(all(na.omit(surv_meta$.survival_time) > 0))
+stopifnot(is.na(surv_meta$Age[[2]]))
+stopifnot(is.na(surv_meta$Gender[[5]]))
+
+bad_surv_meta <- as(sample_data(physeq), "data.frame")
+bad_surv_meta$SurvivalDays[[1]] <- -1
+expect_error(
+  prepare_survival_metadata(bad_surv_meta, "SurvivalDays", "SurvivalStatus", "PatientID"),
+  "positive survival times"
+)
+bad_surv_meta <- as(sample_data(physeq), "data.frame")
+bad_surv_meta$SurvivalStatus[[1]] <- 2
+expect_error(
+  prepare_survival_metadata(bad_surv_meta, "SurvivalDays", "SurvivalStatus", "PatientID"),
+  "event/censor"
+)
+bad_surv_meta <- as(sample_data(physeq), "data.frame")
+bad_surv_meta$SurvivalDays[[2]] <- 101
+expect_error(
+  validate_metadata_df(bad_surv_meta),
+  "inconsistent patient-level"
+)
+
+patient_physeq <- collapse_physeq_by_patient(physeq, patient_id_col = "PatientID")
+stopifnot(nsamples(patient_physeq) == length(unique(as(sample_data(physeq), "data.frame")$PatientID)))
+stopifnot("P1" %in% sample_names(patient_physeq))
+patient_mat <- otu_samples_by_taxa(patient_physeq)
+stopifnot(patient_mat["P1", "ASV1"] == 15)
+
+survival_config <- normalize_survival_config(
+  list(
+    analyses = list(list(
+      name = "TestSurvival",
+      sample_filter = list(SampleType = "*"),
+      covariates = c("Age"),
+      tax_agg_level = "Genus",
+      pcoa_distance = "bray",
+      pcoa_axes = 2,
+      taxa_min_prevalence = 0,
+      taxa_min_mean_relative_abundance = 0.5,
+      min_n = 2,
+      min_events = 1
+    ))
+  ),
+  project_config = list()
+)
+survival_spec <- survival_config$analyses[[1]]
+feature_bundle <- build_patient_feature_matrix(patient_physeq, survival_spec, survival_config)
+stopifnot("alpha_Shannon" %in% names(feature_bundle$patient_features))
+stopifnot(any(grepl("^pcoa_bray_axis", names(feature_bundle$patient_features))))
+stopifnot(nrow(feature_bundle$taxa_filter_stats) == 2)
+retained_taxa <- feature_bundle$taxa_filter_stats$taxon[feature_bundle$taxa_filter_stats$retained]
+stopifnot(identical(retained_taxa, "g__GenusA"))
+
+if (requireNamespace("vegan", quietly = TRUE)) {
+  bray_pcoa <- build_pcoa_features(patient_physeq, tax_agg_level = "Genus", pcoa_distance = "bray", pcoa_axes = 1)
+  euclidean_pcoa <- build_pcoa_features(patient_physeq, tax_agg_level = "Genus", pcoa_distance = "euclidean", pcoa_axes = 1)
+  stopifnot(!isTRUE(all.equal(bray_pcoa$matrix[[1]], euclidean_pcoa$matrix[[1]])))
+}
+
+cox_test_df <- data.frame(
+  PatientID = paste0("P", 1:6),
+  .survival_time = c(100, 130, 160, 210, 250, 300),
+  .survival_status = c(1, 0, 1, 0, 1, 0),
+  FeatureA = c(0.2, 1.4, 0.8, 1.8, 1.1, 0.5),
+  Age = c("50", "NA", "61", "55", "72", "68"),
+  stringsAsFactors = FALSE
+)
+cox_without_age <- fit_cox_feature(
+  cox_test_df,
+  feature = "FeatureA",
+  feature_family = "test",
+  covariates = character(0),
+  min_n = 6,
+  min_events = 1
+)
+stopifnot(!is.null(cox_without_age$result))
+stopifnot(cox_without_age$result$n_used == 6)
+cox_with_age <- fit_cox_feature(
+  cox_test_df,
+  feature = "FeatureA",
+  feature_family = "test",
+  covariates = "Age",
+  min_n = 6,
+  min_events = 1
+)
+stopifnot(is.null(cox_with_age$result))
+stopifnot(cox_with_age$skip$n_used == 5)
+stopifnot(cox_with_age$skip$dropped_missing == 1)
+
+km_df <- km_group_data(cox_test_df, "FeatureA", cutpoint = "median")
+stopifnot(identical(levels(km_df$.km_group), c("Low", "High")))
+expect_error(km_group_data(transform(cox_test_df, FeatureA = 1), "FeatureA"), "cannot be split")
 
 lefse_prepared <- prepare_lefse_physeq(
   physeq,
