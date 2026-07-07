@@ -6,6 +6,7 @@ source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
 source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
 source(file.path("scripts", "Rhelpers", "LEfSeAnalysis.R"))
 source(file.path("scripts", "Rhelpers", "SurvivalAnalysis.R"))
+source(file.path("scripts", "Rhelpers", "AbundanceBarPlots.R"))
 
 expect_error <- function(expr, pattern = NULL) {
   err <- tryCatch(
@@ -156,6 +157,42 @@ stopifnot(ntaxa(glommed) == 2)
 rel <- counts_normalization(physeq, "RelAbund")
 rel_mat <- otu_samples_by_taxa(rel)
 stopifnot(all(abs(rowSums(rel_mat) - 1) < 1e-8))
+
+barplot_config <- normalize_abundance_barplot_config(
+  list(plots = list(list(name = "TestPlot", x = "SampleID"))),
+  project_config = list()
+)
+stopifnot(identical(barplot_config$plots[[1]]$norm_method, "noNorm"))
+
+barplot_spec <- list(
+  name = "TestPlot",
+  x = "SampleID",
+  facet = "SampleType",
+  sample_filter = list(SampleType = "*"),
+  tax_agg_level = "Genus",
+  fill_tax_level = "Genus",
+  taxa_display = "top_n",
+  top_n = 1,
+  norm_method = "noNorm",
+  pseudocount = 1
+)
+validate_barplot_metadata_columns(physeq, barplot_spec)
+expect_error(
+  validate_barplot_metadata_columns(physeq, modifyList(barplot_spec, list(facet = "MissingFacet"))),
+  "missing required"
+)
+
+glommed_for_barplot <- tax_glom_rename(physeq, "Genus")
+collapsed_barplot <- collapse_top_taxa(glommed_for_barplot, top_n = 1)
+stopifnot(ntaxa(collapsed_barplot) == 2)
+stopifnot("Other" %in% taxa_names(collapsed_barplot))
+stopifnot(all(rowSums(otu_samples_by_taxa(collapsed_barplot)) == rowSums(otu_samples_by_taxa(glommed_for_barplot))))
+
+prepared_top_n <- prepare_abundance_barplot_physeq(physeq, barplot_spec)
+stopifnot("Other" %in% taxa_names(prepared_top_n))
+prepared_all <- prepare_abundance_barplot_physeq(physeq, modifyList(barplot_spec, list(taxa_display = "all")))
+stopifnot(!"Other" %in% taxa_names(prepared_all))
+stopifnot(ntaxa(prepared_all) == ntaxa(glommed_for_barplot))
 
 expect_error(divide_by_sample_factor(physeq, "MissingColumn"), "missing required")
 host_norm <- suppressWarnings(divide_by_sample_factor(physeq, "Host_mapped_reads"))

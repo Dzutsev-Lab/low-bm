@@ -41,6 +41,29 @@ heatmap_violin:
   batch_adj: false
   limma_voom: false
 
+abundance_barplots:
+  norm_method: "noNorm"
+  pseudocount: 1
+  plots:
+    - name: "SampleType_Genus"
+      x: "SampleID"
+      facet: "SampleType"
+      sample_filter:
+        SampleType: ["Tumor", "Nontumor"]
+      tax_agg_level: "Genus"
+      fill_tax_level: "Genus"
+      taxa_display: "top_n"
+      top_n: 20
+
+    - name: "TumorType_Genus_AllTaxa"
+      x: "SampleID"
+      facet: "TumorType"
+      sample_filter:
+        SampleType: ["Tumor"]
+      tax_agg_level: "Genus"
+      fill_tax_level: "Genus"
+      taxa_display: "all"
+
 differential_abundance:
   methods: ["ANCOMBC"]
   tax_label_level: "Genus"
