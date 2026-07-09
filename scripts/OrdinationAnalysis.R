@@ -83,6 +83,13 @@ if (!is.null(args$analysis_config)) {
   ordination_config <- cfg$ordination %||% list()
 }
 
+is_missing_value <- function(x) {
+  is.null(x) ||
+    length(x) == 0 ||
+    all(is.na(x)) ||
+    all(!nzchar(trimws(as.character(x))))
+}
+
 trial_id <- if (!is.null(args$trialID)) {
   args$trialID
 } else if (!is.null(analysis_config_value(project_config, ordination_config, "trialID"))) {
@@ -104,17 +111,18 @@ norm_method <- if (!identical(args$norm_method, "noNorm")) args$norm_method else
 pseudocount <- analysis_config_value(project_config, ordination_config, "pseudocount", args$pseudocount)
 tax_agg_level <- if (!identical(args$tax_agg_level, "Genus")) args$tax_agg_level else analysis_config_value(project_config, ordination_config, "tax_agg_level", args$tax_agg_level)
 batch_adj_covar <- if (!is.null(args$batch_adj)) args$batch_adj else ordination_config$batch_adj_covar
+batch_adj_requested <- if (!is.null(args$batch_adj)) {
+  TRUE
+} else {
+  truthy_flag(ordination_config$batch_adj, default = !is_missing_value(batch_adj_covar))
+}
+if (!batch_adj_requested) {
+  batch_adj_covar <- NULL
+}
 batch_adj_method <- ordination_config$batch_adj_method %||% "LimmaRemoveBatchEffect"
 batch_adj_formula <- ordination_config$batch_adj_formula %||% "~ SampleType"
 dist_metrics <- if (!is.null(args$dist_metric)) args$dist_metric else ordination_config$dist_metrics
 techrep_avg <- isTRUE(args$techrep_avg) || truthy_flag(ordination_config$techrep_avg, default = FALSE)
-
-is_missing_value <- function(x) {
-  is.null(x) ||
-    length(x) == 0 ||
-    all(is.na(x)) ||
-    all(!nzchar(trimws(as.character(x))))
-}
 
 sanitize_path_component <- function(x, fallback = "group") {
   x <- as.character(x)
@@ -137,6 +145,7 @@ normalize_groupings <- function(config_groupings, cli_group_vars = NULL) {
         name = group_var,
         variable = group_var,
         sample_filter = NULL,
+        batch_adj = NULL,
         batch_adj_formula = NULL,
         batch_adj_method = NULL
       )
@@ -148,6 +157,7 @@ normalize_groupings <- function(config_groupings, cli_group_vars = NULL) {
       name = "SampleType",
       variable = "SampleType",
       sample_filter = NULL,
+      batch_adj = NULL,
       batch_adj_formula = NULL,
       batch_adj_method = NULL
     )))
@@ -160,6 +170,7 @@ normalize_groupings <- function(config_groupings, cli_group_vars = NULL) {
         name = variable,
         variable = variable,
         sample_filter = NULL,
+        batch_adj = NULL,
         batch_adj_formula = NULL,
         batch_adj_method = NULL
       ))
@@ -174,10 +185,15 @@ normalize_groupings <- function(config_groupings, cli_group_vars = NULL) {
       name = spec$name %||% variable,
       variable = variable,
       sample_filter = spec$sample_filter,
+      batch_adj = spec$batch_adj,
       batch_adj_formula = spec$batch_adj_formula,
       batch_adj_method = spec$batch_adj_method
     )
   })
+}
+
+resolve_batch_adj_requested <- function(grouping) {
+  truthy_flag(grouping$batch_adj, default = batch_adj_requested)
 }
 
 resolve_batch_adj_formula <- function(grouping) {
@@ -370,39 +386,44 @@ plot_alpha_diversity <- function(alpha_physeq, grouping, group_path, group_dirs)
 
 plot_pca <- function(norm_physeq, grouping, group_path, group_dirs) {
   
-  group_batch_method <- resolve_batch_adj_method(grouping)
-  group_batch_formula <- resolve_batch_adj_formula(grouping)
-  message(
-    "PCA batch adjustment for grouping '",
-    grouping$name,
-    "': batch = ",
-    if (is.null(batch_adj_covar) || isFALSE(batch_adj_covar) || is.na(batch_adj_covar) || batch_adj_covar == "") "none" else batch_adj_covar,
-    ", method = ",
-    group_batch_method,
-    ", design = ",
-    group_batch_formula
-  )
+  if (resolve_batch_adj_requested(grouping)) {
+    group_batch_method <- resolve_batch_adj_method(grouping)
+    group_batch_formula <- resolve_batch_adj_formula(grouping)
+    message(
+      "PCA batch adjustment for grouping '",
+      grouping$name,
+      "': batch = ",
+      if (is_missing_value(batch_adj_covar)) "none" else batch_adj_covar,
+      ", method = ",
+      group_batch_method,
+      ", design = ",
+      group_batch_formula
+    )
 
-  adjusted_physeq <- tryCatch(
-    batch_adjustment(
-      physeq = norm_physeq,
-      batch_column = batch_adj_covar,
-      method = group_batch_method,
-      design_formula = group_batch_formula
-    ),
-    error = function(e) {
-      warning(
-        "Skipping PCA grouping '",
-        grouping$name,
-        "' during batch adjustment: ",
-        conditionMessage(e),
-        call. = FALSE
-      )
-      NULL
+    adjusted_physeq <- tryCatch(
+      batch_adjustment(
+        physeq = norm_physeq,
+        batch_column = batch_adj_covar,
+        method = group_batch_method,
+        design_formula = group_batch_formula
+      ),
+      error = function(e) {
+        warning(
+          "Skipping PCA grouping '",
+          grouping$name,
+          "' during batch adjustment: ",
+          conditionMessage(e),
+          call. = FALSE
+        )
+        NULL
+      }
+    )
+    if (is.null(adjusted_physeq)) {
+      return(invisible(NULL))
     }
-  )
-  if (is.null(adjusted_physeq)) {
-    return(invisible(NULL))
+  } else {
+    message("PCA batch adjustment disabled for grouping '", grouping$name, "'.")
+    adjusted_physeq <- norm_physeq
   }
 
   if (techrep_avg) {
