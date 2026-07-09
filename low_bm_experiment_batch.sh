@@ -20,7 +20,8 @@ import csv
 import os
 import sys
 
-batch_table, task_id, run_config_dir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+batch_table, slurm_task_id, run_config_dir = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+row_index = slurm_task_id - 1
 canonical_cols = [
     "trialID",
     "trial_descript",
@@ -46,13 +47,13 @@ if has_header:
     with open(batch_table, newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         records = list(reader)
-    if task_id >= len(records):
-        raise SystemExit(f"SLURM_ARRAY_TASK_ID {task_id} is outside {len(records)} batch rows.")
-    row = {key: (records[task_id].get(key, "") or "").strip() for key in canonical_cols}
+    if row_index < 0 or row_index >= len(records):
+        raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(records)} batch rows.")
+    row = {key: (records[row_index].get(key, "") or "").strip() for key in canonical_cols}
 else:
-    if task_id >= len(rows):
-        raise SystemExit(f"SLURM_ARRAY_TASK_ID {task_id} is outside {len(rows)} batch rows.")
-    values = [field.strip() for field in rows[task_id]]
+    if row_index < 0 or row_index >= len(rows):
+        raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(rows)} batch rows.")
+    values = [field.strip() for field in rows[row_index]]
     if len(values) < 4:
         raise SystemExit("Legacy batch rows must contain trialID, trial_descript, exp_dir, metadata.")
     row = dict(zip(canonical_cols[:4], values[:4]))
