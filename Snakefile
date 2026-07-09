@@ -93,7 +93,58 @@ ADD_UNCLASSIFIED_PREFIX = config["add_unclassified_prefix"]
 # Helper Functions
 #------------------------------------
 
-# Sample Discovery
+# Raw FASTQ discovery
+RAW_FASTQ_RE = re.compile(r"^(?P<prefix>.+)_R(?P<read>[12])_001\.fastq(?:\.gz)?$")
+
+
+def parse_raw_fastq_name(path):
+    name = os.path.basename(path)
+    match = RAW_FASTQ_RE.match(name)
+    if not match:
+        return None
+
+    sample = match.group("prefix")
+    # Strip common Illumina fields from the end of the sample prefix.
+    # Examples:
+    #   sample_S1_R1_001.fastq.gz -> sample
+    #   sample_S1_L001_R1_001.fastq.gz -> sample
+    while True:
+        normalized = re.sub(r"_(?:S\d+|L\d{3})$", "", sample)
+        if normalized == sample:
+            break
+        sample = normalized
+
+    return sample, int(match.group("read"))
+
+
+def paired_raw_fastq_exists(r1_path):
+    name = os.path.basename(r1_path)
+    match = RAW_FASTQ_RE.match(name)
+    if not match or match.group("read") != "1":
+        return False
+
+    r2_prefix = match.group("prefix")
+    return any(
+        os.path.exists(os.path.join(RAW, f"{r2_prefix}_R2_001.{ext}"))
+        for ext in ("fastq", "fastq.gz")
+    )
+
+
+def raw_fastq_matches(sample, read):
+    candidates = []
+    for ext in ("fastq", "fastq.gz"):
+        pattern = os.path.join(RAW, f"{glob.escape(sample)}*_R{read}_001.{ext}")
+        candidates.extend(glob.glob(pattern))
+
+    matches = []
+    for candidate in candidates:
+        parsed = parse_raw_fastq_name(candidate)
+        if parsed == (sample, read):
+            matches.append(candidate)
+
+    return sorted(matches)
+
+
 def discover_samples():
     pats = [
         os.path.join(RAW, "*_R1_001.fastq"),
@@ -104,39 +155,32 @@ def discover_samples():
         r1s.extend(glob.glob(p))
     samples = []
     for r1 in sorted(r1s):
-        name = os.path.basename(r1)
-        base = name.replace("_R1_001.fastq.gz", "").replace("_R1_001.fastq", "")
-        # skip undertermined fastq
-        if "Undetermined" in base:
+        parsed = parse_raw_fastq_name(r1)
+        if parsed is None:
+            continue
+        sample, read = parsed
+        # skip Undetermined FASTQ
+        if "Undetermined" in sample:
             continue
         # require matching R2 (either gz or not)
-        r2a = os.path.join(RAW, f"{base}_R2_001.fastq")
-        r2b = os.path.join(RAW, f"{base}_R2_001.fastq.gz")
-        if os.path.exists(r2a) or os.path.exists(r2b):
-            base = re.sub(r"_S\d+$", "", base)
-            samples.append(base)
+        if read == 1 and paired_raw_fastq_exists(r1):
+            samples.append(sample)
     if not samples:
         raise ValueError(f"No samples found in {RAW} matching *_R1_001.fastq(.gz) with paired R2.")
-    return samples
+    return sorted(set(samples))
 
 
 # Input FASTQ Compression check
 #   checks if the input raw fastq need to be unzipped for input to raw normalization
 def pick_raw_fastq(wc, read):
-    file_path_patterns = [
-        os.path.join(RAW, f"{wc.s}_S*_R{read}_001.fastq"),
-        os.path.join(RAW, f"{wc.s}_S*_R{read}_001.fastq.gz")
-    ]
-    matches = []
-    for pattern in file_path_patterns:
-        matches.extend(glob.glob(pattern))
+    matches = raw_fastq_matches(wc.s, read)
 
     if len(matches) == 1:
         return matches[0]
     elif len(matches) == 0:
         raise ValueError(
             f"Missing raw FASTQ for sample {wc.s} read R{read}: "
-            f"{wc.s}_S*_R{read}_001.fastq(.gz)"
+            f"{wc.s}*_R{read}_001.fastq(.gz)"
         )
     else:
         raise ValueError(
@@ -589,4 +633,3 @@ rule read_counts:
             --bacterial-names {input.bacterial_names} \
             --combined-counts {output.library_counts}
         """
-
