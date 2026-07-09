@@ -1,4 +1,5 @@
-required_metadata_columns <- c("SampleName", "SampleID", "SampleType", "PatientID")
+required_metadata_columns <- c("SampleName", "SampleID", "SampleType")
+required_physeq_metadata_columns <- c("SampleID", "SampleType")
 metadata_missing_tokens <- c("", "NA", "N/A", "na", "n/a", "NaN", "nan", "NULL", "null", "None", "none")
 patient_consistency_excluded_columns <- c(
   "SampleName",
@@ -324,14 +325,16 @@ validate_metadata_df <- function(metadata_df,
   fail_missing_columns(names(metadata_df), required, context)
   metadata_df <- standardize_metadata_missing_df(metadata_df)
   fail_empty_required_values(metadata_df, required, context)
-  metadata_df <- drop_inconsistent_patient_metadata(metadata_df, context = context)
+  if ("PatientID" %in% names(metadata_df)) {
+    metadata_df <- drop_inconsistent_patient_metadata(metadata_df, context = context)
+  }
 
   metadata_df <- derive_control_status(metadata_df)
   coerce_metadata_schema(metadata_df)
 }
 
 validate_physeq_metadata <- function(physeq,
-                                     required = c("SampleID", "SampleType", "PatientID"),
+                                     required = required_physeq_metadata_columns,
                                      context = "phyloseq sample_data") {
   if (is.null(phyloseq::sample_data(physeq, errorIfNULL = FALSE))) {
     stop("phyloseq object is missing sample_data.", call. = FALSE)
@@ -341,7 +344,9 @@ validate_physeq_metadata <- function(physeq,
   fail_missing_columns(names(metadata_df), required, context)
   metadata_df <- standardize_metadata_missing_df(metadata_df)
   fail_empty_required_values(metadata_df, required, context)
-  metadata_df <- drop_inconsistent_patient_metadata(metadata_df, context = context)
+  if ("PatientID" %in% names(metadata_df)) {
+    metadata_df <- drop_inconsistent_patient_metadata(metadata_df, context = context)
+  }
 
   if (!"ControlStatus" %in% names(metadata_df)) {
     metadata_df <- derive_control_status(metadata_df)

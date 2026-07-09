@@ -92,6 +92,16 @@ stopifnot(is.na(validated$Age[[2]]))
 stopifnot(is.na(validated$Gender[[5]]))
 expect_error(validate_metadata_df(data.frame(SampleName = "A")), "missing required")
 
+no_patient_meta <- as(sample_data(physeq), "data.frame")
+no_patient_meta$PatientID <- NULL
+no_patient_validated <- validate_metadata_df(no_patient_meta)
+stopifnot(!"PatientID" %in% names(no_patient_validated))
+
+no_patient_physeq <- physeq
+sample_data(no_patient_physeq) <- sample_data(no_patient_meta)
+no_patient_physeq <- validate_physeq_metadata(no_patient_physeq)
+stopifnot(inherits(no_patient_physeq, "phyloseq"))
+
 sample_level_diff <- as(sample_data(physeq), "data.frame")
 sample_level_diff$SampleType[[2]] <- "Nontumor"
 sample_level_diff$TumorType <- c("HCC", "HCC-NT", "iCC-NT", "iCC-NT", "NegativeControl")
