@@ -31,6 +31,9 @@ canonical_cols = [
     "include_processing",
     "include_analysis",
 ]
+optional_config_cols = [
+    "process_umis",
+]
 
 def truthy(value):
     return str(value).strip().lower() not in {"", "0", "false", "f", "no", "n"}
@@ -50,6 +53,9 @@ if has_header:
     if row_index < 0 or row_index >= len(records):
         raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(records)} batch rows.")
     row = {key: (records[row_index].get(key, "") or "").strip() for key in canonical_cols}
+    for key in optional_config_cols:
+        if key in (reader.fieldnames or []):
+            row[key] = (records[row_index].get(key, "") or "").strip()
 else:
     if row_index < 0 or row_index >= len(rows):
         raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(rows)} batch rows.")
@@ -78,7 +84,11 @@ def yaml_quote(value):
     return f'"{value}"'
 
 with open(run_config_file, "w", newline="\n") as out:
-    for key in canonical_cols:
+    config_cols = canonical_cols + [
+        key for key in optional_config_cols
+        if row.get(key, "") != ""
+    ]
+    for key in config_cols:
         default = "true" if key in {"include_processing", "include_analysis"} else ""
         out.write(f"{key}: {yaml_quote(row.get(key, default))}\n")
 

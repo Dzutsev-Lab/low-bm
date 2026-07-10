@@ -1,3 +1,3 @@
-trialID	trial_descript	exp_dir	metadata	batch_label	include_processing	include_analysis
-010126.1	example_batch1	ExampleBatch1	metadata/example_batch1.xlsx	batch1	true	true
-010126.2	example_batch2	ExampleBatch2	metadata/example_batch2.xlsx	batch2	true	true
+trialID	trial_descript	exp_dir	metadata	batch_label	include_processing	include_analysis	process_umis
+010126.1	example_batch1	ExampleBatch1	metadata/example_batch1.xlsx	batch1	true	true	true
+010126.2	example_batch2_noUMI	ExampleBatch2	metadata/example_batch2.xlsx	batch2	true	true	false

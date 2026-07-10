@@ -40,6 +40,24 @@ TRACK_DIR = f"{OUT_DIR}/Tracking"
 LOG_DIR = f"{OUT_DIR}/Logs"
 
 # Sequencing metadata
+def parse_bool(value, default=True, name="value"):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+
+    text = str(value).strip().lower()
+    if text == "":
+        return default
+    if text in {"1", "true", "t", "yes", "y"}:
+        return True
+    if text in {"0", "false", "f", "no", "n"}:
+        return False
+    raise ValueError(f"Invalid boolean for {name}: {value!r}")
+
+PROCESS_UMIS = parse_bool(config.get("process_umis"), default=True, name="process_umis")
+config["process_umis"] = PROCESS_UMIS
+
 R1_PRIMER = config["r1_primer"]
 R2_PRIMER = config["r2_primer"]
 R1_PRIMER_MOTIF_LEN = config["r1_primer_motif_len"]
@@ -188,6 +206,12 @@ def pick_raw_fastq(wc, read):
             f"{matches}"
         )
 
+
+def dada_input_reads():
+    if PROCESS_UMIS:
+        return expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
+    return expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES)
+
 #----------------------------
 # All Rule
 #----------------------------
@@ -278,71 +302,96 @@ rule norm_fastq:
 #-----------------------------------------------
 # 01 UMI extraction from R2 and Select R1 Reads
 #-----------------------------------------------
-rule umi_selection:
-    input:
-        r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
-        r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
-    output:
-        sel_umi_r1 = temp(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq"),
-        count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
-    params:
-        r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
-        r2_primer_skip_flag = "--r2-primer-skip" if R2_PRIMER_SKIP else "",
-        poly_G_threshold = POLY_G_THRESHOLD
-    threads: 1
-    log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
-    shell:
-        r"""
-        set -euo pipefail
-        exec 2> "{log}"
+if PROCESS_UMIS:
+    rule umi_selection:
+        input:
+            r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
+            r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
+        output:
+            sel_umi_r1 = temp(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq"),
+            count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
+        params:
+            r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
+            r2_primer_skip_flag = "--r2-primer-skip" if R2_PRIMER_SKIP else "",
+            poly_G_threshold = POLY_G_THRESHOLD
+        threads: 1
+        log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
+        conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+        shell:
+            r"""
+            set -euo pipefail
+            exec 2> "{log}"
 
-        python3 scripts/UMISelection.py \
-            --sample-name "{wildcards.s}" \
-            --r1 "{input.r1}" \
-            --r2 "{input.r2}" \
-            --r2-primer-motif "{params.r2_primer_motif}" \
-            {params.r2_primer_skip_flag} \
-            --poly-G-threshold {params.poly_G_threshold} \
-            --umi-len "{UMI_LEN}" \
-            --max-offset "{MAX_OFFSET}" \
-            --out-count-summary "{output.count_summary}" \
-            --out-umi-r1 "{output.sel_umi_r1}"
-        """
+            python3 scripts/UMISelection.py \
+                --sample-name "{wildcards.s}" \
+                --r1 "{input.r1}" \
+                --r2 "{input.r2}" \
+                --r2-primer-motif "{params.r2_primer_motif}" \
+                {params.r2_primer_skip_flag} \
+                --poly-G-threshold {params.poly_G_threshold} \
+                --umi-len "{UMI_LEN}" \
+                --max-offset "{MAX_OFFSET}" \
+                --out-count-summary "{output.count_summary}" \
+                --out-umi-r1 "{output.sel_umi_r1}"
+            """
 
 
-#----------------------------
-# 02 UMI Deduplication
-#----------------------------
-rule umi_dedup:
-    input:
-        selected_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
-    output:
-        umi_dedup_reads = temp(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq"),
-    params:
-        AmpUMI_regex = "^" + ("I" * UMI_LEN)
-    threads: 8
-    log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.{{s}}.log"
-    conda:  f"{CONDA_ENV_DIR}/AmpUMI-env"
-    shell:
-        r"""
-        set -euo pipefail
-        exec > {log} 2>&1
+    #----------------------------
+    # 02 UMI Deduplication
+    #----------------------------
+    rule umi_dedup:
+        input:
+            selected_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
+        output:
+            umi_dedup_reads = temp(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq"),
+        params:
+            AmpUMI_regex = "^" + ("I" * UMI_LEN)
+        threads: 8
+        log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.{{s}}.log"
+        conda:  f"{CONDA_ENV_DIR}/AmpUMI-env"
+        shell:
+            r"""
+            set -euo pipefail
+            exec > {log} 2>&1
 
-        # ---- Check if Empty FASTQ ----
-        n_lines=$(wc -l < {input.selected_umi_r1})
+            # ---- Check if Empty FASTQ ----
+            n_lines=$(wc -l < {input.selected_umi_r1})
 
-        if [[ "$n_lines" -eq 0 ]]; then
-            echo "Input FASTQ ({input.selected_umi_r1}) is empty - skipping AmpUMI"
-            : > {output.umi_dedup_reads}
-        else
-            echo "Running AmpUMI on $n_lines lines from {input.selected_umi_r1}"
-            AmpUMI Process\
-                --fastq {input.selected_umi_r1} \
-                --fastq_out {output.umi_dedup_reads} \
-                --umi_regex "{params.AmpUMI_regex}"
-        fi
-        """
+            if [[ "$n_lines" -eq 0 ]]; then
+                echo "Input FASTQ ({input.selected_umi_r1}) is empty - skipping AmpUMI"
+                : > {output.umi_dedup_reads}
+            else
+                echo "Running AmpUMI on $n_lines lines from {input.selected_umi_r1}"
+                AmpUMI Process\
+                    --fastq {input.selected_umi_r1} \
+                    --fastq_out {output.umi_dedup_reads} \
+                    --umi_regex "{params.AmpUMI_regex}"
+            fi
+            """
+else:
+    rule no_umi_count_summary:
+        input:
+            r1 = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
+        output:
+            count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
+        threads: 1
+        log: f"{LOG_DIR}/01_no_umi_count_summary/01_no_umi_count_summary.{{s}}.log"
+        conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+        shell:
+            r"""
+            set -euo pipefail
+            exec > "{log}" 2>&1
+
+            n_lines=$(wc -l < "{input.r1}")
+            if [[ $((n_lines % 4)) -ne 0 ]]; then
+                echo "Input FASTQ ({input.r1}) has $n_lines lines, not a multiple of 4."
+                exit 1
+            fi
+
+            reads=$((n_lines / 4))
+            printf "SampleID\tRaw_reads\tSelected_reads\n%s\t%s\t%s\n" \
+                "{wildcards.s}" "$reads" "$reads" > "{output.count_summary}"
+            """
 
 #----------------------------
 # 03 Dada Denoising
@@ -350,7 +399,7 @@ rule umi_dedup:
 rule dada_denoising:
     input: 
         sample_names = f"{OUT_DIR}/sample.names",
-        umi_dedup_reads = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
+        dada_reads = dada_input_reads()
     output:
         filtered_reads = temp(expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES)),
         seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
@@ -376,7 +425,7 @@ rule dada_denoising:
         exec > "{log}" 2>&1 
 
         Rscript scripts/DadaASVFilter.R \
-            --fqs {input.umi_dedup_reads} \
+            --fqs {input.dada_reads} \
             --sample-names {input.sample_names} \
             --filtered-fqs {output.filtered_reads} \
             --err-plt {output.seq_err_plot} \

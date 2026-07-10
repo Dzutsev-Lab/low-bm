@@ -26,6 +26,10 @@ bact16s_ref:  "Ref_Data/all.rrna.bacteria"
 #--------------------------
 # UMI SELECTION PARAMETERS
 #--------------------------
+# Set to false for libraries constructed without UMIs. When false, the pipeline
+# skips UMI selection/deduplication and feeds normalized raw R1 reads to DADA2.
+process_umis: true
+
 r1_primer: "CCTACGGGNGGCWGCAG"
 r2_primer: "GGACTACHVGGGTATCTAATCC"
 
