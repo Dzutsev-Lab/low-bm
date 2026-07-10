@@ -52,9 +52,29 @@ if has_header:
         records = list(reader)
     if row_index < 0 or row_index >= len(records):
         raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(records)} batch rows.")
+    fieldnames = reader.fieldnames or []
+    missing_cols = [key for key in canonical_cols if key not in fieldnames]
+    if missing_cols:
+        suspicious = [
+            field for field in fieldnames
+            if any(key in field for key in canonical_cols + optional_config_cols)
+            and field not in canonical_cols
+            and field not in optional_config_cols
+        ]
+        hint = ""
+        if suspicious:
+            hint = (
+                " Suspicious header value(s): "
+                + ", ".join(repr(field) for field in suspicious)
+                + ". Check that columns are separated by tabs, not spaces."
+            )
+        raise SystemExit(
+            f"Missing required batch table column(s): {', '.join(missing_cols)}."
+            + hint
+        )
     row = {key: (records[row_index].get(key, "") or "").strip() for key in canonical_cols}
     for key in optional_config_cols:
-        if key in (reader.fieldnames or []):
+        if key in fieldnames:
             row[key] = (records[row_index].get(key, "") or "").strip()
 else:
     if row_index < 0 or row_index >= len(rows):
