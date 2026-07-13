@@ -16,8 +16,9 @@ project:
   # Required unless you provide project.batch_table instead.
   compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
 
-  # Required for exporting selected ASVs to FASTA before BLAST.
-  compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
+  # Optional. If omitted, BLASTCandidatePreparation.R will look for
+  # MergedASV.fasta or <trialID>_ASV.fasta beside compiled_physeq.
+  # compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
 
   # Used as the default taxonomic rank for candidate selection.
   tax_agg_level: "Genus"

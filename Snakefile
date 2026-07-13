@@ -217,7 +217,8 @@ def dada_input_reads():
 #----------------------------
 rule all:
     input:
-        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData"
+        phyloseq_image = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_physeq.RData",
+        asv_fasta = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_ASV.fasta"
 
 rule write_effective_config:
     output:
@@ -554,6 +555,20 @@ rule decontamination_filter:
         set -euo pipefail
         exec > "{log}" 2>&1
         seqtk subseq "{input.bacterial_ASV_fa}" "{input.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
+        """
+
+rule canonical_asv_fasta:
+    input:
+        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+    output:
+        asv_fasta = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_ASV.fasta"
+    log: f"{LOG_DIR}/07.3_canonical_asv_fasta.log"
+    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+    shell:
+        r"""
+        set -euo pipefail
+        exec > "{log}" 2>&1
+        cp "{input.decontaminated_ASV_fa}" "{output.asv_fasta}"
         """
 
 #--------------------------------------

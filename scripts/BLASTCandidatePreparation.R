@@ -7,6 +7,7 @@ library(argparse)
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
 source(file.path("scripts", "Rhelpers", "TaxaSelection.R"))
+source(file.path("scripts", "Rhelpers", "ASVFasta.R"))
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
@@ -224,7 +225,7 @@ export_significant_taxon_asvs <- function(ps,
                                           sig_taxa_by_comparison,
                                           out_dir,
                                           taxa_level_col = "Genus") {
-  all_asv_fasta <- readDNAStringSet(asv_fasta)
+  all_asv_fasta <- read_merged_asv_fasta(asv_fasta)
 
   tax_df <- as.data.frame(as(tax_table(ps), "matrix"), stringsAsFactors = FALSE)
   tax_df <- rownames_to_column(tax_df, "ASVid")
@@ -291,7 +292,7 @@ export_significant_taxon_asvs <- function(ps,
           taxa_level_col,
           " '",
           taxon,
-          "' because they are missing from the compiled ASV FASTA.",
+          "' because they are missing from the ASV FASTA input(s).",
           call. = FALSE
         )
       }
@@ -388,6 +389,8 @@ if (!is.null(args$analysis_config)) {
   candidate_sample_filter <- blast_config$candidate_sample_filter %||% blast_config$sample_filter
   candidate_norm_method <- blast_config$candidate_norm_method %||% "noNorm"
   candidate_pseudocount <- blast_config$candidate_pseudocount %||% project_config$pseudocount %||% 1
+  asv_fasta_project_config <- project_config
+  asv_fasta_base_dir <- project_config$base_dir %||% args$base_dir
 } else {
   trialID <- args$trialID
   io_dir <- args$io_dir
@@ -401,15 +404,25 @@ if (!is.null(args$analysis_config)) {
   candidate_sample_filter <- NULL
   candidate_norm_method <- args$candidate_norm_method %||% "noNorm"
   candidate_pseudocount <- args$candidate_pseudocount %||% 1
+  asv_fasta_project_config <- list(
+    trialID = trialID,
+    compiled_physeq = args$compiled_physeq,
+    compiled_asv_fasta = compiled_asv_fasta
+  )
+  asv_fasta_base_dir <- args$base_dir
 }
+
+asv_fasta_paths <- resolve_project_asv_fastas(
+  project_config = asv_fasta_project_config,
+  base_dir = asv_fasta_base_dir
+)
 
 required_input <- list(
   trialID = trialID,
   io_dir = io_dir,
   candidate_comparisons = candidate_comparisons,
   candidate_source = candidate_source,
-  taxa_level = taxa_level,
-  compiled_asv_fasta = compiled_asv_fasta
+  taxa_level = taxa_level
 )
 fail_missing_input(required_input, "BLAST candidate preparation input")
 
@@ -423,8 +436,8 @@ if (candidate_source == "differential_abundance") {
   )
 }
 
-if (!file.exists(compiled_asv_fasta)) {
-  stop("Missing compiled ASV FASTA: ", compiled_asv_fasta, call. = FALSE)
+if (length(asv_fasta_paths) == 0) {
+  stop(format_asv_fasta_resolution_error(asv_fasta_paths), call. = FALSE)
 }
 
 CompPhyseq <- load_input_physeq()
@@ -452,7 +465,7 @@ if (candidate_source == "differential_abundance") {
 
 export_significant_taxon_asvs(
   ps = CompPhyseq,
-  asv_fasta = compiled_asv_fasta,
+  asv_fasta = asv_fasta_paths,
   sig_taxa_by_comparison = sig_taxa_by_comparison,
   out_dir = io_dir,
   taxa_level_col = taxa_level

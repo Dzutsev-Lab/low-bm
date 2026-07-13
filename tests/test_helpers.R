@@ -2,6 +2,7 @@ library(phyloseq)
 
 source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+source(file.path("scripts", "Rhelpers", "ASVFasta.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
 source(file.path("scripts", "Rhelpers", "TaxaSelection.R"))
 source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
@@ -134,6 +135,79 @@ stopifnot(saved_file == tmp_file)
 loaded <- load_physeq(tmp_file)
 stopifnot(inherits(loaded, "phyloseq"))
 stopifnot(nsamples(loaded) == nsamples(physeq))
+
+asv_test_dir <- tempfile("asv_fasta_paths_")
+dir.create(asv_test_dir, recursive = TRUE)
+write_test_fasta <- function(path, seqs) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  fasta <- Biostrings::DNAStringSet(unname(seqs))
+  names(fasta) <- names(seqs)
+  Biostrings::writeXStringSet(fasta, filepath = path)
+}
+
+explicit_compiled_fasta <- file.path(asv_test_dir, "ExplicitMerged.fasta")
+explicit_asv_fasta <- file.path(asv_test_dir, "ExplicitSingle.fasta")
+trial_dir <- file.path(asv_test_dir, "010126.1_batch1")
+canonical_asv_fasta <- file.path(trial_dir, "010126.1_ASV.fasta")
+override_asv_fasta <- file.path(asv_test_dir, "override", "batch2.ASV.fasta")
+write_test_fasta(explicit_compiled_fasta, c(ASV_1 = "ACGT"))
+write_test_fasta(explicit_asv_fasta, c(ASV_2 = "TGCA"))
+write_test_fasta(canonical_asv_fasta, c(ASV_3 = "AAAA"))
+write_test_fasta(override_asv_fasta, c(ASV_4 = "CCCC"))
+
+stopifnot(identical(
+  as.character(resolve_project_asv_fastas(list(compiled_asv_fasta = explicit_compiled_fasta), base_dir = asv_test_dir)),
+  explicit_compiled_fasta
+))
+stopifnot(identical(
+  as.character(resolve_project_asv_fastas(list(asv_fasta = explicit_asv_fasta), base_dir = asv_test_dir)),
+  explicit_asv_fasta
+))
+stopifnot(identical(
+  as.character(resolve_project_asv_fastas(
+    list(trialID = "010126.1", compiled_physeq = file.path(trial_dir, "010126.1_physeq.RData")),
+    base_dir = asv_test_dir
+  )),
+  canonical_asv_fasta
+))
+
+asv_batch_table <- file.path(asv_test_dir, "batch_table.tsv")
+writeLines(
+  c(
+    paste(
+      c(
+        "trialID",
+        "trial_descript",
+        "exp_dir",
+        "metadata",
+        "batch_label",
+        "include_processing",
+        "include_analysis",
+        "asv_fasta_path"
+      ),
+      collapse = "\t"
+    ),
+    paste(c("010126.1", "batch1", "exp1", "metadata1.xlsx", "batch1", "true", "true", ""), collapse = "\t"),
+    paste(c("010126.2", "batch2", "exp2", "metadata2.xlsx", "batch2", "true", "true", override_asv_fasta), collapse = "\t")
+  ),
+  asv_batch_table
+)
+resolved_batch_fastas <- resolve_project_asv_fastas(
+  list(batch_table = asv_batch_table),
+  base_dir = asv_test_dir
+)
+stopifnot(identical(as.character(resolved_batch_fastas), c(canonical_asv_fasta, override_asv_fasta)))
+
+dup_fasta <- file.path(asv_test_dir, "dup.ASV.fasta")
+bad_dup_fasta <- file.path(asv_test_dir, "bad_dup.ASV.fasta")
+write_test_fasta(dup_fasta, c(ASV_1 = "ACGT", ASV_5 = "GGGG"))
+write_test_fasta(bad_dup_fasta, c(ASV_1 = "TTTT"))
+merged_fasta <- read_merged_asv_fasta(c(explicit_compiled_fasta, dup_fasta))
+stopifnot(identical(names(merged_fasta), c("ASV_1", "ASV_5")))
+expect_error(
+  read_merged_asv_fasta(c(explicit_compiled_fasta, bad_dup_fasta)),
+  "conflicting sequences"
+)
 
 legacy_physeq <- physeq
 legacy_meta <- as(sample_data(legacy_physeq), "data.frame")
