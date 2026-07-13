@@ -9,7 +9,9 @@ Usage:
   bash scripts/BLASTWrapper.sh <blast_analysis_dir> <reference_db> <comparison> [comparison ...]
 
 Config mode reads blast_confirmation from analysis_config.yaml and writes BLAST hits
-inside <io_dir>/BlastAnalysis/<comparison>/<taxon>/.
+inside <io_dir>/BlastAnalysis/<comparison>/<taxon>/. In config mode,
+blast_confirmation.candidate_comparisons is preferred over the legacy
+blast_confirmation.DA_comparisons.
 USAGE
 }
 
@@ -39,10 +41,14 @@ is_missing <- function(x) {
   is.null(x) || length(x) == 0 || all(is.na(x)) || all(!nzchar(trimws(as.character(x))))
 }
 io_dir <- analysis_output_dir(project, blast, section_keys = c("io_dir", "output_dir", "out_dir"))
-required <- c("DA_comparisons", "reference_db")
+comparisons <- config_value(blast, "candidate_comparisons") %||% config_value(blast, "DA_comparisons")
+required <- c("reference_db")
 missing <- required[vapply(required, function(k) is_missing(config_value(blast, k)), logical(1))]
 if (is_missing(io_dir)) {
   missing <- c("project.output_dir or blast_confirmation.io_dir", missing)
+}
+if (is_missing(comparisons)) {
+  missing <- c("blast_confirmation.candidate_comparisons or blast_confirmation.DA_comparisons", missing)
 }
 if (length(missing) > 0) {
   stop("blast_confirmation is missing required field(s): ", paste(missing, collapse = ", "), call. = FALSE)
@@ -56,7 +62,7 @@ emit("REFERENCE_DB", config_value(blast, "reference_db"))
 emit("REF_BASE_DIR", config_value(blast, "ref_base_dir") %||% "Ref_Data")
 emit("NUM_THREADS", config_value(blast, "num_threads"))
 emit("MAX_TARGET_SEQS", config_value(blast, "max_target_seqs") %||% 5)
-for (comparison in config_value(blast, "DA_comparisons")) {
+for (comparison in comparisons) {
   emit("COMPARISON", comparison)
 }
 ' "$analysis_config"

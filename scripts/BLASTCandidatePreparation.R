@@ -6,6 +6,7 @@ library(argparse)
 
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+source(file.path("scripts", "Rhelpers", "TaxaSelection.R"))
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
@@ -19,9 +20,30 @@ parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
                     help = "Differential abundance comparisons to pull significant taxa from")
+parser$add_argument("--candidate-comparisons",
+                    type = "character",
+                    nargs = "+",
+                    help = "Candidate comparison directories to create; defaults to --DA-comparisons")
+parser$add_argument("--candidate-source",
+                    type = "character",
+                    default = NULL,
+                    choices = c("differential_abundance", "top_abundance"),
+                    help = "How to select taxa for BLAST confirmation")
 parser$add_argument("--DA-method",
                     type = "character",
                     help = "Differential abundance method used to perform comparisons")
+parser$add_argument("--top-n-taxa",
+                    type = "integer",
+                    default = NULL,
+                    help = "Number of top-abundance taxa to select when --candidate-source top_abundance")
+parser$add_argument("--candidate-norm-method",
+                    type = "character",
+                    default = NULL,
+                    help = "Normalization method used only for top-abundance taxon selection")
+parser$add_argument("--candidate-pseudocount",
+                    type = "double",
+                    default = NULL,
+                    help = "Pseudocount used with --candidate-norm-method for top-abundance selection")
 parser$add_argument("--compiled-asv-fasta",
                     type = "character",
                     help = "FASTA file with all ASV sequences using ASV IDs as headers")
@@ -138,6 +160,63 @@ read_significant_taxa <- function(io_dir, DA_method, trialID, comparisons) {
   }
 
   sig_taxa_by_comparison
+}
+
+resolve_candidate_comparisons <- function(candidate_comparisons, DA_comparisons) {
+  comparisons <- candidate_comparisons %||% DA_comparisons
+  comparisons <- as.character(unlist(comparisons, use.names = FALSE))
+  comparisons <- comparisons[!is.na(comparisons) & nzchar(trimws(comparisons))]
+  unique(comparisons)
+}
+
+apply_candidate_sample_filter <- function(ps, sample_filter = NULL) {
+  if (is.null(sample_filter) || length(sample_filter) == 0) {
+    return(prune_empty_physeq(ps))
+  }
+
+  prune_empty_physeq(apply_sample_filter(ps, sample_filter))
+}
+
+read_top_abundance_taxa <- function(ps,
+                                    comparisons,
+                                    taxa_level_col = "Genus",
+                                    top_n_taxa = 10,
+                                    norm_method = "noNorm",
+                                    pseudocount = 1) {
+  selection_ps <- tax_glom_rename(ps, taxa_level_col)
+  selection_ps <- prune_empty_physeq(selection_ps)
+  selection_ps <- counts_normalization(
+    selection_ps,
+    norm_method = norm_method,
+    pseudocount = pseudocount
+  )
+  selection_ps <- prune_empty_physeq(selection_ps)
+
+  top_taxa <- select_top_taxa_by_abundance(
+    selection_ps,
+    top_n = top_n_taxa,
+    positive_only = TRUE
+  )
+
+  if (length(top_taxa) == 0) {
+    stop("No positive-abundance taxa were available for BLAST candidate selection.", call. = FALSE)
+  }
+
+  message(
+    "Selected top ",
+    length(top_taxa),
+    " ",
+    taxa_level_col,
+    " candidate(s): ",
+    paste(top_taxa, collapse = ", ")
+  )
+
+  out <- vector("list", length(comparisons))
+  names(out) <- comparisons
+  for (comparison in comparisons) {
+    out[[comparison]] <- top_taxa
+  }
+  out
 }
 
 export_significant_taxon_asvs <- function(ps,
@@ -299,41 +378,77 @@ export_significant_taxon_asvs <- function(ps,
 if (!is.null(args$analysis_config)) {
   trialID <- analysis_config_value(project_config, blast_config, "trialID")
   io_dir <- analysis_output_dir(project_config, blast_config, section_keys = c("io_dir", "output_dir", "out_dir"))
+  candidate_source <- blast_config$candidate_source %||% "differential_abundance"
+  candidate_comparisons <- resolve_candidate_comparisons(blast_config$candidate_comparisons, blast_config$DA_comparisons)
   DA_comparisons <- blast_config$DA_comparisons
   DA_method <- blast_config$DA_method
   taxa_level <- analysis_config_value(project_config, blast_config, "taxa_level", analysis_config_value(project_config, blast_config, "tax_agg_level", "Genus"))
   compiled_asv_fasta <- project_config$compiled_asv_fasta
+  top_n_taxa <- blast_config$top_n_taxa %||% 10
+  candidate_sample_filter <- blast_config$candidate_sample_filter %||% blast_config$sample_filter
+  candidate_norm_method <- blast_config$candidate_norm_method %||% "noNorm"
+  candidate_pseudocount <- blast_config$candidate_pseudocount %||% project_config$pseudocount %||% 1
 } else {
   trialID <- args$trialID
   io_dir <- args$io_dir
+  candidate_source <- args$candidate_source %||% "differential_abundance"
+  candidate_comparisons <- resolve_candidate_comparisons(args$candidate_comparisons, args$DA_comparisons)
   DA_comparisons <- args$DA_comparisons
   DA_method <- args$DA_method
   taxa_level <- args$taxa_level
   compiled_asv_fasta <- args$compiled_asv_fasta
+  top_n_taxa <- args$top_n_taxa %||% 10
+  candidate_sample_filter <- NULL
+  candidate_norm_method <- args$candidate_norm_method %||% "noNorm"
+  candidate_pseudocount <- args$candidate_pseudocount %||% 1
 }
 
 required_input <- list(
   trialID = trialID,
   io_dir = io_dir,
-  DA_comparisons = DA_comparisons,
-  DA_method = DA_method,
+  candidate_comparisons = candidate_comparisons,
+  candidate_source = candidate_source,
   taxa_level = taxa_level,
   compiled_asv_fasta = compiled_asv_fasta
 )
 fail_missing_input(required_input, "BLAST candidate preparation input")
+
+if (candidate_source == "differential_abundance") {
+  fail_missing_input(
+    list(
+      DA_comparisons = DA_comparisons,
+      DA_method = DA_method
+    ),
+    "differential-abundance BLAST candidate preparation input"
+  )
+}
 
 if (!file.exists(compiled_asv_fasta)) {
   stop("Missing compiled ASV FASTA: ", compiled_asv_fasta, call. = FALSE)
 }
 
 CompPhyseq <- load_input_physeq()
+CompPhyseq <- apply_candidate_sample_filter(CompPhyseq, candidate_sample_filter)
 
-sig_taxa_by_comparison <- read_significant_taxa(
-  io_dir = io_dir,
-  DA_method = DA_method,
-  trialID = trialID,
-  comparisons = DA_comparisons
-)
+if (candidate_source == "differential_abundance") {
+  sig_taxa_by_comparison <- read_significant_taxa(
+    io_dir = io_dir,
+    DA_method = DA_method,
+    trialID = trialID,
+    comparisons = DA_comparisons
+  )
+} else if (candidate_source == "top_abundance") {
+  sig_taxa_by_comparison <- read_top_abundance_taxa(
+    ps = CompPhyseq,
+    comparisons = candidate_comparisons,
+    taxa_level_col = taxa_level,
+    top_n_taxa = top_n_taxa,
+    norm_method = candidate_norm_method,
+    pseudocount = candidate_pseudocount
+  )
+} else {
+  stop("Unsupported BLAST candidate_source: ", candidate_source, call. = FALSE)
+}
 
 export_significant_taxon_asvs(
   ps = CompPhyseq,

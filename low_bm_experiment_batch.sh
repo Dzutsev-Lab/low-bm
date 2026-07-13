@@ -53,6 +53,13 @@ if has_header:
     if row_index < 0 or row_index >= len(records):
         raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(records)} batch rows.")
     fieldnames = reader.fieldnames or []
+    selected_raw_row = rows[row_index + 1]
+    if len(selected_raw_row) != len(fieldnames):
+        raise SystemExit(
+            f"Batch row {slurm_task_id} has {len(selected_raw_row)} tab-separated field(s), "
+            f"but the header has {len(fieldnames)} column(s). "
+            "Check for a missing value or an extra/missing tab."
+        )
     missing_cols = [key for key in canonical_cols if key not in fieldnames]
     if missing_cols:
         suspicious = [

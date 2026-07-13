@@ -5,6 +5,7 @@ source_if_needed <- function(path) {
 }
 
 source_if_needed(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+source_if_needed(file.path("scripts", "Rhelpers", "TaxaSelection.R"))
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
@@ -92,9 +93,7 @@ collapse_top_taxa <- function(physeq,
   }
 
   otu_mat <- otu_samples_by_taxa(physeq)
-  taxa_totals <- colSums(otu_mat, na.rm = TRUE)
-  taxa_order <- names(sort(taxa_totals, decreasing = TRUE))
-  top_taxa <- taxa_order[seq_len(min(top_n, length(taxa_order)))]
+  top_taxa <- select_top_taxa_by_abundance(physeq, top_n = top_n)
   other_taxa <- setdiff(colnames(otu_mat), top_taxa)
 
   other_counts <- rowSums(otu_mat[, other_taxa, drop = FALSE], na.rm = TRUE)

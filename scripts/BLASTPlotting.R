@@ -549,7 +549,7 @@ if (!is.null(args$analysis_config)) {
   } else {
     NULL
   }
-  comparisons <- blast_config$DA_comparisons
+  comparisons <- blast_config$candidate_comparisons %||% blast_config$DA_comparisons
   tax_db_sql <- blast_config$tax_db_sql
   taxa_level <- analysis_config_value(project_config, blast_config, "taxa_level", analysis_config_value(project_config, blast_config, "tax_agg_level", "Genus"))
   plot_ranks <- blast_config$plot_ranks %||% args$plot_ranks

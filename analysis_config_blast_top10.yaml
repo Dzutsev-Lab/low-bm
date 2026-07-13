@@ -1,0 +1,70 @@
+# BLAST-only config for confirming the top 10 genus-level taxa by abundance.
+# This is intentionally smaller than analysis_config.yaml and does not require
+# differential abundance outputs.
+
+project:
+  name: "low_biomass_top10_blast"
+
+  # Required by BLASTCandidatePreparation.R in config mode.
+  trialID: "top10_blast"
+
+  # Required by BLASTCandidatePreparation.R, BLASTWrapper.sh, and BLASTPlotting.R.
+  # Candidate FASTAs, BLAST hits, manifests, and plots will be written under:
+  #   Exp_Output/Top10GenusBLAST/BlastAnalysis/Top10Genera/
+  output_dir: "Exp_Output/Top10GenusBLAST"
+
+  # Required unless you provide project.batch_table instead.
+  compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
+
+  # Required for exporting selected ASVs to FASTA before BLAST.
+  compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
+
+  # Used as the default taxonomic rank for candidate selection.
+  tax_agg_level: "Genus"
+
+  # Used only if candidate_norm_method applies a pseudocount.
+  pseudocount: 1
+
+blast_confirmation:
+  # Required for top-N candidate selection.
+  candidate_source: "top_abundance"
+
+  # Required by candidate prep, wrapper, and plotting. This becomes the
+  # comparison-like directory name under BlastAnalysis.
+  candidate_comparisons: ["Top10Genera"]
+
+  # Required for a top 10 analysis.
+  top_n_taxa: 10
+
+  # Optional but recommended for a batch-specific top 10. Replace this value
+  # with the SequencingBatch you want, or remove candidate_sample_filter to use
+  # the full compiled project.
+  candidate_sample_filter:
+    SequencingBatch: ["Xin_080822_16_17"]
+
+  # Optional. Use "noNorm" to rank by raw counts after sample filtering and
+  # genus agglomeration; use another supported counts_normalization() method if
+  # you want ranking to match a normalized abundance scale.
+  candidate_norm_method: "noNorm"
+  candidate_pseudocount: 1
+
+  # Required by BLASTWrapper.sh.
+  reference_db: "ncbi20_k2"
+
+  # Optional for BLASTWrapper.sh if your references live under Ref_Data.
+  ref_base_dir: "Ref_Data"
+
+  # Required by BLASTPlotting.R to map BLAST taxids to names.
+  tax_db_sql: "Ref_Data/taxdump/tax_db.sqlite"
+
+  # BLASTWrapper.sh options.
+  max_target_seqs: 5
+  num_threads: null
+
+  # BLASTPlotting.R filters and display options.
+  min_pident: 90
+  min_qcovs: 90
+  max_evalue: 1e-20
+  top_n_asvs: 20
+  min_rel_abund: 0.05
+  plot_ranks: ["genus", "species"]
