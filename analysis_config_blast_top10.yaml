@@ -3,27 +3,15 @@
 # differential abundance outputs.
 
 project:
-  name: "low_biomass_top10_blast"
-
-  # Required by BLASTCandidatePreparation.R in config mode.
-  trialID: "top10_blast"
-
-  # Required by BLASTCandidatePreparation.R, BLASTWrapper.sh, and BLASTPlotting.R.
-  # Candidate FASTAs, BLAST hits, manifests, and plots will be written under:
-  #   Exp_Output/Top10GenusBLAST/BlastAnalysis/Top10Genera/
-  output_dir: "Exp_Output/Top10GenusBLAST"
-
-  # Required unless you provide project.batch_table instead.
-  compiled_physeq: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/CompPhyseq.RData"
-
+  name: "low_biomass_analysis"
+  base_dir: "Exp_Output"
+  trialID: "070826.2"
+  output_dir: "Exp_Output/070826.2_DSSModelExp2_InitialRun"
+  compiled_physeq: "Exp_Output/070826.2_DSSModelExp2_InitialRun/070826.2_physeq.RData"
   # Optional. If omitted, BLASTCandidatePreparation.R will look for
   # MergedASV.fasta or <trialID>_ASV.fasta beside compiled_physeq.
-  # compiled_asv_fasta: "Exp_Output/060426.1_TIGERAllExpComp_CodexTrial/MergedASV.fasta"
-
-  # Used as the default taxonomic rank for candidate selection.
+  # compiled_asv_fasta: <compiled_ASV>.fasta
   tax_agg_level: "Genus"
-
-  # Used only if candidate_norm_method applies a pseudocount.
   pseudocount: 1
 
 blast_confirmation:
@@ -32,7 +20,7 @@ blast_confirmation:
 
   # Required by candidate prep, wrapper, and plotting. This becomes the
   # comparison-like directory name under BlastAnalysis.
-  candidate_comparisons: ["Top10Genera"]
+  candidate_comparisons: ["Top10Genera_NoPippin"]
 
   # Required for a top 10 analysis.
   top_n_taxa: 10
@@ -41,28 +29,18 @@ blast_confirmation:
   # with the SequencingBatch you want, or remove candidate_sample_filter to use
   # the full compiled project.
   candidate_sample_filter:
-    SequencingBatch: ["Xin_080822_16_17"]
+    Pippin: [0]
 
-  # Optional. Use "noNorm" to rank by raw counts after sample filtering and
-  # genus agglomeration; use another supported counts_normalization() method if
-  # you want ranking to match a normalized abundance scale.
-  candidate_norm_method: "noNorm"
+  # Pre-Abundance Ranking Normalization Options
+  candidate_norm_method: "log2HostMapped"
   candidate_pseudocount: 1
 
-  # Required by BLASTWrapper.sh.
+  # BLAST Options
   reference_db: "ncbi20_k2"
-
-  # Optional for BLASTWrapper.sh if your references live under Ref_Data.
   ref_base_dir: "Ref_Data"
-
-  # Required by BLASTPlotting.R to map BLAST taxids to names.
   tax_db_sql: "Ref_Data/taxdump/tax_db.sqlite"
-
-  # BLASTWrapper.sh options.
   max_target_seqs: 5
   num_threads: null
-
-  # BLASTPlotting.R filters and display options.
   min_pident: 90
   min_qcovs: 90
   max_evalue: 1e-20
