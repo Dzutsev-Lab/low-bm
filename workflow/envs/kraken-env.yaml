@@ -1,0 +1,9 @@
+name: low-bm-kraken
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - kraken2
+  - pigz
+

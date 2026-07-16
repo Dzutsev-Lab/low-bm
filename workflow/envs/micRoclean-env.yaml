@@ -1,0 +1,21 @@
+name: low-bm-microclean
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - c-compiler
+  - cxx-compiler
+  - fortran-compiler
+  - git
+  - make
+  - pkg-config
+  - r-base
+  - r-argparse
+  - r-dplyr
+  - r-readxl
+  - r-remotes
+  - r-stringr
+  - r-tibble
+  - r-tidyr
+  - r-withr

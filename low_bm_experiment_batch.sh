@@ -11,8 +11,10 @@ mamba activate low-bm-base
 cd /data/$USER/low-bm
 
 BASE_CONFIG="${BASE_CONFIG:-config.yaml}"
+EXTRA_CONFIGFILES="${EXTRA_CONFIGFILES:-}"
 BATCH_TABLE="${BATCH_TABLE:-experiment_batch_configs.tsv}"
 RUN_CONFIG_DIR="${RUN_CONFIG_DIR:-experiment_batch_configs}"
+SNAKEMAKE_DEPLOY_ARGS="${SNAKEMAKE_DEPLOY_ARGS:---use-conda}"
 mkdir -p "$RUN_CONFIG_DIR"
 
 mapfile -t batch_info < <(python3 - "$BATCH_TABLE" "$SLURM_ARRAY_TASK_ID" "$RUN_CONFIG_DIR" <<'PY'
@@ -135,8 +137,17 @@ fi
 LOG_DIR="snakemake_logs/${trialID}"
 mkdir -p "$LOG_DIR"
 
-snakemake --use-conda --cores "${SLURM_CPUS_PER_TASK}" all\
-    --configfile "$BASE_CONFIG" \
-    --configfile "$RUN_CONFIG_FILE" \
+config_args=(--configfile "$BASE_CONFIG")
+if [[ -n "$EXTRA_CONFIGFILES" ]]; then
+    for config_file in $EXTRA_CONFIGFILES; do
+        config_args+=(--configfile "$config_file")
+    done
+fi
+config_args+=(--configfile "$RUN_CONFIG_FILE")
+
+deployment_args=($SNAKEMAKE_DEPLOY_ARGS)
+
+snakemake "${deployment_args[@]}" --cores "${SLURM_CPUS_PER_TASK}" all \
+    "${config_args[@]}" \
     --rerun-incomplete \
     2> "$LOG_DIR/snakemake.out"

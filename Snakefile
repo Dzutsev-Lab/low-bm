@@ -16,7 +16,11 @@ METADATA =  os.path.join(config["in_root"], config["metadata"])
 
 SCRIPTS = config["script_dir"]
 REF_DIR = "Ref_Data"
-CONDA_ENV_DIR = "/vf/users/taylorng/conda/envs"
+CONDA_ENV_DIR = config.get("conda_env_dir", "workflow/envs")
+
+
+def conda_env(name):
+    return f"{CONDA_ENV_DIR}/{name}.yaml"
 
 
 RAW = f"{IN_DIR}/OUTPUT/Data/fastq"
@@ -256,7 +260,7 @@ rule index_ref_bwa:
         bwt = "{ref}.bwt"
     threads: 8
     log: f"{LOG_DIR}/00_bwa_{{ref}}_ref.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -276,7 +280,7 @@ rule norm_fastq:
         r2_norm = temp(f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq")
     threads: 2
     log: f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -317,7 +321,7 @@ if PROCESS_UMIS:
             poly_G_threshold = POLY_G_THRESHOLD
         threads: 1
         log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
-        conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+        conda: conda_env("bio-tools-env")
         shell:
             r"""
             set -euo pipefail
@@ -349,7 +353,7 @@ if PROCESS_UMIS:
             AmpUMI_regex = "^" + ("I" * UMI_LEN)
         threads: 8
         log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.{{s}}.log"
-        conda:  f"{CONDA_ENV_DIR}/AmpUMI-env"
+        conda: conda_env("AmpUMI-env")
         shell:
             r"""
             set -euo pipefail
@@ -377,7 +381,7 @@ else:
             count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
         threads: 1
         log: f"{LOG_DIR}/01_no_umi_count_summary/01_no_umi_count_summary.{{s}}.log"
-        conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+        conda: conda_env("bio-tools-env")
         shell:
             r"""
             set -euo pipefail
@@ -419,7 +423,7 @@ rule dada_denoising:
         truncQ = TRUNC_Q,
     threads: 16
     log:    f"{LOG_DIR}/03_dada.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    conda: conda_env("R-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -456,7 +460,7 @@ rule host_viral_alignment:
         unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.{{tag}}.ASV.names"
     threads: 8
     log:    f"{LOG_DIR}/04_alignment/04_alignment_{{tag}}.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -476,7 +480,7 @@ rule nonhost_nonviral_filter:
         nonhost_nonviral_ASVs = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.ASV.fasta"
     threads: 8
     log:    f"{LOG_DIR}/05_nonhost_nonviral.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -499,7 +503,7 @@ rule bacterial_alignment:
         bacterial_ASVs = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
     threads: 8
     log:    f"{LOG_DIR}/06_bact_map.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -527,7 +531,7 @@ rule micRoclean_decontamination_detection:
         
     threads: 8
     log:    f"{LOG_DIR}/07.1_micRoclean_decontam.log"
-    conda:  f"{CONDA_ENV_DIR}/micRoclean-env"
+    conda: conda_env("micRoclean-env")
     shell:
         r"""
         set -euo pipefail
@@ -549,7 +553,7 @@ rule decontamination_filter:
         decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
     threads: 8
     log:    f"{LOG_DIR}/07.2_decontam_filter.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -563,7 +567,7 @@ rule canonical_asv_fasta:
     output:
         asv_fasta = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_ASV.fasta"
     log: f"{LOG_DIR}/07.3_canonical_asv_fasta.log"
-    conda: f"{CONDA_ENV_DIR}/bio-tools-env"
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -583,7 +587,7 @@ rule kraken_classification:
         kraken_report_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report",
     threads: 16
     log:    f"{LOG_DIR}/08.2_kraken_class.log"
-    conda:  f"{CONDA_ENV_DIR}/kraken-env"
+    conda: conda_env("kraken-env")
     shell:
         r"""
         set -euo pipefail
@@ -610,7 +614,7 @@ rule blast_db_construction:
         blast_db_base = f"{REF_DIR}/{KRAKEN_DB}/blast_format_db/{KRAKEN_DB}_blast"
     threads: 16
     log:    f"{LOG_DIR}/00_blast_db_construction.log"
-    conda:  f"{CONDA_ENV_DIR}/bio-tools-env"  
+    conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -640,7 +644,7 @@ rule phyloseq_construction:
         unclassified_prefix_flag = "--add-unclassified-prefix" if ADD_UNCLASSIFIED_PREFIX else ""
     threads: 8
     log:    f"{LOG_DIR}/10_phyloseq.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    conda: conda_env("R-tools-env")
     shell:
         r"""
         set -euo pipefail
@@ -680,7 +684,7 @@ rule read_counts:
         selected = UMI_SELECT_DIR,
     threads: 8
     log:    f"{LOG_DIR}/09_read_count.log"
-    conda:  f"{CONDA_ENV_DIR}/R-tools-env"
+    conda: conda_env("R-tools-env")
 
     shell:
         r"""

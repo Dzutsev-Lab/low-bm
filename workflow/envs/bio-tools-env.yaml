@@ -1,0 +1,16 @@
+name: low-bm-bio-tools
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - biopython
+  - bwa
+  - samtools
+  - seqtk
+  - pigz
+  - blast
+  - trimmomatic
+  - openjdk
+

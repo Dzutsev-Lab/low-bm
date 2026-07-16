@@ -1,0 +1,12 @@
+name: low-bm-runner
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python=3.11
+  - snakemake>=8
+  - mamba
+  - conda
+  - conda-libmamba-solver
+

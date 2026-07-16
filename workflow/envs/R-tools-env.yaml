@@ -1,0 +1,44 @@
+name: low-bm-r-tools
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - r-base
+  - r-argparse
+  - r-circlize
+  - r-ckmeans.1d.dp
+  - r-digest
+  - r-dplyr
+  - r-fsa
+  - r-ggalluvial
+  - r-ggplot2
+  - r-ggpubr
+  - r-ggrepel
+  - r-metap
+  - r-patchwork
+  - r-proc
+  - r-purrr
+  - r-readr
+  - r-readxl
+  - r-stringr
+  - r-survival
+  - r-taxonomizr
+  - r-tibble
+  - r-tidyr
+  - r-vegan
+  - r-xgboost
+  - r-yaml
+  - bioconductor-ancombc
+  - bioconductor-biostrings
+  - bioconductor-complexheatmap
+  - bioconductor-dada2
+  - bioconductor-edger
+  - bioconductor-lefser
+  - bioconductor-limma
+  - bioconductor-phyloseq
+  - bioconductor-s4vectors
+  - bioconductor-shortread
+  - bioconductor-summarizedexperiment
+  - bioconductor-sva
+
