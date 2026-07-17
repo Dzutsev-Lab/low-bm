@@ -13,9 +13,19 @@ dependencies:
   - r-base
   - r-argparse
   - r-dplyr
+  - r-glmnet
   - r-readxl
   - r-remotes
   - r-stringr
   - r-tibble
   - r-tidyr
+  - r-tidyverse
+  - r-torch
   - r-withr
+  - r-ggplot2
+  - r-ggvenndiagram
+  - bioconductor-ancombc
+  - bioconductor-biomformat
+  - bioconductor-decontam
+  - bioconductor-phyloseq
+

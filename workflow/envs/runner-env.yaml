@@ -5,7 +5,7 @@ channels:
   - defaults
 dependencies:
   - python=3.11
-  - snakemake>=8
+  - snakemake=9.23
   - mamba
   - conda
   - conda-libmamba-solver

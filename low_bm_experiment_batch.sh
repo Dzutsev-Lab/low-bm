@@ -4,10 +4,10 @@
 #SBATCH --mem=25GB
 #SBATCH --output=SLURM_stdout/slurm-%A_%a.out
 #SBATCH --error=SLURM_stderr/slurm-%A_%a.err
-#SBATCH --time 6:00:00
+#SBATCH --time 10:00:00
 
 source myconda
-mamba activate low-bm-base
+mamba activate low-bm-runner
 cd /data/$USER/low-bm
 
 BASE_CONFIG="${BASE_CONFIG:-config.yaml}"
