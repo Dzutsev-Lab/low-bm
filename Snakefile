@@ -247,6 +247,7 @@ rule sample_names:
     output:
         f"{OUT_DIR}/sample.names"
     run:
+        Path(output[0]).parent.mkdir(parents=True, exist_ok=True)
         Path(output[0]).write_text("\n".join(SAMPLES) + "\n")
 
 #----------------------------
@@ -264,6 +265,7 @@ rule index_ref_bwa:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")"
         exec > {log} 2>&1
         bwa index {input.reference}
         """
@@ -284,6 +286,7 @@ rule norm_fastq:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.r1_norm}")" "$(dirname "{output.r2_norm}")"
         exec 2> "{log}"
 
         # check if input is compressed or not
@@ -325,6 +328,7 @@ if PROCESS_UMIS:
         shell:
             r"""
             set -euo pipefail
+            mkdir -p "$(dirname "{log}")" "$(dirname "{output.sel_umi_r1}")" "$(dirname "{output.count_summary}")"
             exec 2> "{log}"
 
             python3 scripts/UMISelection.py \
@@ -357,6 +361,7 @@ if PROCESS_UMIS:
         shell:
             r"""
             set -euo pipefail
+            mkdir -p "$(dirname "{log}")" "$(dirname "{output.umi_dedup_reads}")"
             exec > {log} 2>&1
 
             # ---- Check if Empty FASTQ ----
@@ -385,6 +390,7 @@ else:
         shell:
             r"""
             set -euo pipefail
+            mkdir -p "$(dirname "{log}")" "$(dirname "{output.count_summary}")"
             exec > "{log}" 2>&1
 
             n_lines=$(wc -l < "{input.r1}")
@@ -421,12 +427,14 @@ rule dada_denoising:
         maxN = MAX_N,
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
+        filtered_reads_dir = f"{DADA_DENOISE_DIR}/filteredAndTrimmed",
     threads: 16
     log:    f"{LOG_DIR}/03_dada.log"
     conda: conda_env("R-tools-env")
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.seq_table}")" "{params.filtered_reads_dir}"
         exec > "{log}" 2>&1 
 
         Rscript scripts/DadaASVFilter.R \
@@ -464,6 +472,7 @@ rule host_viral_alignment:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.sam}")" "$(dirname "{output.unmapped_names}")"
         bwa mem -t {threads} "{input.reference_fasta}" "{input.rep_asv_fasta}" > "{output.sam}" 2> "{log}"
         samtools view -f 4 "{output.sam}" 2> "{log}" | cut -f1 | sort -u > "{output.unmapped_names}"
         """
@@ -484,6 +493,7 @@ rule nonhost_nonviral_filter:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.nonhost_nonviral_ASVs}")"
 
         seqtk subseq "{input.rep_asv_fasta}" "{input.host_unmapped_names}" \
          | seqtk subseq - "{input.viral_unmapped_names}" \
@@ -507,6 +517,7 @@ rule bacterial_alignment:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.bacterial_alignment}")" "$(dirname "{output.bacterial_names}")" "$(dirname "{output.bacterial_ASVs}")"
         bwa mem -t {threads} "{BACT16S_REF}" "{input.nonhost_nonviral_ASVs}" > "{output.bacterial_alignment}" 2> "{log}"
         samtools view -F 4 "{output.bacterial_alignment}" | cut -f1 | sort -u > "{output.bacterial_names}"
         seqtk subseq "{input.nonhost_nonviral_ASVs}" "{output.bacterial_names}" > "{output.bacterial_ASVs}" 2> "{log}"
@@ -535,6 +546,7 @@ rule micRoclean_decontamination_detection:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.decontaminated_seq_table}")" "$(dirname "{output.decontaminated_names}")" "$(dirname "{output.filtering_report}")" "$(dirname "{output.missing_metadata_report}")"
         exec > "{log}" 2>&1
         Rscript scripts/Decontamination.R \
             --seq-table {input.seq_table} \
@@ -557,6 +569,7 @@ rule decontamination_filter:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.decontaminated_ASV_fa}")"
         exec > "{log}" 2>&1
         seqtk subseq "{input.bacterial_ASV_fa}" "{input.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
         """
@@ -571,6 +584,7 @@ rule canonical_asv_fasta:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.asv_fasta}")"
         exec > "{log}" 2>&1
         cp "{input.decontaminated_ASV_fa}" "{output.asv_fasta}"
         """
@@ -591,6 +605,7 @@ rule kraken_classification:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.kraken_class_file}")" "$(dirname "{output.kraken_report_file}")"
         exec > "{log}" 2>&1
         kraken2 --threads {threads} \
                 --db {input.kraken_database} \
@@ -618,6 +633,7 @@ rule blast_db_construction:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.blast_db}")"
         exec > "{log}" 2>&1
 
         makeblastdb -in {input.reference_db_fasta} \
@@ -648,6 +664,7 @@ rule phyloseq_construction:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.phyloseq_object}")" "$(dirname "{output.missing_metadata_report}")"
         exec > "{log}" 2>&1
         Rscript scripts/PhyloseqConstruction.R \
             --kraken-file {input.kraken_class_file} \
@@ -689,6 +706,7 @@ rule read_counts:
     shell:
         r"""
         set -euo pipefail
+        mkdir -p "$(dirname "{log}")" "$(dirname "{output.library_counts}")"
         exec > "{log}" 2>&1
 
         Rscript scripts/ReadCountCompilation.R \
