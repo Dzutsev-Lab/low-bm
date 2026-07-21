@@ -328,11 +328,14 @@ def build_snakemake_command(spec: RunSpec) -> list[str]:
         command.append("--dry-run")
     if spec.unlock:
         command.append("--unlock")
+    if not spec.unlock and spec.target:
+        # Snakemake 9 parses --configfile as FILE [FILE ...]. Keep positional
+        # targets before configfile entries so targets like "all" are not
+        # interpreted as additional config files.
+        command.append(spec.target)
     for configfile in spec.configfiles:
         command.extend(["--configfile", str(configfile)])
     command.extend(spec.extra_snakemake_args)
-    if not spec.unlock and spec.target:
-        command.append(spec.target)
     return command
 
 

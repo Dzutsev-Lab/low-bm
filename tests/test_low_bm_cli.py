@@ -106,6 +106,7 @@ class CommandConstructionTests(unittest.TestCase):
             command = build_snakemake_command(spec)
             self.assertEqual(command[0:2], ["snakemake", "--profile"])
             self.assertIn("--dry-run", command)
+            self.assertLess(command.index("all"), command.index("--configfile"))
             self.assertEqual(
                 [
                     command[i + 1]
@@ -114,7 +115,7 @@ class CommandConstructionTests(unittest.TestCase):
                 ],
                 ["config.yaml", "override.yaml", str(run_config)],
             )
-            self.assertEqual(command[-2:], ["--quiet", "all"])
+            self.assertEqual(command[-1], "--quiet")
 
     def test_batch_submit_dry_run_reuses_run_builder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
