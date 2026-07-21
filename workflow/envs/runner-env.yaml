@@ -6,7 +6,7 @@ channels:
 dependencies:
   - python=3.11
   - snakemake=9.23
+  - snakemake-executor-plugin-slurm
   - mamba
   - conda
   - conda-libmamba-solver
-

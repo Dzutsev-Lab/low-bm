@@ -1,0 +1,30 @@
+# Local/debug profile for the low-bm workflow.
+#
+# Snakemake parses profile YAML keys as command-line arguments. This profile
+# keeps conda execution as the canonical local/runtime mode.
+software-deployment-method:
+  - conda
+conda-frontend: mamba
+cores: 16
+latency-wait: 60
+rerun-incomplete: true
+printshellcmds: true
+show-failed-logs: true
+
+set-threads:
+  index_ref_bwa: 8
+  norm_fastq: 2
+  umi_selection: 1
+  umi_dedup: 8
+  no_umi_count_summary: 1
+  dada_denoising: 16
+  host_viral_alignment: 8
+  nonhost_nonviral_filter: 8
+  bacterial_alignment: 8
+  micRoclean_decontamination_detection: 8
+  decontamination_filter: 8
+  canonical_asv_fasta: 1
+  kraken_classification: 16
+  blast_db_construction: 16
+  phyloseq_construction: 8
+  read_counts: 8

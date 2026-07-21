@@ -180,15 +180,12 @@ writeLines(
         "trial_descript",
         "exp_dir",
         "metadata",
-        "batch_label",
-        "include_processing",
-        "include_analysis",
         "asv_fasta_path"
       ),
       collapse = "\t"
     ),
-    paste(c("010126.1", "batch1", "exp1", "metadata1.xlsx", "batch1", "true", "true", ""), collapse = "\t"),
-    paste(c("010126.2", "batch2", "exp2", "metadata2.xlsx", "batch2", "true", "true", override_asv_fasta), collapse = "\t")
+    paste(c("010126.1", "batch1", "exp1", "metadata1.xlsx", ""), collapse = "\t"),
+    paste(c("010126.2", "batch2", "exp2", "metadata2.xlsx", override_asv_fasta), collapse = "\t")
   ),
   asv_batch_table
 )
@@ -468,10 +465,7 @@ writeLines(
         "trialID",
         "trial_descript",
         "exp_dir",
-        "metadata",
-        "batch_label",
-        "include_processing",
-        "include_analysis"
+        "metadata"
       ),
       collapse = "\t"
     ),
@@ -480,10 +474,7 @@ writeLines(
         "051926.1",
         "TIGER062822_PrelimAnalysis",
         "exp",
-        "metadata.xlsx",
-        "TIGER062822",
-        "false",
-        "true"
+        "metadata.xlsx"
       ),
       collapse = "\t"
     )
@@ -492,7 +483,7 @@ writeLines(
 )
 batch_df <- read_batch_table(batch_table_file)
 stopifnot(identical(batch_df$trialID[[1]], "051926.1"))
-stopifnot(identical(batch_row_to_trial_name(batch_df[1, , drop = FALSE]), "051926.1_TIGER062822_PrelimAnalysis"))
+stopifnot(identical(batch_row_to_label(batch_df[1, , drop = FALSE]), "051926.1_TIGER062822_PrelimAnalysis"))
 
 if (requireNamespace("ANCOMBC", quietly = TRUE)) {
   message("ANCOMBC is available; full model smoke tests can be added for project fixtures.")

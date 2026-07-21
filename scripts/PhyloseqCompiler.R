@@ -14,7 +14,7 @@ parser$add_argument("--trial-list",
 parser$add_argument("--batch-table",
                     type = "character",
                     default = NULL,
-                    help = "Canonical batch table with include_analysis column")
+                    help = "Canonical batch table")
 parser$add_argument("--analysis-config",
                     type = "character",
                     default = NULL,
@@ -76,13 +76,11 @@ if (!is.null(args$physeqs)) {
   batch_table <- if (!is.null(args$batch_table)) args$batch_table else project_config$batch_table
   physeq_paths <- resolve_batch_physeqs(
     batch_table = batch_table,
-    base_dir = base_dir,
-    include_column = "include_analysis"
+    base_dir = base_dir
   )
   asv_fasta_paths <- resolve_batch_asv_fastas(
     batch_table = batch_table,
-    base_dir = base_dir,
-    include_column = "include_analysis"
+    base_dir = base_dir
   )
 } else if (!is.null(args$trial_list)) {
   trials <- readLines(args$trial_list)

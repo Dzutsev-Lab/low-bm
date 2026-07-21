@@ -22,7 +22,7 @@ parser$add_argument("--compiled-physeq",
 parser$add_argument("--batch-table",
                     type = "character",
                     default = NULL,
-                    help = "Canonical batch table with include_analysis column")
+                    help = "Canonical batch table")
 parser$add_argument("--analysis-config",
                     type = "character",
                     default = NULL,

@@ -39,14 +39,18 @@ batch_row_to_asv_fasta_path <- function(batch_row, base_dir = "Exp_Output") {
 
 resolve_batch_asv_fastas <- function(batch_table,
                                      base_dir = "Exp_Output",
-                                     include_column = "include_analysis") {
+                                     include_column = NULL) {
   batch_df <- read_batch_table(batch_table, include_column = include_column)
   paths <- vapply(
     seq_len(nrow(batch_df)),
     function(i) batch_row_to_asv_fasta_path(batch_df[i, , drop = FALSE], base_dir),
     character(1)
   )
-  names(paths) <- batch_df$batch_label
+  names(paths) <- vapply(
+    seq_len(nrow(batch_df)),
+    function(i) batch_row_to_label(batch_df[i, , drop = FALSE]),
+    character(1)
+  )
   paths
 }
 
@@ -77,7 +81,7 @@ asv_fasta_candidates_from_physeq <- function(physeq_path, trial_id = NULL) {
 
 project_asv_fasta_candidate_groups <- function(project_config = list(),
                                                base_dir = "Exp_Output",
-                                               include_column = "include_analysis") {
+                                               include_column = NULL) {
   project_config <- project_config %||% list()
   groups <- list()
 
@@ -116,7 +120,7 @@ project_asv_fasta_candidate_groups <- function(project_config = list(),
 
 resolve_project_asv_fastas <- function(project_config = list(),
                                        base_dir = "Exp_Output",
-                                       include_column = "include_analysis") {
+                                       include_column = NULL) {
   groups <- project_asv_fasta_candidate_groups(
     project_config = project_config,
     base_dir = base_dir,

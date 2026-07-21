@@ -79,6 +79,10 @@ batch_row_to_trial_name <- function(batch_row) {
   paste0(batch_row[["trialID"]], "_", batch_row[["trial_descript"]])
 }
 
+batch_row_to_label <- function(batch_row) {
+  batch_row_to_trial_name(batch_row)
+}
+
 batch_row_to_physeq_path <- function(batch_row, base_dir = "Exp_Output") {
   if ("physeq_path" %in% names(batch_row) &&
       !is.na(batch_row[["physeq_path"]]) &&
@@ -105,10 +109,7 @@ read_batch_table <- function(path,
     "trialID",
     "trial_descript",
     "exp_dir",
-    "metadata",
-    "batch_label",
-    "include_processing",
-    "include_analysis"
+    "metadata"
   )
 
   if (require_canonical) {
@@ -129,14 +130,18 @@ read_batch_table <- function(path,
 
 resolve_batch_physeqs <- function(batch_table,
                                   base_dir = "Exp_Output",
-                                  include_column = "include_analysis") {
+                                  include_column = NULL) {
   batch_df <- read_batch_table(batch_table, include_column = include_column)
   paths <- vapply(
     seq_len(nrow(batch_df)),
     function(i) batch_row_to_physeq_path(batch_df[i, , drop = FALSE], base_dir),
     character(1)
   )
-  names(paths) <- batch_df$batch_label
+  names(paths) <- vapply(
+    seq_len(nrow(batch_df)),
+    function(i) batch_row_to_label(batch_df[i, , drop = FALSE]),
+    character(1)
+  )
   paths
 }
 

@@ -1,0 +1,94 @@
+# SLURM profile for Snakemake 9 and snakemake-executor-plugin-slurm.
+#
+# This is the baseline-style shift: a master job runs Snakemake, and Snakemake
+# submits rule-specific jobs through the SLURM executor plugin.
+executor: slurm
+software-deployment-method:
+  - conda
+conda-frontend: mamba
+jobs: 100
+local-cores: 4
+# Submit these per-sample rules as SLURM arrays to reduce scheduler overhead
+# while preserving each rule's threads and resource requests. Cap each array
+# submission at 100 tasks so large experiments are split into manageable arrays.
+slurm-array-jobs: norm_fastq,umi_selection,umi_dedup,no_umi_count_summary
+slurm-array-limit: 100
+latency-wait: 120
+rerun-incomplete: true
+printshellcmds: true
+show-failed-logs: true
+keep-going: true
+restart-times: 1
+
+default-resources:
+  slurm_partition: norm
+  mem_mb: 8000
+  runtime: 240
+
+set-threads:
+  index_ref_bwa: 8
+  norm_fastq: 2
+  umi_selection: 1
+  umi_dedup: 8
+  no_umi_count_summary: 1
+  dada_denoising: 16
+  host_viral_alignment: 8
+  nonhost_nonviral_filter: 8
+  bacterial_alignment: 8
+  micRoclean_decontamination_detection: 8
+  decontamination_filter: 8
+  canonical_asv_fasta: 1
+  kraken_classification: 16
+  blast_db_construction: 16
+  phyloseq_construction: 8
+  read_counts: 8
+
+set-resources:
+  index_ref_bwa:
+    mem_mb: 16000
+    runtime: 240
+  norm_fastq:
+    mem_mb: 8000
+    runtime: 120
+  umi_selection:
+    mem_mb: 4000
+    runtime: 120
+  umi_dedup:
+    mem_mb: 16000
+    runtime: 240
+  no_umi_count_summary:
+    mem_mb: 4000
+    runtime: 60
+  dada_denoising:
+    mem_mb: 64000
+    runtime: 720
+  host_viral_alignment:
+    mem_mb: 24000
+    runtime: 240
+  nonhost_nonviral_filter:
+    mem_mb: 12000
+    runtime: 120
+  bacterial_alignment:
+    mem_mb: 24000
+    runtime: 240
+  micRoclean_decontamination_detection:
+    mem_mb: 64000
+    runtime: 720
+  decontamination_filter:
+    mem_mb: 12000
+    runtime: 120
+  canonical_asv_fasta:
+    mem_mb: 4000
+    runtime: 60
+  kraken_classification:
+    mem_mb: 64000
+    runtime: 720
+  blast_db_construction:
+    mem_mb: 64000
+    runtime: 720
+  phyloseq_construction:
+    mem_mb: 64000
+    runtime: 360
+  read_counts:
+    mem_mb: 32000
+    runtime: 240

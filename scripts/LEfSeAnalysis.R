@@ -24,7 +24,7 @@ parser$add_argument("--physeqs",
 parser$add_argument("--batch-table",
                     type = "character",
                     default = NULL,
-                    help = "Canonical batch table with include_analysis column")
+                    help = "Canonical batch table")
 parser$add_argument("--base-dir",
                     type = "character",
                     default = "Exp_Output",
