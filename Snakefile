@@ -2,8 +2,6 @@ import json
 import os, re, glob
 from pathlib import Path
 
-configfile: "config.yaml"
-
 # Input and Output Directories
 TRIAL_ID = config["trialID"]
 TRIAL_NAME = str(TRIAL_ID) + "_" + config["trial_descript"]

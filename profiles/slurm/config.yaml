@@ -19,6 +19,7 @@ printshellcmds: true
 show-failed-logs: true
 keep-going: true
 restart-times: 1
+slurm-no-account: true
 
 default-resources:
   slurm_partition: norm

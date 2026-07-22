@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from low_bm.batch import read_batch_table, write_run_config
+import low_bm.cli as cli
 from low_bm.cli import batch_submit_command, build_run_spec, build_snakemake_command
 
 
@@ -88,9 +89,13 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
             run_config.write_text('trialID: "010126.1"\n')
+            base_config = Path(tmp) / "processing.yaml"
+            base_config.write_text("in_root: Exp_Data/\n")
+            override_config = Path(tmp) / "override.yaml"
+            override_config.write_text("out_root: Exp_Output_validation/\n")
             args = Args(
-                configfile=["config.yaml"],
-                extra_configfile=["override.yaml"],
+                configfile=[str(base_config)],
+                extra_configfile=[str(override_config)],
                 row_config=str(run_config),
                 trial_id=None,
                 mode="local",
@@ -113,7 +118,7 @@ class CommandConstructionTests(unittest.TestCase):
                     for i, token in enumerate(command)
                     if token == "--configfile"
                 ],
-                ["config.yaml", "override.yaml", str(run_config)],
+                [str(base_config), str(override_config), str(run_config)],
             )
             self.assertEqual(command[-1], "--quiet")
 
@@ -124,10 +129,12 @@ class CommandConstructionTests(unittest.TestCase):
                 "trialID\ttrial_descript\texp_dir\tmetadata\n"
                 "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
             )
+            base_config = Path(tmp) / "processing.yaml"
+            base_config.write_text("in_root: Exp_Data/\n")
             args = Args(
                 batch_table=str(table),
                 run_config_dir=str(Path(tmp) / "configs"),
-                configfile=["config.yaml"],
+                configfile=[str(base_config)],
                 extra_configfile=[],
                 mode="slurm",
                 profile=None,
@@ -144,6 +151,69 @@ class CommandConstructionTests(unittest.TestCase):
                 master_extra_sbatch=[],
             )
             self.assertEqual(batch_submit_command(args), 0)
+
+    def test_missing_default_processing_config_has_setup_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_config = Path(tmp) / "010126.1_runconfig.yaml"
+            run_config.write_text('trialID: "010126.1"\n')
+            missing_default = Path(tmp) / "config" / "local" / "processing.yaml"
+            args = Args(
+                configfile=[],
+                extra_configfile=[],
+                row_config=str(run_config),
+                trial_id=None,
+                mode="local",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                job_name=None,
+                dry_run=True,
+                unlock=False,
+                snakemake_arg=[],
+            )
+            old_default = cli.DEFAULT_BASE_CONFIG
+            try:
+                cli.DEFAULT_BASE_CONFIG = str(missing_default)
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    r"Missing default processing config: .*config.*/local.*/processing\.yaml.*config/templates/processing\.yaml",
+                ):
+                    build_run_spec(args, run_config)
+            finally:
+                cli.DEFAULT_BASE_CONFIG = old_default
+
+    def test_missing_default_batch_table_has_setup_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_default = Path(tmp) / "config" / "local" / "batch.tsv"
+            args = Args(
+                batch_table=str(missing_default),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[],
+                extra_configfile=[],
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                activate_command="",
+                master_cpus="4",
+                master_mem="8G",
+                master_time="1-00:00:00",
+                master_partition=None,
+                master_extra_sbatch=[],
+            )
+            old_default = cli.DEFAULT_BATCH_TABLE
+            try:
+                cli.DEFAULT_BATCH_TABLE = str(missing_default)
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    r"Missing default batch table: .*config.*/local.*/batch\.tsv.*config/templates/batch\.tsv",
+                ):
+                    batch_submit_command(args)
+            finally:
+                cli.DEFAULT_BATCH_TABLE = old_default
 
 
 class ProfileConfigurationTests(unittest.TestCase):

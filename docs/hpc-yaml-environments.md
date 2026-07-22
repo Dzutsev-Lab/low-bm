@@ -44,74 +44,72 @@ rather than installed opportunistically.
 
 ## 3. Create A Small-Batch Test Config
 
-Copy the isolated root overrides:
+Initialize ignored local configs from the tracked templates:
 
 ```bash
-cp config.hpc-yamltest.example.yaml config.hpc-yamltest.yaml
+mkdir -p config/local
+cp config/templates/processing.yaml config/local/processing.yaml
+cp config/templates/processing-overrides.yaml config/local/processing-overrides.yaml
+cp config/templates/batch.tsv config/local/batch.tsv
 ```
 
-Create a one-row run config from an existing small batch, or use the batch
-wrapper to generate one from a one-row `experiment_batch_configs.tsv`. Use a
+Edit `config/local/processing.yaml` for the HPC paths and reference data. Edit
+`config/local/processing-overrides.yaml` when you want isolated validation
+outputs, and edit `config/local/batch.tsv` down to a one-row small batch. Use a
 distinct `trialID` so the outputs do not collide with trusted runs.
 
-The SLURM wrapper accepts two optional variables for this validation path:
+The launcher will layer configs in this order:
 
 ```bash
-EXTRA_CONFIGFILES=config.hpc-yamltest.yaml
-SNAKEMAKE_DEPLOY_ARGS="--sdm conda"
+config/local/processing.yaml
+config/local/processing-overrides.yaml
+experiment_batch_configs/<trialID>_runconfig.yaml
 ```
-
-If the HPC Snakemake is older, leave `SNAKEMAKE_DEPLOY_ARGS` unset; the wrapper
-defaults to `--use-conda`.
 
 ## 4. Dry Run And Build Envs
 
-Use Snakemake's storage-deployment syntax when available:
+Use `low-bm` for the normal validation path:
 
 ```bash
-snakemake -n --sdm conda --cores 8 all \
-  --configfile config.yaml \
-  --configfile config.hpc-yamltest.yaml \
-  --configfile experiment_batch_configs/yamltest_runconfig.yaml
-
-snakemake --sdm conda --conda-create-envs-only --cores 1 all \
-  --configfile config.yaml \
-  --configfile config.hpc-yamltest.yaml \
-  --configfile experiment_batch_configs/yamltest_runconfig.yaml
+./low-bm batch submit \
+  --batch-table config/local/batch.tsv \
+  --configfile config/local/processing.yaml \
+  --extra-configfile config/local/processing-overrides.yaml \
+  --dry-run \
+  --mode slurm
 ```
 
-If the HPC Snakemake version does not recognize `--sdm conda`, use:
+If you need to call Snakemake directly after the row config has been generated,
+keep the target before the config stack:
 
 ```bash
-snakemake -n --use-conda --cores 8 all \
-  --configfile config.yaml \
-  --configfile config.hpc-yamltest.yaml \
-  --configfile experiment_batch_configs/yamltest_runconfig.yaml
-
-snakemake --use-conda --conda-create-envs-only --cores 1 all \
-  --configfile config.yaml \
-  --configfile config.hpc-yamltest.yaml \
-  --configfile experiment_batch_configs/yamltest_runconfig.yaml
+snakemake --profile profiles/slurm --dry-run all \
+  --configfile config/local/processing.yaml \
+  --configfile config/local/processing-overrides.yaml \
+  --configfile experiment_batch_configs/<trialID>_runconfig.yaml
 ```
 
 ## 5. Run The Small Batch
 
 ```bash
-snakemake --sdm conda --cores 8 all \
-  --configfile config.yaml \
-  --configfile config.hpc-yamltest.yaml \
-  --configfile experiment_batch_configs/yamltest_runconfig.yaml \
-  --rerun-incomplete
+./low-bm batch submit \
+  --batch-table config/local/batch.tsv \
+  --configfile config/local/processing.yaml \
+  --extra-configfile config/local/processing-overrides.yaml \
+  --mode slurm
 ```
 
-Older Snakemake:
+For a single direct run, provide the batch row fields and the same config stack:
 
 ```bash
-snakemake --use-conda --cores 8 all \
-  --configfile config.yaml \
-  --configfile config.hpc-yamltest.yaml \
-  --configfile experiment_batch_configs/yamltest_runconfig.yaml \
-  --rerun-incomplete
+./low-bm run \
+  --trial-id <trialID> \
+  --trial-descript <trial_descript> \
+  --exp-dir <exp_dir> \
+  --metadata <metadata> \
+  --configfile config/local/processing.yaml \
+  --extra-configfile config/local/processing-overrides.yaml \
+  --mode slurm
 ```
 
 Expected terminal files:

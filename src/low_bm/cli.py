@@ -28,7 +28,10 @@ from .batch import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_BASE_CONFIG = "config.yaml"
+DEFAULT_BASE_CONFIG = "config/local/processing.yaml"
+DEFAULT_BATCH_TABLE = "config/local/batch.tsv"
+TEMPLATE_BASE_CONFIG = "config/templates/processing.yaml"
+TEMPLATE_BATCH_TABLE = "config/templates/batch.tsv"
 DEFAULT_RUN_CONFIG_DIR = "experiment_batch_configs"
 DEFAULT_LOG_ROOT = "snakemake_logs"
 
@@ -98,7 +101,10 @@ def add_common_config_arguments(parser: argparse.ArgumentParser) -> None:
         "--configfile",
         action="append",
         default=[],
-        help="Base Snakemake config file. May be repeated. Defaults to config.yaml.",
+        help=(
+            "Base Snakemake config file. May be repeated. "
+            f"Defaults to {DEFAULT_BASE_CONFIG}."
+        ),
     )
     parser.add_argument(
         "--extra-configfile",
@@ -162,8 +168,8 @@ def add_batch_submit_arguments(parser: argparse.ArgumentParser) -> None:
     add_common_config_arguments(parser)
     parser.add_argument(
         "--batch-table",
-        default="experiment_batch_configs.tsv",
-        help="Canonical batch TSV.",
+        default=DEFAULT_BATCH_TABLE,
+        help=f"Canonical batch TSV. Defaults to {DEFAULT_BATCH_TABLE}.",
     )
     parser.add_argument(
         "--mode",
@@ -228,7 +234,9 @@ def run_command(args: argparse.Namespace) -> int:
 
 def batch_submit_command(args: argparse.Namespace) -> int:
     """Submit one independent run for every row in the batch table."""
-    rows = read_batch_table(args.batch_table)
+    batch_table = Path(args.batch_table)
+    ensure_batch_table_exists(batch_table)
+    rows = read_batch_table(batch_table)
     if not rows:
         print(f"No rows found in {args.batch_table}.")
         return 0
@@ -297,13 +305,14 @@ def resolve_row_config(args: argparse.Namespace) -> Path:
 
 def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
     """Resolve defaults and config layering for one Snakemake invocation."""
+    if not row_config.exists():
+        raise SystemExit(f"Missing row config: {row_config}")
     row_values = load_simple_run_config(row_config)
     trial_id = row_values.get("trialID") or args.trial_id or "run"
     profile = Path(args.profile) if args.profile else REPO_ROOT / "profiles" / args.mode
     # Config order is deliberate: base project defaults, optional user
     # overrides, then the generated per-row values for this batch.
-    configfiles = [Path(p) for p in args.configfile] or [Path(DEFAULT_BASE_CONFIG)]
-    configfiles.extend(Path(p) for p in args.extra_configfile)
+    configfiles = resolve_configfiles(args.configfile, args.extra_configfile)
     configfiles.append(row_config)
     log_dir = Path(args.log_root) / trial_id
     job_name = args.job_name or f"low-bm-{trial_id}"
@@ -319,6 +328,49 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
         unlock=args.unlock,
         extra_snakemake_args=list(args.snakemake_arg or []),
     )
+
+
+def resolve_configfiles(configfiles: list[str], extra_configfiles: list[str]) -> list[Path]:
+    """Resolve and validate the processing config stack before row overrides."""
+    resolved = [Path(path) for path in configfiles]
+    if not resolved:
+        default_config = Path(DEFAULT_BASE_CONFIG)
+        if not path_exists_for_repo_run(default_config):
+            raise SystemExit(
+                f"Missing default processing config: {DEFAULT_BASE_CONFIG}. "
+                f"Initialize it from {TEMPLATE_BASE_CONFIG}, edit it for this environment, "
+                "or pass --configfile."
+            )
+        resolved = [default_config]
+
+    for configfile in resolved:
+        if not path_exists_for_repo_run(configfile):
+            raise SystemExit(f"Missing config file: {configfile}")
+
+    for extra_configfile in extra_configfiles:
+        path = Path(extra_configfile)
+        if not path_exists_for_repo_run(path):
+            raise SystemExit(f"Missing extra config file: {path}")
+        resolved.append(path)
+    return resolved
+
+
+def ensure_batch_table_exists(batch_table: Path) -> None:
+    """Raise a setup-oriented error when the default local batch table is absent."""
+    if path_exists_for_repo_run(batch_table):
+        return
+    if str(batch_table) == DEFAULT_BATCH_TABLE:
+        raise SystemExit(
+            f"Missing default batch table: {DEFAULT_BATCH_TABLE}. "
+            f"Initialize it from {TEMPLATE_BATCH_TABLE}, edit it for this experiment, "
+            "or pass --batch-table."
+        )
+    raise SystemExit(f"Missing batch table: {batch_table}")
+
+
+def path_exists_for_repo_run(path: Path) -> bool:
+    """Return true when a path exists as given or relative to the repo root."""
+    return path.exists() or (not path.is_absolute() and (REPO_ROOT / path).exists())
 
 
 def build_snakemake_command(spec: RunSpec) -> list[str]:

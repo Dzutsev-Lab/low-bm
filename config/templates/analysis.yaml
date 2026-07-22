@@ -1,0 +1,116 @@
+# Analysis config template.
+#
+# Initialize an ignored config/local/analysis.yaml from this file for
+# project-specific analysis runs. Remove sections you do not plan to run.
+
+project:
+  name: "low_biomass_analysis"
+  batch_table: "config/local/batch.tsv"
+  base_dir: "Exp_Output"
+  trialID: "<trialID>"
+  output_dir: "Exp_Output/<trialID>_<trial_descript>"
+  compiled_physeq: "Exp_Output/<trialID>_<trial_descript>/<trialID>_physeq.RData"
+  # Optional. If omitted, BLAST candidate preparation can look for MergedASV.fasta
+  # or <trialID>_ASV.fasta beside compiled_physeq.
+  compiled_asv_fasta: null
+  norm_method: "log2HostMapped"
+  pseudocount: 1
+  tax_agg_level: "Genus"
+  techrep_avg: false
+
+ordination:
+  batch_adj_covar: false
+  dist_metrics: null
+  groupings:
+    - name: "SampleType"
+      variable: "SampleType"
+
+heatmap_violin:
+  norm_method: "noNorm"
+  batch_adj: false
+  limma_voom: false
+
+abundance_barplots:
+  plots:
+    - name: "SampleType_log2HostMapped_top20"
+      x: "SampleID"
+      facet: "SampleType"
+      tax_agg_level: "Genus"
+      fill_tax_level: "Genus"
+      taxa_display: "top_n"
+      top_n: 20
+
+differential_abundance:
+  methods: ["ANCOMBC"]
+  tax_label_level: "Genus"
+  alpha: 0.05
+  lfc_cutoff: 0.3
+  comparisons:
+    - name: "ExampleComparison"
+      sample_filter:
+        SampleType: ["Control", "Treatment"]
+      factor_levels:
+        SampleType: ["Control", "Treatment"]
+      formula: "SampleType"
+      group: "SampleType"
+      coefficient: "SampleTypeTreatment"
+      structural_zero_groups:
+        - "structural_zero (SampleType = Control)"
+        - "structural_zero (SampleType = Treatment)"
+      plot_title: "Control vs Treatment"
+
+lefse_analysis:
+  source_comparisons: "differential_abundance"
+  abundance_scale: "raw_relative_abundance"
+  p_adjust_method: "none"
+  kruskal_threshold: 0.05
+  wilcox_threshold: 0.05
+  lda_threshold: 2
+  filter: "nonzero"
+  subclass_col: null
+  seed: 42
+
+blast_confirmation:
+  # Differential-abundance candidate selection.
+  DA_comparisons: []
+  DA_method: "ANCOMBC"
+
+  # Top-abundance candidate selection. Set candidate_source to "top_abundance"
+  # and provide candidate_comparisons to run a BLAST confirmation that does not
+  # depend on differential-abundance outputs.
+  candidate_source: null
+  candidate_comparisons: ["Top10Genera"]
+  top_n_taxa: 10
+  candidate_sample_filter: null
+  candidate_norm_method: "log2HostMapped"
+  candidate_pseudocount: 1
+
+  # BLAST options.
+  reference_db: "ncbi20_k2"
+  ref_base_dir: "Ref_Data"
+  tax_db_sql: "Ref_Data/taxdump/tax_db.sqlite"
+  max_target_seqs: 5
+  num_threads: null
+  min_pident: 90
+  min_qcovs: 90
+  max_evalue: 1e-20
+  top_n_asvs: 20
+  min_rel_abund: 0.05
+  plot_ranks: ["genus", "species"]
+
+xgboost_classification:
+  class_factors: []
+  batch_adj_formula: null
+  batch_adj_covar: null
+  batch_adj_method: "LimmaRemoveBatchEffect"
+
+survival_analysis:
+  time_col: "SurvivalDays"
+  status_col: "SurvivalStatus"
+  patient_id_col: "PatientID"
+  event_code: 1
+  censor_code: 0
+  min_n: 30
+  min_events: 10
+  taxa_pseudocount: 1e-6
+  analyses: []

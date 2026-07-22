@@ -1,0 +1,11 @@
+# Optional processing override template.
+#
+# Initialize an ignored config/local/*.yaml override from this file when you
+# want a run-specific path layer without editing config/local/processing.yaml.
+# Pass it after the base config with --extra-configfile.
+
+ip_root: "IP_Data_validation/"
+out_root: "Exp_Output_validation/"
+
+# Keep input data external to Snakemake-managed conda environments/containers.
+in_root: "Exp_Data/"
