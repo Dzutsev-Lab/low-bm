@@ -101,7 +101,7 @@ class CommandConstructionTests(unittest.TestCase):
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
             run_config.write_text('trialID: "010126.1"\n')
             base_config = Path(tmp) / "processing.yaml"
-            base_config.write_text("in_root: Exp_Data/\n")
+            write_minimal_processing_config(base_config)
             override_config = Path(tmp) / "override.yaml"
             override_config.write_text("out_root: Exp_Output_validation/\n")
             args = Args(
@@ -133,6 +133,29 @@ class CommandConstructionTests(unittest.TestCase):
             )
             self.assertEqual(command[-1], "--quiet")
 
+    def test_processing_config_stack_requires_base_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_config = Path(tmp) / "010126.1_runconfig.yaml"
+            run_config.write_text('trialID: "010126.1"\n')
+            override_only = Path(tmp) / "processing-overrides.yaml"
+            override_only.write_text("out_root: Exp_Output_validation/\n")
+            args = Args(
+                configfile=[str(override_only)],
+                extra_configfile=[],
+                row_config=str(run_config),
+                trial_id=None,
+                mode="local",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                job_name=None,
+                dry_run=True,
+                unlock=False,
+                snakemake_arg=[],
+            )
+            with self.assertRaisesRegex(SystemExit, "config/local/processing.yaml"):
+                build_run_spec(args, run_config)
+
     def test_batch_submit_dry_run_reuses_run_builder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
@@ -141,7 +164,7 @@ class CommandConstructionTests(unittest.TestCase):
                 "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
             )
             base_config = Path(tmp) / "processing.yaml"
-            base_config.write_text("in_root: Exp_Data/\n")
+            write_minimal_processing_config(base_config)
             runner_prefix, _manager = write_fake_runner(Path(tmp))
             args = Args(
                 batch_table=str(table),
@@ -172,7 +195,7 @@ class CommandConstructionTests(unittest.TestCase):
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
             run_config.write_text('trialID: "010126.1"\n')
             base_config = Path(tmp) / "processing.yaml"
-            base_config.write_text("in_root: Exp_Data/\n")
+            write_minimal_processing_config(base_config)
             runner_prefix, manager = write_fake_runner(Path(tmp))
             args = Args(
                 configfile=[str(base_config)],
@@ -203,7 +226,7 @@ class CommandConstructionTests(unittest.TestCase):
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
             run_config.write_text('trialID: "010126.1"\n')
             base_config = Path(tmp) / "processing.yaml"
-            base_config.write_text("in_root: Exp_Data/\n")
+            write_minimal_processing_config(base_config)
             args = Args(
                 configfile=[str(base_config)],
                 extra_configfile=[],
@@ -396,6 +419,15 @@ def write_fake_runner(root: Path) -> tuple[Path, Path]:
     }
     cli.runner_metadata_path(runner_prefix).write_text(json.dumps(metadata) + "\n")
     return runner_prefix, manager
+
+
+def write_minimal_processing_config(path: Path) -> None:
+    path.write_text(
+        "in_root: Exp_Data/\n"
+        "ip_root: IP_Data/\n"
+        "out_root: Exp_Output/\n"
+        "script_dir: scripts\n"
+    )
 
 
 class Args:

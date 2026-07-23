@@ -41,6 +41,7 @@ DEFAULT_RUNNER_PREFIX = ".low-bm/runner/env"
 DEFAULT_RUNNER_ENV_FILE = "workflow/envs/runner-env.yaml"
 ENV_MANAGERS = ("mamba", "conda", "micromamba")
 GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+REQUIRED_PROCESSING_CONFIG_KEYS = ("in_root", "ip_root", "out_root", "script_dir")
 
 
 @dataclass
@@ -512,6 +513,7 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
     # Config order is deliberate: base project defaults, optional user
     # overrides, then the generated per-row values for this batch.
     configfiles = resolve_configfiles(args.configfile, args.extra_configfile)
+    validate_processing_config_stack(configfiles)
     configfiles.append(row_config)
     log_dir = Path(args.log_root) / trial_id
     job_name = args.job_name or f"low-bm-{trial_id}"
@@ -552,6 +554,42 @@ def resolve_configfiles(configfiles: list[str], extra_configfiles: list[str]) ->
             raise SystemExit(f"Missing extra config file: {path}")
         resolved.append(path)
     return resolved
+
+
+def validate_processing_config_stack(configfiles: list[Path]) -> None:
+    """Catch missing base processing configs before submitting a master job.
+
+    Snakemake does not merge config files until it starts parsing the Snakefile.
+    If the base processing layer is accidentally omitted, users otherwise see a
+    remote master-job failure like `KeyError: in_root`. Checking the top-level
+    keys here keeps the portability layer honest: the submitted job should fail
+    only after the local launcher has proven its config stack is structurally
+    complete.
+    """
+    seen_keys: set[str] = set()
+    for configfile in configfiles:
+        seen_keys.update(top_level_yaml_keys(repo_path(configfile)))
+
+    missing = [key for key in REQUIRED_PROCESSING_CONFIG_KEYS if key not in seen_keys]
+    if missing:
+        raise SystemExit(
+            "Processing config stack is missing required key(s): "
+            + ", ".join(missing)
+            + ". Make sure config/local/processing.yaml is included with --configfile "
+            "and put run-specific path overrides under --extra-configfile."
+        )
+
+
+def top_level_yaml_keys(path: Path) -> set[str]:
+    """Return simple top-level YAML keys without adding a PyYAML dependency."""
+    keys: set[str] = set()
+    for line in path.read_text().splitlines():
+        if not line or line.startswith((" ", "\t", "#")):
+            continue
+        key, sep, _value = line.partition(":")
+        if sep:
+            keys.add(key.strip())
+    return keys
 
 
 def ensure_batch_table_exists(batch_table: Path) -> None:
@@ -916,6 +954,8 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
     lines.extend(
         [
             f"echo '[low-bm] starting {spec.trial_id} at '$(date -Is)",
+            "echo '[low-bm] command follows:'",
+            f"printf '%s\\n' {shlex.quote(shlex.join(command))}",
             shlex.join(command),
             f"echo '[low-bm] completed {spec.trial_id} at '$(date -Is)",
             "",
