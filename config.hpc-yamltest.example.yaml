@@ -1,0 +1,9 @@
+# Copy to config.hpc-yamltest.yaml on the HPC and adjust paths as needed.
+# This isolates YAML/container validation outputs from your routine pipeline runs.
+
+ip_root: "IP_Data_yamltest/"
+out_root: "Exp_Output_yamltest/"
+
+# Keep input and reference data external to the conda environments/container.
+in_root: "Exp_Data/"
+

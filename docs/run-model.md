@@ -34,6 +34,12 @@ directive in the Snakefile. The processing config stack is:
    `config/local/processing-overrides.yaml`.
 3. The generated per-row run config under `experiment_batch_configs/`.
 
+Snakemake itself is launched through a project-local runner environment created
+by `low-bm setup runner`. This runner layer contains Snakemake and the SLURM
+executor plugin, while rule-level bioinformatics tools remain in
+Snakemake-managed conda environments. See `docs/portability.md` for the
+portability rationale.
+
 The SLURM profile still delegates rule execution from the master job to SLURM.
 To reduce scheduler overhead for repeated sample-level prep work, it submits
 `norm_fastq`, `umi_selection`, `umi_dedup`, and `no_umi_count_summary` through

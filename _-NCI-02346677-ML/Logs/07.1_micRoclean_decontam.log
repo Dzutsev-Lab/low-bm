@@ -1,0 +1,22 @@
+Warning message:
+replacing previous import ‘DescTools::mt’ by ‘phyloseq::mt’ when loading ‘micRoclean’ 
+
+Attaching package: ‘dplyr’
+
+The following objects are masked from ‘package:stats’:
+
+    filter, lag
+
+The following objects are masked from ‘package:base’:
+
+    intersect, setdiff, setequal, union
+
+New names:
+• `` -> `...12`
+Only one batch detected; skipping step 1
+No technical replicate pairings supplied; skipping step 3
+Warning messages:
+1: In .is_contaminant(seqtab, conc = conc, neg = neg, method = method,  :
+  Removed 19 samples with zero total counts (or frequency).
+2: In .is_contaminant(seqtab, conc = conc, neg = neg, method = method,  :
+  Removed 19 samples with zero total counts (or frequency).

@@ -9,9 +9,12 @@ runs Snakemake directly or submits a lightweight SLURM master job.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -34,6 +37,10 @@ TEMPLATE_BASE_CONFIG = "config/templates/processing.yaml"
 TEMPLATE_BATCH_TABLE = "config/templates/batch.tsv"
 DEFAULT_RUN_CONFIG_DIR = "experiment_batch_configs"
 DEFAULT_LOG_ROOT = "snakemake_logs"
+DEFAULT_RUNNER_PREFIX = ".low-bm/runner/env"
+DEFAULT_RUNNER_ENV_FILE = "workflow/envs/runner-env.yaml"
+ENV_MANAGERS = ("mamba", "conda", "micromamba")
+GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 @dataclass
@@ -55,6 +62,30 @@ class RunSpec:
     dry_run: bool
     unlock: bool
     extra_snakemake_args: list[str]
+
+
+@dataclass(frozen=True)
+class EnvManagerSpec:
+    """The conda-compatible executable used to create and run the host runner."""
+
+    name: str
+    executable: str
+
+
+@dataclass(frozen=True)
+class HostRunnerSpec:
+    """Resolved host runner state.
+
+    The runner env is the controller environment: it runs Snakemake and the
+    SLURM executor plugin. Rule environments remain separate Snakemake-managed
+    conda envs under workflow/envs/. Keeping those layers separate is the first
+    portability lesson here: the scheduler/controller can be made reproducible
+    without merging every bioinformatics tool into one environment.
+    """
+
+    prefix: Path
+    manager: EnvManagerSpec
+    metadata_path: Path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -90,6 +121,24 @@ def build_parser() -> argparse.ArgumentParser:
     add_batch_submit_arguments(submit_parser)
     submit_parser.set_defaults(func=batch_submit_command)
 
+    setup_parser = subparsers.add_parser("setup", help="Create project-local runtime assets.")
+    setup_subparsers = setup_parser.add_subparsers(dest="setup_command", required=True)
+    setup_runner_parser = setup_subparsers.add_parser(
+        "runner",
+        help="Create or validate the project-local Snakemake runner environment.",
+    )
+    add_setup_runner_arguments(setup_runner_parser)
+    setup_runner_parser.set_defaults(func=setup_runner_command)
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check runtime portability setup.")
+    doctor_subparsers = doctor_parser.add_subparsers(dest="doctor_command", required=True)
+    doctor_runner_parser = doctor_subparsers.add_parser(
+        "runner",
+        help="Validate the project-local Snakemake runner environment.",
+    )
+    add_doctor_runner_arguments(doctor_runner_parser)
+    doctor_runner_parser.set_defaults(func=doctor_runner_command)
+
     return parser
 
 
@@ -122,6 +171,7 @@ def add_common_config_arguments(parser: argparse.ArgumentParser) -> None:
 def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     """Add arguments for the single-batch run path."""
     add_common_config_arguments(parser)
+    add_runner_arguments(parser)
     # A run can either consume a row config already written from a batch table,
     # or generate that same row config from direct command-line fields.
     parser.add_argument(
@@ -166,6 +216,7 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
 def add_batch_submit_arguments(parser: argparse.ArgumentParser) -> None:
     """Add arguments for submitting all rows in a canonical batch table."""
     add_common_config_arguments(parser)
+    add_runner_arguments(parser)
     parser.add_argument(
         "--batch-table",
         default=DEFAULT_BATCH_TABLE,
@@ -205,8 +256,8 @@ def add_master_job_arguments(parser: argparse.ArgumentParser) -> None:
         "--activate-command",
         default=os.environ.get("LOW_BM_ACTIVATE_COMMAND", ""),
         help=(
-            "Shell command evaluated in the master job before Snakemake, "
-            "for example: 'source myconda && mamba activate low-bm-runner'."
+            "Advanced fallback shell command evaluated in the master job before "
+            "Snakemake. Normal runs should use `low-bm setup runner` instead."
         ),
     )
     parser.add_argument("--master-cpus", default="4", help="CPUs for the SLURM master job.")
@@ -222,6 +273,74 @@ def add_master_job_arguments(parser: argparse.ArgumentParser) -> None:
         action="append",
         default=[],
         help="Extra raw #SBATCH directive body, such as '--mail-type=END,FAIL'.",
+    )
+
+
+def add_runner_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add V1 host-runner options shared by run entry points."""
+    parser.add_argument(
+        "--runner",
+        choices=["host"],
+        default="host",
+        help="Runner implementation. V1 supports host; container support will plug in here later.",
+    )
+    parser.add_argument(
+        "--runner-prefix",
+        default=DEFAULT_RUNNER_PREFIX,
+        help=f"Project-local runner environment prefix. Defaults to {DEFAULT_RUNNER_PREFIX}.",
+    )
+    parser.add_argument(
+        "--manager",
+        choices=("auto",) + ENV_MANAGERS,
+        default="auto",
+        help="Conda-compatible manager used to run the runner env.",
+    )
+
+
+def add_setup_runner_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add arguments for creating the project-local runner env."""
+    parser.add_argument(
+        "--runner-prefix",
+        default=DEFAULT_RUNNER_PREFIX,
+        help=f"Runner environment prefix to create. Defaults to {DEFAULT_RUNNER_PREFIX}.",
+    )
+    parser.add_argument(
+        "--manager",
+        choices=("auto",) + ENV_MANAGERS,
+        default="auto",
+        help="Conda-compatible manager used to create the runner env.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Remove and recreate an existing runner environment prefix.",
+    )
+
+
+def add_doctor_runner_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add arguments for checking the project-local runner env."""
+    parser.add_argument(
+        "--mode",
+        choices=["local", "slurm"],
+        default="local",
+        help="Runtime mode to validate.",
+    )
+    parser.add_argument(
+        "--runner",
+        choices=["host"],
+        default="host",
+        help="Runner implementation to validate. V1 supports host.",
+    )
+    parser.add_argument(
+        "--runner-prefix",
+        default=DEFAULT_RUNNER_PREFIX,
+        help=f"Runner environment prefix to validate. Defaults to {DEFAULT_RUNNER_PREFIX}.",
+    )
+    parser.add_argument(
+        "--manager",
+        choices=("auto",) + ENV_MANAGERS,
+        default="auto",
+        help="Conda-compatible manager used to run the runner env.",
     )
 
 
@@ -260,7 +379,7 @@ def batch_submit_command(args: argparse.Namespace) -> int:
         if args.dry_run:
             # In batch dry-run mode we intentionally avoid writing the master
             # script or invoking Snakemake; this reports the command shape only.
-            command = build_snakemake_command(spec)
+            command = build_execution_command(spec, row_args)
             if args.mode == "slurm":
                 script = master_script_path(spec)
                 print(f"[{row.trialID}] would submit master job script: {script}")
@@ -274,6 +393,86 @@ def batch_submit_command(args: argparse.Namespace) -> int:
             if args.mode == "local":
                 break
     return exit_code
+
+
+def setup_runner_command(args: argparse.Namespace) -> int:
+    """Create or validate the project-local Snakemake runner environment."""
+    prefix = Path(args.runner_prefix)
+    env_file = REPO_ROOT / DEFAULT_RUNNER_ENV_FILE
+    if not env_file.exists():
+        raise SystemExit(f"Missing runner environment file: {DEFAULT_RUNNER_ENV_FILE}")
+
+    manager = resolve_env_manager(args.manager, metadata_path=runner_metadata_path(prefix))
+    if path_exists_for_repo_run(prefix):
+        if not args.force:
+            runner = HostRunnerSpec(
+                prefix=prefix,
+                manager=manager,
+                metadata_path=runner_metadata_path(prefix),
+            )
+            print(f"Runner env already exists: {prefix}")
+            return check_runner_command(runner, ["snakemake", "--version"], "snakemake")
+        remove_runner_prefix(prefix)
+
+    command = build_runner_create_command(prefix, env_file, manager)
+    print(f"Creating runner env at {prefix} with {manager.name}.")
+    completed = subprocess.run(command, cwd=REPO_ROOT, check=False)
+    if completed.returncode != 0:
+        return completed.returncode
+
+    metadata_path = runner_metadata_path(prefix)
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "runner_prefix": str(prefix),
+        "env_file": DEFAULT_RUNNER_ENV_FILE,
+        "env_file_sha256": hash_file(env_file),
+        "manager": manager.name,
+        "manager_executable": manager.executable,
+        "low_bm_version": __version__,
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    print(f"Wrote runner metadata: {metadata_path}")
+    return check_runner_command(
+        HostRunnerSpec(prefix=prefix, manager=manager, metadata_path=metadata_path),
+        ["snakemake", "--version"],
+        "snakemake",
+    )
+
+
+def doctor_runner_command(args: argparse.Namespace) -> int:
+    """Check whether the host runner is ready for the selected execution mode."""
+    runner = resolve_host_runner(args)
+    checks: list[tuple[str, bool, str]] = []
+
+    snakemake = run_runner_command(runner, ["snakemake", "--version"])
+    checks.append(("snakemake", snakemake.returncode == 0, runner_check_detail(snakemake)))
+
+    if args.mode == "slurm":
+        plugin = run_runner_command(
+            runner,
+            ["python", "-c", "import snakemake_executor_plugin_slurm"],
+        )
+        checks.append(("snakemake-executor-plugin-slurm", plugin.returncode == 0, runner_check_detail(plugin)))
+        sbatch = run_runner_command(
+            runner,
+            [
+                "python",
+                "-c",
+                "import shutil, sys; sys.exit(0 if shutil.which('sbatch') else 1)",
+            ],
+        )
+        checks.append(("sbatch visible from runner", sbatch.returncode == 0, runner_check_detail(sbatch)))
+
+    source_errors = validate_microclean_source(REPO_ROOT / "workflow/envs/micRoclean-source.env")
+    checks.append(("micRoclean source pins", not source_errors, "; ".join(source_errors)))
+
+    ok = True
+    for label, passed, detail in checks:
+        marker = "ok" if passed else "fail"
+        print(f"[{marker}] {label}" + (f": {detail}" if detail else ""))
+        ok = ok and passed
+    return 0 if ok else 1
 
 
 def resolve_row_config(args: argparse.Namespace) -> Path:
@@ -373,6 +572,198 @@ def path_exists_for_repo_run(path: Path) -> bool:
     return path.exists() or (not path.is_absolute() and (REPO_ROOT / path).exists())
 
 
+def repo_path(path: Path) -> Path:
+    """Resolve a path as written by the user or relative to the repository."""
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
+def runner_metadata_path(prefix: Path) -> Path:
+    """Return the metadata file beside the project-local runner prefix."""
+    return prefix.parent / "runner.json"
+
+
+def resolve_env_manager(manager_name: str = "auto", metadata_path: Path | None = None) -> EnvManagerSpec:
+    """Find a conda-compatible manager.
+
+    We prefer existing tools over bootstrapping micromamba in V1. That keeps the
+    first portability step easy to understand: the repo owns the runner prefix,
+    while the user or HPC module system provides the package manager.
+    """
+    if manager_name != "auto":
+        executable = shutil.which(manager_name)
+        if not executable:
+            raise SystemExit(
+                f"Could not find requested environment manager: {manager_name}. "
+                "Load it on PATH or rerun with --manager auto."
+            )
+        return EnvManagerSpec(name=manager_name, executable=executable)
+
+    metadata = load_runner_metadata(metadata_path) if metadata_path else {}
+    recorded_executable = metadata.get("manager_executable")
+    recorded_name = metadata.get("manager")
+    if recorded_executable and Path(recorded_executable).exists():
+        return EnvManagerSpec(name=str(recorded_name or Path(recorded_executable).name), executable=str(recorded_executable))
+
+    for candidate in ENV_MANAGERS:
+        executable = shutil.which(candidate)
+        if executable:
+            return EnvManagerSpec(name=candidate, executable=executable)
+    raise SystemExit(
+        "Could not find mamba, conda, or micromamba on PATH. "
+        "Load one of those tools, then run `low-bm setup runner`."
+    )
+
+
+def load_runner_metadata(metadata_path: Path | None) -> dict[str, object]:
+    if not metadata_path:
+        return {}
+    path = repo_path(metadata_path)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+
+
+def build_runner_create_command(prefix: Path, env_file: Path, manager: EnvManagerSpec) -> list[str]:
+    """Build the command that creates the project-local runner environment."""
+    if manager.name == "micromamba":
+        return [
+            manager.executable,
+            "create",
+            "--yes",
+            "--prefix",
+            str(prefix),
+            "--file",
+            str(env_file),
+        ]
+    return [
+        manager.executable,
+        "env",
+        "create",
+        "--yes",
+        "--prefix",
+        str(prefix),
+        "--file",
+        str(env_file),
+    ]
+
+
+def remove_runner_prefix(prefix: Path) -> None:
+    """Remove an existing runner prefix after a few guardrails."""
+    target = repo_path(prefix).resolve()
+    blocked = {REPO_ROOT.resolve(), Path.home().resolve(), Path("/").resolve()}
+    if target in blocked or ".low-bm" not in target.parts:
+        raise SystemExit(f"Refusing to remove unsafe runner prefix: {target}")
+    shutil.rmtree(target)
+
+
+def resolve_host_runner(args: argparse.Namespace) -> HostRunnerSpec:
+    """Resolve the V1 host runner.
+
+    A prefix path is more reproducible than a global env name because it is tied
+    to this checkout. Two projects can carry different runner prefixes without
+    fighting over a shared `low-bm-runner` name in the user's conda install.
+    """
+    if getattr(args, "runner", "host") != "host":
+        raise SystemExit("V1 only supports --runner host. Container runner support will be added later.")
+    prefix = Path(getattr(args, "runner_prefix", DEFAULT_RUNNER_PREFIX))
+    metadata_path = runner_metadata_path(prefix)
+    if not repo_path(prefix).is_dir():
+        raise SystemExit(
+            f"Missing runner env: {prefix}. "
+            "Run `low-bm setup runner` before running the workflow, "
+            "or use --activate-command for an advanced submitted-SLURM fallback."
+        )
+    manager = resolve_env_manager(getattr(args, "manager", "auto"), metadata_path=metadata_path)
+    return HostRunnerSpec(prefix=prefix, manager=manager, metadata_path=metadata_path)
+
+
+def wrap_runner_command(runner: HostRunnerSpec, command: list[str]) -> list[str]:
+    """Run a command inside the project-local runner prefix without shell activation.
+
+    `conda run -p` style invocation is a portability bridge: it avoids relying on
+    interactive shell startup files, `source activate`, or a site-specific module
+    being reloaded inside every generated master job.
+    """
+    return [
+        runner.manager.executable,
+        "run",
+        "--prefix",
+        str(runner.prefix),
+        *command,
+    ]
+
+
+def wrap_snakemake_command(runner: HostRunnerSpec, command: list[str]) -> list[str]:
+    """Wrap a Snakemake argv list in the active runner implementation."""
+    return wrap_runner_command(runner, command)
+
+
+def run_runner_command(runner: HostRunnerSpec, command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        wrap_runner_command(runner, command),
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def check_runner_command(runner: HostRunnerSpec, command: list[str], label: str) -> int:
+    completed = run_runner_command(runner, command)
+    if completed.returncode == 0:
+        detail = completed.stdout.strip()
+        print(f"[ok] {label}" + (f": {detail}" if detail else ""))
+    else:
+        print(f"[fail] {label}", file=sys.stderr)
+        if completed.stderr:
+            print(completed.stderr, file=sys.stderr, end="")
+    return completed.returncode
+
+
+def runner_check_detail(completed: subprocess.CompletedProcess[str]) -> str:
+    """Return useful doctor output for both passing and failing checks."""
+    if completed.returncode == 0:
+        return completed.stdout.strip()
+    return completed.stderr.strip() or completed.stdout.strip()
+
+
+def validate_microclean_source(path: Path) -> list[str]:
+    """Validate fixed source pins used by micRoclean's post-deploy step."""
+    if not path.exists():
+        return [f"missing {path}"]
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+
+    errors = []
+    for key in ("MICROCLEAN_GIT_REF", "SCRUB_GIT_REF"):
+        value = values.get(key, "")
+        if not GIT_SHA_RE.match(value):
+            errors.append(f"{key} must be a fixed Git SHA")
+    for key in ("MICROCLEAN_GIT_URL", "SCRUB_GIT_URL"):
+        if not values.get(key):
+            errors.append(f"{key} is required")
+    return errors
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def build_snakemake_command(spec: RunSpec) -> list[str]:
     """Build the Snakemake argv list without executing it."""
     command = ["snakemake", "--profile", str(spec.profile)]
@@ -391,11 +782,31 @@ def build_snakemake_command(spec: RunSpec) -> list[str]:
     return command
 
 
+def build_execution_command(spec: RunSpec, args: argparse.Namespace) -> list[str]:
+    """Build the command that should actually run on this system.
+
+    Snakemake remains the inner command because it expresses workflow intent.
+    The runner wrapper expresses portability: V1 uses a host conda prefix, while
+    a later container runner can wrap this same inner command with apptainer exec.
+    """
+    command = build_snakemake_command(spec)
+    activate_command = getattr(args, "activate_command", "")
+    if activate_command:
+        if spec.mode != "slurm" or spec.dry_run or spec.unlock:
+            raise SystemExit(
+                "--activate-command is only supported for submitted SLURM master jobs. "
+                "Run `low-bm setup runner` for dry-runs, unlocks, and local execution."
+            )
+        return command
+    runner = resolve_host_runner(args)
+    return wrap_snakemake_command(runner, command)
+
+
 def execute_run_spec(spec: RunSpec, args: argparse.Namespace) -> int:
     """Record provenance, then run locally or submit a SLURM master job."""
     spec.log_dir.mkdir(parents=True, exist_ok=True)
-    write_provenance(spec, args)
-    command = build_snakemake_command(spec)
+    command = build_execution_command(spec, args)
+    write_provenance(spec, args, command)
 
     if args.print_command:
         print(shlex.join(command))
@@ -462,6 +873,7 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
     are managed by the Snakemake profile, especially profiles/slurm/config.yaml.
     """
     script = master_script_path(spec)
+    script.parent.mkdir(parents=True, exist_ok=True)
     output_log = spec.log_dir / "master-%j.log"
     lines = [
         "#!/usr/bin/env bash",
@@ -482,10 +894,25 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
             f"cd {shlex.quote(str(REPO_ROOT))}",
         ]
     )
-    if args.activate_command:
+    activate_command = getattr(args, "activate_command", "")
+    if activate_command:
         # Keep environment activation configurable because HPC shell setup tends
         # to be site- and account-specific.
-        lines.append(args.activate_command)
+        lines.append(activate_command)
+    else:
+        prefix = Path(args.runner_prefix)
+        # A submitted master job starts later, possibly on another node. This
+        # guard catches deleted or unmounted project-local runner envs before a
+        # confusing Snakemake failure scrolls by.
+        missing_message = f"Missing runner env: {prefix}. Run low-bm setup runner first."
+        lines.extend(
+            [
+                f"if [[ ! -d {shlex.quote(str(prefix))} ]]; then",
+                f"  echo {shlex.quote(missing_message)} >&2",
+                "  exit 2",
+                "fi",
+            ]
+        )
     lines.extend(
         [
             f"echo '[low-bm] starting {spec.trial_id} at '$(date -Is)",
@@ -499,9 +926,9 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
     return script
 
 
-def write_provenance(spec: RunSpec, args: argparse.Namespace) -> None:
+def write_provenance(spec: RunSpec, args: argparse.Namespace, execution_command: list[str]) -> None:
     """Write enough launch metadata to reconstruct what was submitted."""
-    command = build_snakemake_command(spec)
+    snakemake_command = build_snakemake_command(spec)
     provenance = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "low_bm_version": __version__,
@@ -510,12 +937,17 @@ def write_provenance(spec: RunSpec, args: argparse.Namespace) -> None:
         "target": spec.target,
         "profile": str(spec.profile),
         "configfiles": [str(path) for path in spec.configfiles],
-        "snakemake_command": command,
+        "snakemake_command": snakemake_command,
+        "execution_command": execution_command,
+        "runner": getattr(args, "runner", "host"),
+        "runner_prefix": getattr(args, "runner_prefix", None),
+        "manager": getattr(args, "manager", None),
         "git_commit": git_commit(),
-        "activate_command_set": bool(args.activate_command),
+        "activate_command_set": bool(getattr(args, "activate_command", "")),
     }
     (spec.log_dir / "run_metadata.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    (spec.log_dir / "snakemake_command.txt").write_text(shlex.join(command) + "\n")
+    (spec.log_dir / "snakemake_command.txt").write_text(shlex.join(snakemake_command) + "\n")
+    (spec.log_dir / "execution_command.txt").write_text(shlex.join(execution_command) + "\n")
 
 
 def git_commit() -> str | None:

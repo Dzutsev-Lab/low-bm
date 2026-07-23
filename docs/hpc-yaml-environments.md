@@ -22,20 +22,17 @@ done
 Use these exports to compare against `workflow/envs/*.yaml` if environment
 creation fails or a package is missing.
 
-## 2. Configure Patched micRoclean
+## 2. Confirm Patched micRoclean Source Pins
 
-Create an untracked source config from the example:
-
-```bash
-cp workflow/envs/micRoclean-source.env.example workflow/envs/micRoclean-source.env
-```
-
-Edit `workflow/envs/micRoclean-source.env` with the patched package Git URL and
-fixed commit SHA:
+This repository tracks `workflow/envs/micRoclean-source.env` as part of the
+reproducibility record. It should contain the patched package Git URL plus fixed
+commit SHA values:
 
 ```bash
 MICROCLEAN_GIT_URL=git@github.com:your-org/micRoclean.git
 MICROCLEAN_GIT_REF=0123456789abcdef0123456789abcdef01234567
+SCRUB_GIT_URL=https://github.com/Shenhav-and-Korem-labs/SCRuB.git
+SCRUB_GIT_REF=0123456789abcdef0123456789abcdef01234567
 ```
 
 The post-deploy script intentionally installs with `dependencies = FALSE`.
@@ -67,6 +64,13 @@ experiment_batch_configs/<trialID>_runconfig.yaml
 ```
 
 ## 4. Dry Run And Build Envs
+
+Create and validate the project-local runner first:
+
+```bash
+./low-bm setup runner
+./low-bm doctor runner --mode slurm
+```
 
 Use `low-bm` for the normal validation path:
 

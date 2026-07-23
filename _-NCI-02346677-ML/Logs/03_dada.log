@@ -1,0 +1,114 @@
+Loading required package: Rcpp
+Loading required package: BiocGenerics
+
+Attaching package: ‘BiocGenerics’
+
+The following objects are masked from ‘package:stats’:
+
+    IQR, mad, sd, var, xtabs
+
+The following objects are masked from ‘package:base’:
+
+    anyDuplicated, aperm, append, as.data.frame, basename, cbind,
+    colnames, dirname, do.call, duplicated, eval, evalq, Filter, Find,
+    get, grep, grepl, intersect, is.unsorted, lapply, Map, mapply,
+    match, mget, order, paste, pmax, pmax.int, pmin, pmin.int,
+    Position, rank, rbind, Reduce, rownames, sapply, saveRDS, setdiff,
+    table, tapply, union, unique, unsplit, which.max, which.min
+
+Loading required package: S4Vectors
+Loading required package: stats4
+
+Attaching package: ‘S4Vectors’
+
+The following object is masked from ‘package:utils’:
+
+    findMatches
+
+The following objects are masked from ‘package:base’:
+
+    expand.grid, I, unname
+
+Loading required package: IRanges
+Loading required package: XVector
+Loading required package: GenomeInfoDb
+
+Attaching package: ‘Biostrings’
+
+The following object is masked from ‘package:base’:
+
+    strsplit
+
+The filter removed all reads: IP_Data/SpikeIns/SpikeInExp1_Data/03_Dada_Denoising/filteredAndTrimmed/filtered.plate1_N703-S505_LCS780T_NEGpcr3.fastq not written.
+Some input samples had no reads pass the filter.
+Filtered+Trimmed, non-empty files: 63 / 64
+Creating 1 empty placeholder filtered fastq files for samples with 0 reads after filtering
+117719056 total bases in 646808 reads from 10 samples will be used for learning the error rates.
+Warning messages:
+1: In scale_y_log10() : log-10 transformation introduced infinite values.
+2: In scale_y_log10() : log-10 transformation introduced infinite values.
+null device 
+          1 
+Sample 1 - 24 reads in 24 unique sequences.
+Sample 2 - 127519 reads in 60316 unique sequences.
+Sample 3 - 89488 reads in 49320 unique sequences.
+Sample 4 - 19356 reads in 17580 unique sequences.
+Sample 5 - 53 reads in 46 unique sequences.
+Sample 6 - 2924 reads in 1798 unique sequences.
+Sample 7 - 144 reads in 143 unique sequences.
+Sample 8 - 168643 reads in 54523 unique sequences.
+Sample 9 - 131104 reads in 61682 unique sequences.
+Sample 10 - 107553 reads in 48333 unique sequences.
+Sample 11 - 36 reads in 35 unique sequences.
+Sample 12 - 6846 reads in 3895 unique sequences.
+Sample 13 - 129086 reads in 50920 unique sequences.
+Sample 14 - 87595 reads in 38224 unique sequences.
+Sample 15 - 88631 reads in 41332 unique sequences.
+Sample 16 - 134715 reads in 42077 unique sequences.
+Sample 17 - 12072 reads in 5826 unique sequences.
+Sample 18 - 8 reads in 8 unique sequences.
+Sample 19 - 131339 reads in 34903 unique sequences.
+Sample 20 - 15663 reads in 10410 unique sequences.
+Sample 21 - 30 reads in 25 unique sequences.
+Sample 22 - 23867 reads in 9682 unique sequences.
+Sample 23 - 11648 reads in 8711 unique sequences.
+Sample 24 - 150493 reads in 39703 unique sequences.
+Sample 25 - 124532 reads in 58173 unique sequences.
+Sample 26 - 9 reads in 9 unique sequences.
+Sample 27 - 3059 reads in 2939 unique sequences.
+Sample 28 - 28677 reads in 14390 unique sequences.
+Sample 29 - 100742 reads in 36541 unique sequences.
+Sample 30 - 140461 reads in 59566 unique sequences.
+Sample 31 - 138 reads in 103 unique sequences.
+Sample 32 - 24769 reads in 12861 unique sequences.
+Sample 33 - 9716 reads in 6736 unique sequences.
+Sample 34 - 134192 reads in 40499 unique sequences.
+Sample 35 - 131313 reads in 57296 unique sequences.
+Sample 36 - 34 reads in 26 unique sequences.
+Sample 37 - 119301 reads in 40828 unique sequences.
+Sample 38 - 101 reads in 100 unique sequences.
+Sample 39 - 138996 reads in 38463 unique sequences.
+Sample 40 - 179555 reads in 63196 unique sequences.
+Sample 41 - 391 reads in 269 unique sequences.
+Sample 42 - 46794 reads in 19080 unique sequences.
+Sample 43 - 1431 reads in 905 unique sequences.
+Sample 44 - 108841 reads in 38013 unique sequences.
+Sample 45 - 177443 reads in 68382 unique sequences.
+Sample 46 - 244 reads in 188 unique sequences.
+Sample 47 - 115814 reads in 38567 unique sequences.
+Sample 48 - 29 reads in 25 unique sequences.
+Sample 49 - 114217 reads in 40875 unique sequences.
+Sample 50 - 168099 reads in 64964 unique sequences.
+Sample 51 - 320 reads in 208 unique sequences.
+Sample 52 - 99542 reads in 32615 unique sequences.
+Sample 53 - 4 reads in 4 unique sequences.
+Sample 54 - 132510 reads in 50331 unique sequences.
+Sample 55 - 138186 reads in 49902 unique sequences.
+Sample 56 - 518 reads in 350 unique sequences.
+Sample 57 - 35028 reads in 14002 unique sequences.
+Sample 58 - 2 reads in 2 unique sequences.
+Sample 59 - 122092 reads in 42022 unique sequences.
+Sample 60 - 137291 reads in 46022 unique sequences.
+Sample 61 - 143 reads in 94 unique sequences.
+Sample 62 - 72543 reads in 23349 unique sequences.
+Sample 63 - 1 reads in 1 unique sequences.

@@ -1,0 +1,68 @@
+# Portability Notes
+
+`low-bm` now treats runtime portability as layered rather than monolithic. That
+keeps the implementation easier to debug today and leaves a clean path toward
+containerization later.
+
+## Three Runtime Layers
+
+1. **Launcher layer**: the `low-bm` Python CLI. It reads batch tables, prepares
+   config stacks, writes provenance, and submits or runs Snakemake.
+2. **Runner layer**: the environment that runs Snakemake itself, including the
+   SLURM executor plugin. V1 creates this at `.low-bm/runner/env`.
+3. **Rule environment layer**: the Snakemake-managed conda environments in
+   `workflow/envs/`. These contain bioinformatics and R tooling for individual
+   rules.
+
+Keeping these layers separate is the portability trick. The runner can be made
+reproducible without collapsing every rule dependency into one giant env, and a
+future container runner can replace only the runner layer first.
+
+## Why A Project-Local Runner Prefix?
+
+Global conda env names such as `low-bm-runner` are convenient, but they are also
+easy to mutate accidentally or reuse across unrelated checkouts. A prefix such
+as `.low-bm/runner/env` belongs to this repository copy, so two pipeline
+versions can carry different runner environments side by side.
+
+Create the runner with:
+
+```bash
+./low-bm setup runner
+```
+
+Validate it with:
+
+```bash
+./low-bm doctor runner --mode local
+./low-bm doctor runner --mode slurm
+```
+
+## Why `conda run --prefix`?
+
+Shell activation depends on startup files, shell type, and site-specific module
+state. Those details often differ between a login shell and a submitted SLURM
+job. `conda run --prefix .low-bm/runner/env snakemake ...` makes the target env
+explicit in the command itself, which is easier to record in provenance and
+easier to replay.
+
+`--activate-command` remains available as an advanced submitted-SLURM fallback,
+but normal use should go through `low-bm setup runner`.
+
+## How This Leads To Containers
+
+The inner Snakemake command is still built independently from the runner. Today
+the host runner wraps it like this:
+
+```bash
+conda run --prefix .low-bm/runner/env snakemake ...
+```
+
+A later container runner can wrap the same inner command like this:
+
+```bash
+apptainer exec low-bm-runner.sif snakemake ...
+```
+
+That keeps containerization as a new runner implementation rather than a rewrite
+of batch parsing, config stacking, provenance, or SLURM submission logic.

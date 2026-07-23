@@ -8,6 +8,7 @@ Exp_Output/
 SLURM_stderr/
 SLURM_stdout/
 snakemake_logs/
+.low-bm/
 experiment_batch_configs/
 experiment_batch_configs.tsv
 experiment_batch_configs.example.tsv
@@ -15,7 +16,6 @@ config/local/
 config.yaml
 env_exports/
 config.hpc-yamltest.yaml
-workflow/envs/micRoclean-source.env
 *.sif
 .snakemake/
 .vscode/
