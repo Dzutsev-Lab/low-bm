@@ -708,16 +708,17 @@ def resolve_host_runner(args: argparse.Namespace) -> HostRunnerSpec:
     """
     if getattr(args, "runner", "host") != "host":
         raise SystemExit("V1 only supports --runner host. Container runner support will be added later.")
-    prefix = Path(getattr(args, "runner_prefix", DEFAULT_RUNNER_PREFIX))
-    metadata_path = runner_metadata_path(prefix)
-    if not repo_path(prefix).is_dir():
+    prefix_arg = Path(getattr(args, "runner_prefix", DEFAULT_RUNNER_PREFIX))
+    prefix = repo_path(prefix_arg)
+    metadata_path = runner_metadata_path(prefix_arg)
+    if not prefix.is_dir():
         raise SystemExit(
-            f"Missing runner env: {prefix}. "
+            f"Missing runner env: {prefix_arg}. "
             "Run `low-bm setup runner` before running the workflow, "
             "or use --activate-command for an advanced submitted-SLURM fallback."
         )
     manager = resolve_env_manager(getattr(args, "manager", "auto"), metadata_path=metadata_path)
-    return HostRunnerSpec(prefix=prefix, manager=manager, metadata_path=metadata_path)
+    return HostRunnerSpec(prefix=prefix.resolve(), manager=manager, metadata_path=metadata_path)
 
 
 def wrap_runner_command(runner: HostRunnerSpec, command: list[str]) -> list[str]:
@@ -809,14 +810,19 @@ def build_snakemake_command(spec: RunSpec) -> list[str]:
         command.append("--dry-run")
     if spec.unlock:
         command.append("--unlock")
-    if not spec.unlock and spec.target:
-        # Snakemake 9 parses --configfile as FILE [FILE ...]. Keep positional
-        # targets before configfile entries so targets like "all" are not
-        # interpreted as additional config files.
-        command.append(spec.target)
-    for configfile in spec.configfiles:
-        command.extend(["--configfile", str(configfile)])
     command.extend(spec.extra_snakemake_args)
+    if spec.configfiles:
+        # Snakemake 9 parses --configfile as one option followed by one or
+        # more files. Keep the whole config stack under a single flag so later
+        # files override earlier files in the documented order.
+        command.append("--configfile")
+        command.extend(str(configfile) for configfile in spec.configfiles)
+    if not spec.unlock and spec.target:
+        # The explicit "--" ends --configfile's variable-length file list.
+        # Without it, a target like "all" can be swallowed as another config
+        # path; placing the target before --configfile prevented Snakemake from
+        # applying the config stack in Snakemake 9.23.
+        command.extend(["--", spec.target])
     return command
 
 

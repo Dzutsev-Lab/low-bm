@@ -122,16 +122,13 @@ class CommandConstructionTests(unittest.TestCase):
             command = build_snakemake_command(spec)
             self.assertEqual(command[0:2], ["snakemake", "--profile"])
             self.assertIn("--dry-run", command)
-            self.assertLess(command.index("all"), command.index("--configfile"))
+            self.assertEqual(command.count("--configfile"), 1)
             self.assertEqual(
-                [
-                    command[i + 1]
-                    for i, token in enumerate(command)
-                    if token == "--configfile"
-                ],
+                command[command.index("--configfile") + 1 : command.index("--")],
                 [str(base_config), str(override_config), str(run_config)],
             )
-            self.assertEqual(command[-1], "--quiet")
+            self.assertLess(command.index("--quiet"), command.index("--configfile"))
+            self.assertEqual(command[-2:], ["--", "all"])
 
     def test_processing_config_stack_requires_base_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,9 +214,10 @@ class CommandConstructionTests(unittest.TestCase):
             )
             spec = build_run_spec(args, run_config)
             command = build_execution_command(spec, args)
-            self.assertEqual(command[0:4], [str(manager), "run", "--prefix", str(runner_prefix)])
+            self.assertEqual(command[0:4], [str(manager), "run", "--prefix", str(runner_prefix.resolve())])
             self.assertIn("snakemake", command)
-            self.assertLess(command.index("all"), command.index("--configfile"))
+            self.assertEqual(command.count("--configfile"), 1)
+            self.assertEqual(command[-2:], ["--", "all"])
 
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
