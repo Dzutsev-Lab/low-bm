@@ -28,7 +28,7 @@ parser$add_argument("--candidate-comparisons",
 parser$add_argument("--candidate-source",
                     type = "character",
                     default = NULL,
-                    choices = c("differential_abundance", "top_abundance"),
+                    choices = c("differential_abundance", "top_abundance", "taxa_file"),
                     help = "How to select taxa for BLAST confirmation")
 parser$add_argument("--DA-method",
                     type = "character",
@@ -45,6 +45,10 @@ parser$add_argument("--candidate-pseudocount",
                     type = "double",
                     default = NULL,
                     help = "Pseudocount used with --candidate-norm-method for top-abundance selection")
+parser$add_argument("--candidate-taxa-file",
+                    type = "character",
+                    default = NULL,
+                    help = "Taxa-selection TSV used when --candidate-source taxa_file")
 parser$add_argument("--compiled-asv-fasta",
                     type = "character",
                     help = "FASTA file with all ASV sequences using ASV IDs as headers")
@@ -386,6 +390,7 @@ if (!is.null(args$analysis_config)) {
   taxa_level <- analysis_config_value(project_config, blast_config, "taxa_level", analysis_config_value(project_config, blast_config, "tax_agg_level", "Genus"))
   compiled_asv_fasta <- project_config$compiled_asv_fasta
   top_n_taxa <- blast_config$top_n_taxa %||% 10
+  candidate_taxa_file <- blast_config$candidate_taxa_file %||% blast_config$taxa_file
   candidate_sample_filter <- blast_config$candidate_sample_filter %||% blast_config$sample_filter
   candidate_norm_method <- blast_config$candidate_norm_method %||% "noNorm"
   candidate_pseudocount <- blast_config$candidate_pseudocount %||% project_config$pseudocount %||% 1
@@ -401,6 +406,7 @@ if (!is.null(args$analysis_config)) {
   taxa_level <- args$taxa_level
   compiled_asv_fasta <- args$compiled_asv_fasta
   top_n_taxa <- args$top_n_taxa %||% 10
+  candidate_taxa_file <- args$candidate_taxa_file
   candidate_sample_filter <- NULL
   candidate_norm_method <- args$candidate_norm_method %||% "noNorm"
   candidate_pseudocount <- args$candidate_pseudocount %||% 1
@@ -435,6 +441,12 @@ if (candidate_source == "differential_abundance") {
     "differential-abundance BLAST candidate preparation input"
   )
 }
+if (candidate_source == "taxa_file") {
+  fail_missing_input(
+    list(candidate_taxa_file = candidate_taxa_file),
+    "taxa-file BLAST candidate preparation input"
+  )
+}
 
 if (length(asv_fasta_paths) == 0) {
   stop(format_asv_fasta_resolution_error(asv_fasta_paths), call. = FALSE)
@@ -459,9 +471,36 @@ if (candidate_source == "differential_abundance") {
     norm_method = candidate_norm_method,
     pseudocount = candidate_pseudocount
   )
+} else if (candidate_source == "taxa_file") {
+  sig_taxa_by_comparison <- read_taxa_selection_table(
+    path = candidate_taxa_file,
+    comparisons = candidate_comparisons,
+    taxa_level = taxa_level
+  )
 } else {
   stop("Unsupported BLAST candidate_source: ", candidate_source, call. = FALSE)
 }
+
+selection_name <- blast_config$candidate_selection_name %||%
+  blast_config$selection_name %||%
+  paste0(candidate_source, "_", taxa_level)
+selection_name <- sanitize_path_component(selection_name, fallback = "selected_taxa")
+selection_file <- file.path(io_dir, "SelectedTaxa", paste0(selection_name, "_taxa.tsv"))
+selection_reason <- if (candidate_source == "differential_abundance") {
+  paste0("significance == Sig; method = ", DA_method)
+} else if (candidate_source == "top_abundance") {
+  paste0("top_n_taxa = ", top_n_taxa, "; norm_method = ", candidate_norm_method)
+} else {
+  paste0("taxa_file = ", candidate_taxa_file)
+}
+write_taxa_selection_table(
+  selection = sig_taxa_by_comparison,
+  out_file = selection_file,
+  source = candidate_source,
+  taxa_level = taxa_level,
+  selection_reason = selection_reason
+)
+message("Wrote taxa-selection table: ", selection_file)
 
 export_significant_taxon_asvs(
   ps = CompPhyseq,

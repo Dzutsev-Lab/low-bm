@@ -1,0 +1,32 @@
+# Meta-analysis and multi-batch compilation config template.
+#
+# Initialize an ignored config/local/meta.yaml from this file when combining
+# several processing outputs into one analysis endpoint.
+
+project:
+  name: "low_biomass_meta_analysis"
+  base_dir: "Exp_Output"
+  output_dir: "Exp_Output/<compiled_trial_name>"
+
+meta_compile:
+  # Use either batch_table, trial_list, or explicit physeqs.
+  batch_table: "config/local/batch.tsv"
+  trial_list: null
+  physeqs: []
+
+  # Output files are written under project.output_dir unless output_dir is set.
+  output_dir: null
+  output_physeq: "CompPhyseq.RData"
+  output_asv_fasta: "MergedASV.fasta"
+  techrep_avg: false
+
+meta_differential_abundance:
+  # Legacy two-result-table meta-analysis. Batch names are processing output
+  # directory names such as <trialID>_<trial_descript>.
+  batch1_name: "<batch1_trialID>_<batch1_trial_descript>"
+  batch2_name: "<batch2_trialID>_<batch2_trial_descript>"
+  DA_method: "ANCOMBC"
+  comparison: "ExampleComparison"
+  hetQ_p_cutoff: 0.05
+  fisher_q_cutoff: 0.05
+  output_dir: null

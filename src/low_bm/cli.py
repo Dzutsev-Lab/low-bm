@@ -33,15 +33,22 @@ from .batch import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BASE_CONFIG = "config/local/processing.yaml"
 DEFAULT_BATCH_TABLE = "config/local/batch.tsv"
+DEFAULT_ANALYSIS_CONFIG = "config/local/analysis.yaml"
+DEFAULT_META_CONFIG = "config/local/meta.yaml"
 TEMPLATE_BASE_CONFIG = "config/templates/processing.yaml"
 TEMPLATE_BATCH_TABLE = "config/templates/batch.tsv"
+TEMPLATE_ANALYSIS_CONFIG = "config/templates/analysis.yaml"
+TEMPLATE_META_CONFIG = "config/templates/meta.yaml"
 DEFAULT_RUN_CONFIG_DIR = "experiment_batch_configs"
 DEFAULT_LOG_ROOT = "snakemake_logs"
+DEFAULT_ANALYSIS_LOG_ROOT = "analysis_logs"
+DEFAULT_META_LOG_ROOT = "meta_logs"
 DEFAULT_RUNNER_PREFIX = ".low-bm/runner/env"
 DEFAULT_RUNNER_ENV_FILE = "workflow/envs/runner-env.yaml"
 ENV_MANAGERS = ("mamba", "conda", "micromamba")
 GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 REQUIRED_PROCESSING_CONFIG_KEYS = ("in_root", "ip_root", "out_root", "script_dir")
+ANALYSIS_ENV_MODES = ("named", "direct")
 
 
 @dataclass
@@ -66,6 +73,41 @@ class RunSpec:
 
 
 @dataclass(frozen=True)
+class AnalysisStepSpec:
+    """One analysis operation exposed through the low-bm CLI."""
+
+    name: str
+    argv_template: tuple[str, ...]
+    required_section: str | None
+    env_file: Path | None
+
+
+@dataclass(frozen=True)
+class AnalysisCommandSpec:
+    """Resolved command for one analysis step before and after env wrapping."""
+
+    step: str
+    command: list[str]
+    execution_command: list[str]
+    env_name: str | None
+    env_file: Path | None
+
+
+@dataclass(frozen=True)
+class AnalysisRunSpec:
+    """Resolved inputs for one explicit analysis invocation."""
+
+    analysis_config: Path
+    requested_steps: list[str]
+    expanded_steps: list[str]
+    log_dir: Path
+    dry_run: bool
+    env_mode: str
+    manager: EnvManagerSpec | None
+    commands: list[AnalysisCommandSpec]
+
+
+@dataclass(frozen=True)
 class EnvManagerSpec:
     """The conda-compatible executable used to create and run the host runner."""
 
@@ -87,6 +129,99 @@ class HostRunnerSpec:
     prefix: Path
     manager: EnvManagerSpec
     metadata_path: Path
+
+
+R_TOOLS_ENV = Path("workflow/envs/R-tools-env.yaml")
+BIO_TOOLS_ENV = Path("workflow/envs/bio-tools-env.yaml")
+
+ANALYSIS_STEP_REGISTRY: dict[str, AnalysisStepSpec] = {
+    "ordination": AnalysisStepSpec(
+        name="ordination",
+        argv_template=("Rscript", "scripts/OrdinationAnalysis.R", "--analysis-config", "{analysis_config}"),
+        required_section="ordination",
+        env_file=R_TOOLS_ENV,
+    ),
+    "abundance-barplots": AnalysisStepSpec(
+        name="abundance-barplots",
+        argv_template=("Rscript", "scripts/AbundanceBarPlots.R", "--analysis-config", "{analysis_config}"),
+        required_section="abundance_barplots",
+        env_file=R_TOOLS_ENV,
+    ),
+    "differential-abundance": AnalysisStepSpec(
+        name="differential-abundance",
+        argv_template=("Rscript", "scripts/DiffAbundAnalysis.R", "--analysis-config", "{analysis_config}"),
+        required_section="differential_abundance",
+        env_file=R_TOOLS_ENV,
+    ),
+    "lefse": AnalysisStepSpec(
+        name="lefse",
+        argv_template=("Rscript", "scripts/LEfSeAnalysis.R", "--analysis-config", "{analysis_config}"),
+        required_section="lefse_analysis",
+        env_file=R_TOOLS_ENV,
+    ),
+    "heatmap-violin": AnalysisStepSpec(
+        name="heatmap-violin",
+        argv_template=("Rscript", "scripts/HeatMapsViolinPlots.R", "--analysis-config", "{analysis_config}"),
+        required_section="heatmap_violin",
+        env_file=R_TOOLS_ENV,
+    ),
+    "xgboost": AnalysisStepSpec(
+        name="xgboost",
+        argv_template=("Rscript", "scripts/XGBoostClassification.R", "--analysis-config", "{analysis_config}"),
+        required_section="xgboost_classification",
+        env_file=R_TOOLS_ENV,
+    ),
+    "survival": AnalysisStepSpec(
+        name="survival",
+        argv_template=("Rscript", "scripts/SurvivalAnalysis.R", "--analysis-config", "{analysis_config}"),
+        required_section="survival_analysis",
+        env_file=R_TOOLS_ENV,
+    ),
+    "blast-candidates": AnalysisStepSpec(
+        name="blast-candidates",
+        argv_template=("Rscript", "scripts/BLASTCandidatePreparation.R", "--analysis-config", "{analysis_config}"),
+        required_section="blast_confirmation",
+        env_file=R_TOOLS_ENV,
+    ),
+    "blast-search": AnalysisStepSpec(
+        name="blast-search",
+        argv_template=("bash", "scripts/BLASTWrapper.sh", "--analysis-config", "{analysis_config}"),
+        required_section="blast_confirmation",
+        env_file=BIO_TOOLS_ENV,
+    ),
+    "blast-plots": AnalysisStepSpec(
+        name="blast-plots",
+        argv_template=("Rscript", "scripts/BLASTPlotting.R", "--analysis-config", "{analysis_config}"),
+        required_section="blast_confirmation",
+        env_file=R_TOOLS_ENV,
+    ),
+}
+
+ANALYSIS_COMPOSITES: dict[str, tuple[str, ...]] = {
+    "blast-confirmation": ("blast-candidates", "blast-search", "blast-plots"),
+}
+
+ANALYSIS_STEP_CHOICES = tuple(sorted(set(ANALYSIS_STEP_REGISTRY) | set(ANALYSIS_COMPOSITES)))
+ANALYSIS_ENDPOINT_STEPS = frozenset(
+    set(ANALYSIS_STEP_REGISTRY) - {"blast-search", "blast-plots"}
+)
+
+META_STEP_REGISTRY: dict[str, AnalysisStepSpec] = {
+    "compile-phyloseq": AnalysisStepSpec(
+        name="compile-phyloseq",
+        argv_template=("Rscript", "scripts/PhyloseqCompiler.R", "--analysis-config", "{analysis_config}"),
+        required_section="meta_compile",
+        env_file=R_TOOLS_ENV,
+    ),
+    "differential-abundance": AnalysisStepSpec(
+        name="differential-abundance",
+        argv_template=("Rscript", "scripts/DiffAbundMetaAnalysis.R", "--analysis-config", "{analysis_config}"),
+        required_section="meta_differential_abundance",
+        env_file=R_TOOLS_ENV,
+    ),
+}
+
+META_STEP_CHOICES = tuple(sorted(META_STEP_REGISTRY))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -121,6 +256,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_batch_submit_arguments(submit_parser)
     submit_parser.set_defaults(func=batch_submit_command)
+
+    analysis_parser = subparsers.add_parser("analysis", help="Run explicit post-processing analyses.")
+    analysis_subparsers = analysis_parser.add_subparsers(dest="analysis_command", required=True)
+    analysis_init_parser = analysis_subparsers.add_parser(
+        "init",
+        help="Create an editable local analysis config from the template.",
+    )
+    add_analysis_init_arguments(analysis_init_parser)
+    analysis_init_parser.set_defaults(func=analysis_init_command)
+
+    analysis_validate_parser = analysis_subparsers.add_parser(
+        "validate",
+        help="Validate an analysis config and optional selected step sections.",
+    )
+    add_analysis_validate_arguments(analysis_validate_parser)
+    analysis_validate_parser.set_defaults(func=analysis_validate_command)
+
+    analysis_run_parser = analysis_subparsers.add_parser(
+        "run",
+        help="Run one or more explicit analysis steps.",
+    )
+    add_analysis_run_arguments(analysis_run_parser)
+    analysis_run_parser.set_defaults(func=analysis_run_command)
+
+    meta_parser = subparsers.add_parser("meta", help="Prepare and run multi-batch meta-analysis steps.")
+    meta_subparsers = meta_parser.add_subparsers(dest="meta_command", required=True)
+    meta_init_parser = meta_subparsers.add_parser(
+        "init",
+        help="Create an editable local meta-analysis config from the template.",
+    )
+    add_meta_init_arguments(meta_init_parser)
+    meta_init_parser.set_defaults(func=meta_init_command)
+
+    meta_validate_parser = meta_subparsers.add_parser(
+        "validate",
+        help="Validate a meta-analysis config.",
+    )
+    add_meta_validate_arguments(meta_validate_parser)
+    meta_validate_parser.set_defaults(func=meta_validate_command)
+
+    meta_compile_parser = meta_subparsers.add_parser(
+        "compile-phyloseq",
+        help="Compile multiple processed batches into one phyloseq/ASV endpoint.",
+    )
+    add_meta_step_arguments(meta_compile_parser)
+    meta_compile_parser.set_defaults(func=meta_compile_phyloseq_command)
+
+    meta_da_parser = meta_subparsers.add_parser(
+        "differential-abundance",
+        help="Run differential-abundance meta-analysis across batch DA outputs.",
+    )
+    add_meta_step_arguments(meta_da_parser)
+    meta_da_parser.set_defaults(func=meta_differential_abundance_command)
 
     setup_parser = subparsers.add_parser("setup", help="Create project-local runtime assets.")
     setup_subparsers = setup_parser.add_subparsers(dest="setup_command", required=True)
@@ -249,6 +437,126 @@ def add_batch_submit_arguments(parser: argparse.ArgumentParser) -> None:
         help="Extra raw argument passed to Snakemake. May be repeated.",
     )
     add_master_job_arguments(parser)
+
+
+def add_analysis_config_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--analysis-config",
+        default=DEFAULT_ANALYSIS_CONFIG,
+        help=(
+            "Analysis YAML config. "
+            f"Defaults to {DEFAULT_ANALYSIS_CONFIG}."
+        ),
+    )
+
+
+def add_analysis_init_arguments(parser: argparse.ArgumentParser) -> None:
+    add_analysis_config_argument(parser)
+    parser.add_argument(
+        "--template",
+        default=TEMPLATE_ANALYSIS_CONFIG,
+        help=f"Template to copy. Defaults to {TEMPLATE_ANALYSIS_CONFIG}.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing analysis config.",
+    )
+
+
+def add_analysis_validate_arguments(parser: argparse.ArgumentParser) -> None:
+    add_analysis_config_argument(parser)
+    parser.add_argument(
+        "steps",
+        nargs="*",
+        choices=ANALYSIS_STEP_CHOICES,
+        help="Optional analysis steps whose config sections should be checked.",
+    )
+
+
+def add_analysis_run_arguments(parser: argparse.ArgumentParser) -> None:
+    add_analysis_config_argument(parser)
+    parser.add_argument(
+        "steps",
+        nargs="+",
+        choices=ANALYSIS_STEP_CHOICES,
+        help="Analysis step(s) to run in the order provided.",
+    )
+    parser.add_argument("--log-root", default=DEFAULT_ANALYSIS_LOG_ROOT, help="Root for analysis logs.")
+    parser.add_argument("--log-dir", help="Exact analysis log directory. Defaults under --log-root.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate and print commands without running scripts.")
+    parser.add_argument("--print-command", action="store_true", help="Print each resolved analysis command.")
+    parser.add_argument(
+        "--env-mode",
+        choices=ANALYSIS_ENV_MODES,
+        default="named",
+        help=(
+            "Use named conda/mamba envs from workflow/envs/*.yaml, or run directly "
+            "in the current environment."
+        ),
+    )
+    parser.add_argument(
+        "--manager",
+        default="auto",
+        help="Conda-compatible manager for --env-mode named. Defaults to auto.",
+    )
+
+
+def add_meta_config_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--analysis-config",
+        default=DEFAULT_META_CONFIG,
+        help=(
+            "Meta-analysis YAML config. "
+            f"Defaults to {DEFAULT_META_CONFIG}."
+        ),
+    )
+
+
+def add_meta_init_arguments(parser: argparse.ArgumentParser) -> None:
+    add_meta_config_argument(parser)
+    parser.add_argument(
+        "--template",
+        default=TEMPLATE_META_CONFIG,
+        help=f"Template to copy. Defaults to {TEMPLATE_META_CONFIG}.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing meta-analysis config.",
+    )
+
+
+def add_meta_validate_arguments(parser: argparse.ArgumentParser) -> None:
+    add_meta_config_argument(parser)
+    parser.add_argument(
+        "steps",
+        nargs="*",
+        choices=META_STEP_CHOICES,
+        help="Optional meta-analysis steps whose config sections should be checked.",
+    )
+
+
+def add_meta_step_arguments(parser: argparse.ArgumentParser) -> None:
+    add_meta_config_argument(parser)
+    parser.add_argument("--log-root", default=DEFAULT_META_LOG_ROOT, help="Root for meta-analysis logs.")
+    parser.add_argument("--log-dir", help="Exact meta-analysis log directory. Defaults under --log-root.")
+    parser.add_argument("--dry-run", action="store_true", help="Validate and print the command without running it.")
+    parser.add_argument("--print-command", action="store_true", help="Print the resolved meta-analysis command.")
+    parser.add_argument(
+        "--env-mode",
+        choices=ANALYSIS_ENV_MODES,
+        default="named",
+        help=(
+            "Use named conda/mamba envs from workflow/envs/*.yaml, or run directly "
+            "in the current environment."
+        ),
+    )
+    parser.add_argument(
+        "--manager",
+        default="auto",
+        help="Conda-compatible manager for --env-mode named. Defaults to auto.",
+    )
 
 
 def add_master_job_arguments(parser: argparse.ArgumentParser) -> None:
@@ -394,6 +702,135 @@ def batch_submit_command(args: argparse.Namespace) -> int:
             if args.mode == "local":
                 break
     return exit_code
+
+
+def analysis_init_command(args: argparse.Namespace) -> int:
+    """Create an editable local analysis config from the tracked template."""
+    destination_arg = Path(args.analysis_config)
+    destination = repo_path(destination_arg)
+    template_arg = Path(args.template)
+    template = repo_path(template_arg)
+
+    if not template.exists():
+        raise SystemExit(f"Missing analysis template: {template_arg}")
+    if destination.exists() and not args.force:
+        raise SystemExit(
+            f"Analysis config already exists: {destination_arg}. "
+            "Use --force to overwrite it."
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(template, destination)
+    print(f"Wrote analysis config: {destination_arg}")
+    return 0
+
+
+def analysis_validate_command(args: argparse.Namespace) -> int:
+    """Validate analysis config shape without running analysis scripts."""
+    analysis_config = resolve_analysis_config(args.analysis_config)
+    expanded_steps = expand_analysis_steps(list(args.steps or []))
+    validate_analysis_config(analysis_config, expanded_steps)
+    if expanded_steps:
+        print("Analysis config is valid for step(s): " + ", ".join(expanded_steps))
+    else:
+        print(f"Analysis config is valid: {analysis_config}")
+    return 0
+
+
+def analysis_run_command(args: argparse.Namespace) -> int:
+    """Run selected post-processing analyses in explicit order."""
+    spec = build_analysis_run_spec(args)
+    spec.log_dir.mkdir(parents=True, exist_ok=True)
+    write_analysis_provenance(spec)
+
+    if args.print_command or spec.dry_run:
+        for command_spec in spec.commands:
+            print(shlex.join(command_spec.execution_command))
+
+    if spec.dry_run:
+        print(f"Analysis dry-run complete. See {spec.log_dir}.")
+        return 0
+
+    for index, command_spec in enumerate(spec.commands, start=1):
+        returncode = run_analysis_step(command_spec, spec.log_dir, index)
+        if returncode != 0:
+            print(
+                f"Analysis step '{command_spec.step}' exited with {returncode}. "
+                f"See {analysis_step_log_file(spec.log_dir, index, command_spec.step)}.",
+                file=sys.stderr,
+            )
+            return returncode
+    print(f"Analysis complete. See {spec.log_dir}.")
+    return 0
+
+
+def meta_init_command(args: argparse.Namespace) -> int:
+    """Create an editable local meta-analysis config from the tracked template."""
+    destination_arg = Path(args.analysis_config)
+    destination = repo_path(destination_arg)
+    template_arg = Path(args.template)
+    template = repo_path(template_arg)
+
+    if not template.exists():
+        raise SystemExit(f"Missing meta-analysis template: {template_arg}")
+    if destination.exists() and not args.force:
+        raise SystemExit(
+            f"Meta-analysis config already exists: {destination_arg}. "
+            "Use --force to overwrite it."
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(template, destination)
+    print(f"Wrote meta-analysis config: {destination_arg}")
+    return 0
+
+
+def meta_validate_command(args: argparse.Namespace) -> int:
+    """Validate meta-analysis config shape without running scripts."""
+    meta_config = resolve_meta_config(args.analysis_config)
+    steps = list(args.steps or [])
+    validate_meta_config(meta_config, steps)
+    if steps:
+        print("Meta-analysis config is valid for step(s): " + ", ".join(steps))
+    else:
+        print(f"Meta-analysis config is valid: {meta_config}")
+    return 0
+
+
+def meta_compile_phyloseq_command(args: argparse.Namespace) -> int:
+    """Run multi-batch phyloseq and ASV FASTA compilation."""
+    return execute_meta_step(args, "compile-phyloseq")
+
+
+def meta_differential_abundance_command(args: argparse.Namespace) -> int:
+    """Run differential-abundance meta-analysis."""
+    return execute_meta_step(args, "differential-abundance")
+
+
+def execute_meta_step(args: argparse.Namespace, step: str) -> int:
+    """Run one meta-analysis step with provenance and logging."""
+    spec = build_meta_run_spec(args, step)
+    spec.log_dir.mkdir(parents=True, exist_ok=True)
+    write_meta_provenance(spec)
+
+    command_spec = spec.commands[0]
+    if args.print_command or spec.dry_run:
+        print(shlex.join(command_spec.execution_command))
+
+    if spec.dry_run:
+        print(f"Meta-analysis dry-run complete. See {spec.log_dir}.")
+        return 0
+
+    returncode = run_analysis_step(command_spec, spec.log_dir, 1)
+    if returncode != 0:
+        print(
+            f"Meta-analysis step '{command_spec.step}' exited with {returncode}. "
+            f"See {analysis_step_log_file(spec.log_dir, 1, command_spec.step)}.",
+            file=sys.stderr,
+        )
+        return returncode
+    print(f"Meta-analysis complete. See {spec.log_dir}.")
+    return 0
 
 
 def setup_runner_command(args: argparse.Namespace) -> int:
@@ -592,6 +1029,33 @@ def top_level_yaml_keys(path: Path) -> set[str]:
     return keys
 
 
+def top_level_yaml_section_values(path: Path, section: str) -> dict[str, str]:
+    """Return simple scalar key/value pairs from one top-level YAML section."""
+    values: dict[str, str] = {}
+    in_section = False
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        key, sep, value = stripped.partition(":")
+        if indent == 0:
+            in_section = sep == ":" and key.strip() == section
+            continue
+        if not in_section or sep != ":":
+            continue
+        if indent <= 2:
+            values[key.strip()] = value.strip().split("#", 1)[0].strip()
+    return values
+
+
+def is_missing_yaml_scalar(value: str | None) -> bool:
+    if value is None:
+        return True
+    value = value.strip().strip('"').strip("'")
+    return not value or value.lower() in {"null", "none", "~"}
+
+
 def ensure_batch_table_exists(batch_table: Path) -> None:
     """Raise a setup-oriented error when the default local batch table is absent."""
     if path_exists_for_repo_run(batch_table):
@@ -603,6 +1067,341 @@ def ensure_batch_table_exists(batch_table: Path) -> None:
             "or pass --batch-table."
         )
     raise SystemExit(f"Missing batch table: {batch_table}")
+
+
+def resolve_analysis_config(path: str | Path) -> Path:
+    """Return an existing analysis config or raise with setup guidance."""
+    analysis_config = Path(path)
+    if path_exists_for_repo_run(analysis_config):
+        return analysis_config
+    if str(analysis_config) == DEFAULT_ANALYSIS_CONFIG:
+        raise SystemExit(
+            f"Missing default analysis config: {DEFAULT_ANALYSIS_CONFIG}. "
+            f"Initialize it with `low-bm analysis init`, copy {TEMPLATE_ANALYSIS_CONFIG}, "
+            "or pass --analysis-config."
+        )
+    raise SystemExit(f"Missing analysis config: {analysis_config}")
+
+
+def resolve_meta_config(path: str | Path) -> Path:
+    """Return an existing meta-analysis config or raise with setup guidance."""
+    meta_config = Path(path)
+    if path_exists_for_repo_run(meta_config):
+        return meta_config
+    if str(meta_config) == DEFAULT_META_CONFIG:
+        raise SystemExit(
+            f"Missing default meta-analysis config: {DEFAULT_META_CONFIG}. "
+            f"Initialize it with `low-bm meta init`, copy {TEMPLATE_META_CONFIG}, "
+            "or pass --analysis-config."
+        )
+    raise SystemExit(f"Missing meta-analysis config: {meta_config}")
+
+
+def expand_analysis_steps(steps: list[str]) -> list[str]:
+    """Expand composite analysis aliases while preserving user order."""
+    expanded: list[str] = []
+    for step in steps:
+        if step in ANALYSIS_COMPOSITES:
+            expanded.extend(ANALYSIS_COMPOSITES[step])
+        elif step in ANALYSIS_STEP_REGISTRY:
+            expanded.append(step)
+        else:
+            raise SystemExit(
+                f"Unsupported analysis step: {step}. "
+                f"Supported steps: {', '.join(ANALYSIS_STEP_CHOICES)}"
+            )
+    return expanded
+
+
+def validate_analysis_config(analysis_config: Path, expanded_steps: list[str]) -> None:
+    """Check the config has the selected top-level analysis sections."""
+    config_path = repo_path(analysis_config)
+    keys = top_level_yaml_keys(config_path)
+    if "project" not in keys:
+        raise SystemExit(f"Analysis config is missing required top-level section: project")
+    project_values = top_level_yaml_section_values(config_path, "project")
+
+    missing_sections: list[str] = []
+    for step in expanded_steps:
+        step_spec = ANALYSIS_STEP_REGISTRY[step]
+        if step_spec.required_section and step_spec.required_section not in keys:
+            missing_sections.append(f"{step_spec.required_section} (for {step})")
+        validate_analysis_step_assets(step_spec)
+
+    if missing_sections:
+        raise SystemExit(
+            "Analysis config is missing section(s) required by selected step(s): "
+            + ", ".join(missing_sections)
+        )
+
+    endpoint_steps = [step for step in expanded_steps if step in ANALYSIS_ENDPOINT_STEPS]
+    if endpoint_steps and is_missing_yaml_scalar(project_values.get("compiled_physeq")):
+        raise SystemExit(
+            "Standard analysis steps require project.compiled_physeq in the analysis config. "
+            "For multiple processing batches, run `low-bm meta compile-phyloseq` first, "
+            "then point project.compiled_physeq at the compiled endpoint."
+        )
+
+
+def validate_meta_config(meta_config: Path, steps: list[str]) -> None:
+    """Check the meta-analysis config has selected top-level sections."""
+    config_path = repo_path(meta_config)
+    keys = top_level_yaml_keys(config_path)
+    if "project" not in keys:
+        raise SystemExit("Meta-analysis config is missing required top-level section: project")
+
+    missing_sections: list[str] = []
+    for step in steps:
+        step_spec = META_STEP_REGISTRY[step]
+        if step_spec.required_section and step_spec.required_section not in keys:
+            missing_sections.append(f"{step_spec.required_section} (for {step})")
+        validate_analysis_step_assets(step_spec)
+
+    if missing_sections:
+        raise SystemExit(
+            "Meta-analysis config is missing section(s) required by selected step(s): "
+            + ", ".join(missing_sections)
+        )
+
+
+def validate_analysis_step_assets(step_spec: AnalysisStepSpec) -> None:
+    """Fail early when the wrapper points at a missing local script or env file."""
+    argv = list(step_spec.argv_template)
+    script_paths = [part for part in argv if part.startswith("scripts/")]
+    for script_path in script_paths:
+        if not repo_path(Path(script_path)).exists():
+            raise SystemExit(f"Missing analysis script for {step_spec.name}: {script_path}")
+    if step_spec.env_file is not None and not repo_path(step_spec.env_file).exists():
+        raise SystemExit(f"Missing analysis environment file for {step_spec.name}: {step_spec.env_file}")
+
+
+def build_analysis_run_spec(
+    args: argparse.Namespace,
+    created_utc: datetime | None = None,
+) -> AnalysisRunSpec:
+    """Resolve config, steps, logs, env wrapping, and commands for analysis."""
+    analysis_config = resolve_analysis_config(args.analysis_config)
+    requested_steps = list(args.steps)
+    expanded_steps = expand_analysis_steps(requested_steps)
+    validate_analysis_config(analysis_config, expanded_steps)
+
+    env_mode = getattr(args, "env_mode", "named")
+    if env_mode not in ANALYSIS_ENV_MODES:
+        raise SystemExit(f"Unsupported analysis env mode: {env_mode}")
+
+    manager = resolve_env_manager(getattr(args, "manager", "auto")) if env_mode == "named" else None
+    timestamp = created_utc or datetime.now(timezone.utc)
+    log_dir = resolve_analysis_log_dir(args, expanded_steps, timestamp)
+
+    commands = [
+        build_analysis_command_spec(
+            step=step,
+            analysis_config=analysis_config,
+            env_mode=env_mode,
+            manager=manager,
+            registry=ANALYSIS_STEP_REGISTRY,
+        )
+        for step in expanded_steps
+    ]
+    return AnalysisRunSpec(
+        analysis_config=analysis_config,
+        requested_steps=requested_steps,
+        expanded_steps=expanded_steps,
+        log_dir=log_dir,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        env_mode=env_mode,
+        manager=manager,
+        commands=commands,
+    )
+
+
+def build_meta_run_spec(
+    args: argparse.Namespace,
+    step: str,
+    created_utc: datetime | None = None,
+) -> AnalysisRunSpec:
+    """Resolve config, logs, env wrapping, and command for one meta step."""
+    meta_config = resolve_meta_config(args.analysis_config)
+    validate_meta_config(meta_config, [step])
+
+    env_mode = getattr(args, "env_mode", "named")
+    if env_mode not in ANALYSIS_ENV_MODES:
+        raise SystemExit(f"Unsupported meta-analysis env mode: {env_mode}")
+
+    manager = resolve_env_manager(getattr(args, "manager", "auto")) if env_mode == "named" else None
+    timestamp = created_utc or datetime.now(timezone.utc)
+    log_dir = resolve_analysis_log_dir(args, [step], timestamp)
+    command = build_analysis_command_spec(
+        step=step,
+        analysis_config=meta_config,
+        env_mode=env_mode,
+        manager=manager,
+        registry=META_STEP_REGISTRY,
+    )
+    return AnalysisRunSpec(
+        analysis_config=meta_config,
+        requested_steps=[step],
+        expanded_steps=[step],
+        log_dir=log_dir,
+        dry_run=bool(getattr(args, "dry_run", False)),
+        env_mode=env_mode,
+        manager=manager,
+        commands=[command],
+    )
+
+
+def resolve_analysis_log_dir(
+    args: argparse.Namespace,
+    expanded_steps: list[str],
+    created_utc: datetime,
+) -> Path:
+    if getattr(args, "log_dir", None):
+        return Path(args.log_dir)
+    step_slug = "-".join(expanded_steps)
+    step_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", step_slug) or "analysis"
+    timestamp = created_utc.strftime("%Y%m%dT%H%M%SZ")
+    return Path(getattr(args, "log_root", DEFAULT_ANALYSIS_LOG_ROOT)) / f"{timestamp}_{step_slug}"
+
+
+def build_analysis_command_spec(
+    step: str,
+    analysis_config: Path,
+    env_mode: str,
+    manager: EnvManagerSpec | None,
+    registry: dict[str, AnalysisStepSpec] = ANALYSIS_STEP_REGISTRY,
+) -> AnalysisCommandSpec:
+    step_spec = registry[step]
+    command = [
+        token.format(analysis_config=str(analysis_config))
+        for token in step_spec.argv_template
+    ]
+    env_name = analysis_env_name(step_spec.env_file) if step_spec.env_file is not None else None
+    execution_command = wrap_analysis_command(command, env_name, env_mode, manager)
+    return AnalysisCommandSpec(
+        step=step,
+        command=command,
+        execution_command=execution_command,
+        env_name=env_name,
+        env_file=step_spec.env_file,
+    )
+
+
+def wrap_analysis_command(
+    command: list[str],
+    env_name: str | None,
+    env_mode: str,
+    manager: EnvManagerSpec | None,
+) -> list[str]:
+    if env_mode == "direct" or env_name is None:
+        return command
+    if manager is None:
+        raise SystemExit("--env-mode named requires a conda-compatible manager.")
+    return [
+        manager.executable,
+        "run",
+        "--name",
+        env_name,
+        *command,
+    ]
+
+
+def analysis_env_name(env_file: Path) -> str:
+    """Read the top-level conda environment name from an env YAML file."""
+    path = repo_path(env_file)
+    for line in path.read_text().splitlines():
+        if line.startswith("name:"):
+            value = line.split(":", 1)[1].strip().strip('"').strip("'")
+            if value:
+                return value
+    raise SystemExit(f"Missing top-level name in analysis environment file: {env_file}")
+
+
+def write_analysis_provenance(spec: AnalysisRunSpec) -> None:
+    """Record enough metadata to reconstruct an analysis invocation."""
+    command_entries = [
+        {
+            "step": command_spec.step,
+            "command": command_spec.command,
+            "execution_command": command_spec.execution_command,
+            "env_name": command_spec.env_name,
+            "env_file": str(command_spec.env_file) if command_spec.env_file else None,
+        }
+        for command_spec in spec.commands
+    ]
+    provenance = {
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "low_bm_version": __version__,
+        "analysis_config": str(spec.analysis_config),
+        "requested_steps": spec.requested_steps,
+        "expanded_steps": spec.expanded_steps,
+        "dry_run": spec.dry_run,
+        "env_mode": spec.env_mode,
+        "manager": spec.manager.name if spec.manager else None,
+        "manager_executable": spec.manager.executable if spec.manager else None,
+        "git_commit": git_commit(),
+        "commands": command_entries,
+    }
+    (spec.log_dir / "analysis_metadata.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    command_lines = []
+    for command_spec in spec.commands:
+        command_lines.append(f"# {command_spec.step}")
+        command_lines.append(shlex.join(command_spec.execution_command))
+    (spec.log_dir / "analysis_commands.txt").write_text("\n".join(command_lines) + "\n")
+
+
+def write_meta_provenance(spec: AnalysisRunSpec) -> None:
+    """Record enough metadata to reconstruct a meta-analysis invocation."""
+    command_entries = [
+        {
+            "step": command_spec.step,
+            "command": command_spec.command,
+            "execution_command": command_spec.execution_command,
+            "env_name": command_spec.env_name,
+            "env_file": str(command_spec.env_file) if command_spec.env_file else None,
+        }
+        for command_spec in spec.commands
+    ]
+    provenance = {
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "low_bm_version": __version__,
+        "meta_config": str(spec.analysis_config),
+        "requested_steps": spec.requested_steps,
+        "expanded_steps": spec.expanded_steps,
+        "dry_run": spec.dry_run,
+        "env_mode": spec.env_mode,
+        "manager": spec.manager.name if spec.manager else None,
+        "manager_executable": spec.manager.executable if spec.manager else None,
+        "git_commit": git_commit(),
+        "commands": command_entries,
+    }
+    (spec.log_dir / "meta_metadata.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    command_lines = []
+    for command_spec in spec.commands:
+        command_lines.append(f"# {command_spec.step}")
+        command_lines.append(shlex.join(command_spec.execution_command))
+    (spec.log_dir / "meta_commands.txt").write_text("\n".join(command_lines) + "\n")
+
+
+def analysis_step_log_file(log_dir: Path, index: int, step: str) -> Path:
+    safe_step = re.sub(r"[^A-Za-z0-9._-]+", "_", step)
+    return log_dir / f"{index:02d}_{safe_step}.log"
+
+
+def run_analysis_step(command_spec: AnalysisCommandSpec, log_dir: Path, index: int) -> int:
+    """Run one analysis command and capture stdout/stderr in its step log."""
+    log_file = analysis_step_log_file(log_dir, index, command_spec.step)
+    with log_file.open("a") as log:
+        log.write(f"\n# {datetime.now(timezone.utc).isoformat()}\n")
+        log.write(f"$ {shlex.join(command_spec.execution_command)}\n")
+        log.flush()
+        completed = subprocess.run(
+            command_spec.execution_command,
+            cwd=REPO_ROOT,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    return completed.returncode
 
 
 def path_exists_for_repo_run(path: Path) -> bool:

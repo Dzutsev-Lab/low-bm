@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import sys
@@ -344,6 +345,161 @@ class CommandConstructionTests(unittest.TestCase):
                 cli.DEFAULT_BATCH_TABLE = old_default
 
 
+class AnalysisCommandTests(unittest.TestCase):
+    def test_compile_phyloseq_is_meta_not_standard_analysis(self) -> None:
+        self.assertNotIn("compile-phyloseq", cli.ANALYSIS_STEP_REGISTRY)
+        self.assertNotIn("compile-phyloseq", cli.ANALYSIS_STEP_CHOICES)
+        self.assertIn("compile-phyloseq", cli.META_STEP_REGISTRY)
+
+    def test_analysis_command_construction_covers_registered_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_config = Path(tmp) / "analysis.yaml"
+            write_minimal_analysis_config(analysis_config)
+            args = Args(
+                analysis_config=str(analysis_config),
+                steps=list(cli.ANALYSIS_STEP_REGISTRY),
+                log_root=str(Path(tmp) / "analysis_logs"),
+                log_dir=None,
+                dry_run=True,
+                env_mode="direct",
+                manager="auto",
+            )
+            spec = cli.build_analysis_run_spec(
+                args,
+                created_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            )
+            self.assertEqual(spec.expanded_steps, list(cli.ANALYSIS_STEP_REGISTRY))
+            self.assertEqual(spec.log_dir, Path(tmp) / "analysis_logs" / ("20260102T030405Z_" + "-".join(spec.expanded_steps)))
+            for command_spec in spec.commands:
+                self.assertEqual(command_spec.command, command_spec.execution_command)
+                self.assertIn("--analysis-config", command_spec.command)
+                self.assertEqual(command_spec.command[-1], str(analysis_config))
+
+    def test_analysis_composite_expands_in_order(self) -> None:
+        self.assertEqual(
+            cli.expand_analysis_steps(["differential-abundance", "blast-confirmation", "survival"]),
+            [
+                "differential-abundance",
+                "blast-candidates",
+                "blast-search",
+                "blast-plots",
+                "survival",
+            ],
+        )
+
+    def test_analysis_run_dry_run_writes_provenance_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_config = Path(tmp) / "analysis.yaml"
+            write_minimal_analysis_config(analysis_config)
+            log_dir = Path(tmp) / "analysis_run"
+            args = Args(
+                analysis_config=str(analysis_config),
+                steps=["abundance-barplots", "ordination"],
+                log_root=str(Path(tmp) / "analysis_logs"),
+                log_dir=str(log_dir),
+                dry_run=True,
+                print_command=False,
+                env_mode="direct",
+                manager="auto",
+            )
+            self.assertEqual(cli.analysis_run_command(args), 0)
+            metadata = json.loads((log_dir / "analysis_metadata.json").read_text())
+            self.assertEqual(metadata["expanded_steps"], ["abundance-barplots", "ordination"])
+            self.assertTrue(metadata["dry_run"])
+            commands_text = (log_dir / "analysis_commands.txt").read_text()
+            self.assertLess(commands_text.index("# abundance-barplots"), commands_text.index("# ordination"))
+            self.assertFalse((log_dir / "01_abundance-barplots.log").exists())
+
+    def test_analysis_missing_config_has_setup_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_config = Path(tmp) / "config" / "local" / "analysis.yaml"
+            old_default = cli.DEFAULT_ANALYSIS_CONFIG
+            try:
+                cli.DEFAULT_ANALYSIS_CONFIG = str(missing_config)
+                with self.assertRaisesRegex(SystemExit, "low-bm analysis init"):
+                    cli.resolve_analysis_config(missing_config)
+            finally:
+                cli.DEFAULT_ANALYSIS_CONFIG = old_default
+
+    def test_analysis_missing_selected_section_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_config = Path(tmp) / "analysis.yaml"
+            analysis_config.write_text("project:\n  trialID: test\n  compiled_physeq: physeq.RData\n")
+            with self.assertRaisesRegex(SystemExit, "ordination"):
+                cli.validate_analysis_config(analysis_config, ["ordination"])
+
+    def test_analysis_requires_compiled_physeq_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_config = Path(tmp) / "analysis.yaml"
+            analysis_config.write_text(
+                "project:\n"
+                "  trialID: test\n"
+                "  compiled_physeq: null\n"
+                "ordination: {}\n"
+            )
+            with self.assertRaisesRegex(SystemExit, "project.compiled_physeq"):
+                cli.validate_analysis_config(analysis_config, ["ordination"])
+
+
+class MetaCommandTests(unittest.TestCase):
+    def test_meta_compile_command_construction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            meta_config = Path(tmp) / "meta.yaml"
+            write_minimal_meta_config(meta_config)
+            args = Args(
+                analysis_config=str(meta_config),
+                log_root=str(Path(tmp) / "meta_logs"),
+                log_dir=None,
+                dry_run=True,
+                env_mode="direct",
+                manager="auto",
+            )
+            spec = cli.build_meta_run_spec(
+                args,
+                "compile-phyloseq",
+                created_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            )
+            self.assertEqual(spec.expanded_steps, ["compile-phyloseq"])
+            self.assertEqual(
+                spec.commands[0].command,
+                ["Rscript", "scripts/PhyloseqCompiler.R", "--analysis-config", str(meta_config)],
+            )
+            self.assertEqual(spec.commands[0].command, spec.commands[0].execution_command)
+            self.assertEqual(spec.log_dir, Path(tmp) / "meta_logs" / "20260102T030405Z_compile-phyloseq")
+
+    def test_meta_dry_run_writes_provenance_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            meta_config = Path(tmp) / "meta.yaml"
+            write_minimal_meta_config(meta_config)
+            log_dir = Path(tmp) / "meta_run"
+            args = Args(
+                analysis_config=str(meta_config),
+                log_root=str(Path(tmp) / "meta_logs"),
+                log_dir=str(log_dir),
+                dry_run=True,
+                print_command=False,
+                env_mode="direct",
+                manager="auto",
+            )
+            self.assertEqual(cli.meta_compile_phyloseq_command(args), 0)
+            metadata = json.loads((log_dir / "meta_metadata.json").read_text())
+            self.assertEqual(metadata["expanded_steps"], ["compile-phyloseq"])
+            self.assertTrue(metadata["dry_run"])
+            self.assertIn("# compile-phyloseq", (log_dir / "meta_commands.txt").read_text())
+            self.assertFalse((log_dir / "01_compile-phyloseq.log").exists())
+
+    def test_meta_missing_config_has_setup_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_config = Path(tmp) / "config" / "local" / "meta.yaml"
+            old_default = cli.DEFAULT_META_CONFIG
+            try:
+                cli.DEFAULT_META_CONFIG = str(missing_config)
+                with self.assertRaisesRegex(SystemExit, "low-bm meta init"):
+                    cli.resolve_meta_config(missing_config)
+            finally:
+                cli.DEFAULT_META_CONFIG = old_default
+
+
 class ProfileConfigurationTests(unittest.TestCase):
     def test_slurm_profile_caps_sample_prep_arrays(self) -> None:
         profile_text = (REPO_ROOT / "profiles" / "slurm" / "config.yaml").read_text()
@@ -425,6 +581,48 @@ def write_minimal_processing_config(path: Path) -> None:
         "ip_root: IP_Data/\n"
         "out_root: Exp_Output/\n"
         "script_dir: scripts\n"
+    )
+
+
+def write_minimal_analysis_config(path: Path) -> None:
+    path.write_text(
+        "project:\n"
+        "  trialID: test\n"
+        "  output_dir: Exp_Output/test\n"
+        "  compiled_physeq: Exp_Output/test/test_physeq.RData\n"
+        "ordination: {}\n"
+        "abundance_barplots:\n"
+        "  plots:\n"
+        "    - name: SampleType\n"
+        "      x: SampleID\n"
+        "differential_abundance:\n"
+        "  comparisons:\n"
+        "    - name: TestComparison\n"
+        "lefse_analysis: {}\n"
+        "heatmap_violin: {}\n"
+        "xgboost_classification: {}\n"
+        "survival_analysis:\n"
+        "  analyses:\n"
+        "    - name: TestSurvival\n"
+        "blast_confirmation:\n"
+        "  candidate_comparisons: [Test]\n"
+    )
+
+
+def write_minimal_meta_config(path: Path) -> None:
+    path.write_text(
+        "project:\n"
+        "  base_dir: Exp_Output\n"
+        "  output_dir: Exp_Output/meta\n"
+        "meta_compile:\n"
+        "  batch_table: config/local/batch.tsv\n"
+        "  output_physeq: CompPhyseq.RData\n"
+        "  output_asv_fasta: MergedASV.fasta\n"
+        "meta_differential_abundance:\n"
+        "  batch1_name: 010126.1_batch1\n"
+        "  batch2_name: 010126.2_batch2\n"
+        "  DA_method: ANCOMBC\n"
+        "  comparison: PatientSample\n"
     )
 
 

@@ -61,3 +61,8 @@ Review these files in `OpenOmics/baseline` for the closest structural analogs:
 
 The concept to compare is array task runs whole DAG versus master job runs
 Snakemake and Snakemake launches rule jobs.
+
+Post-processing analyses are handled outside the processing DAG through
+`low-bm analysis`; see `docs/analysis-run-model.md`. Multi-batch compilation
+and result-level meta-analyses live under `low-bm meta`; see
+`docs/meta-run-model.md`.

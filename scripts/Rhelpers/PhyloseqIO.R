@@ -175,6 +175,23 @@ load_physeqs <- function(paths) {
   lapply(paths, load_physeq)
 }
 
+annotate_physeq_source <- function(physeq,
+                                   source_label,
+                                   source_path = NULL,
+                                   source_index = NULL) {
+  metadata_df <- as(phyloseq::sample_data(physeq), "data.frame")
+  source_label <- as.character(source_label)
+  source_path <- if (is.null(source_path)) NA_character_ else as.character(source_path)
+  source_index <- if (is.null(source_index)) NA_integer_ else as.integer(source_index)
+
+  metadata_df$SourceTrialName <- source_label
+  metadata_df$SourceTrialID <- sub("_.*$", "", source_label)
+  metadata_df$SourcePhyseqPath <- source_path
+  metadata_df$SourceOrder <- source_index
+  phyloseq::sample_data(physeq) <- phyloseq::sample_data(metadata_df)
+  physeq
+}
+
 merge_physeqs <- function(physeq_list) {
   if (length(physeq_list) == 0) {
     stop("No phyloseq objects supplied for merging.", call. = FALSE)

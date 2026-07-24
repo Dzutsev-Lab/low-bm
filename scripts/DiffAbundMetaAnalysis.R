@@ -3,13 +3,18 @@ library(dplyr)
 library(ggplot2)
 library(argparse)
 library(stringr)
-library(metap)
 library(ggrepel)
 library(patchwork)
 library(stringr)
 
+source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+
 parser <- ArgumentParser()
 
+parser$add_argument("--analysis-config",
+                    type = "character",
+                    default = NULL,
+                    help = "Meta-analysis YAML with meta_differential_abundance settings")
 parser$add_argument("--batch1-Name",
                     type = "character",
                     help = "Name for batch 1 to locate differential abundance results within Exp_Output")
@@ -36,6 +41,45 @@ parser$add_argument("--out-trial",
                     help = "desired output directory within Exp_Ouput")
 
 args <- parser$parse_args()
+
+if (!requireNamespace("metap", quietly = TRUE)) {
+    stop("The R package 'metap' is required for differential-abundance meta-analysis.", call. = FALSE)
+}
+
+project_config <- list()
+meta_config <- list()
+if (!is.null(args$analysis_config)) {
+    cfg <- load_yaml_config(args$analysis_config)
+    project_config <- cfg$project %||% list()
+    meta_config <- cfg$meta_differential_abundance %||% cfg$differential_abundance_meta %||% list()
+}
+
+args$batch1_Name <- args$batch1_Name %||% meta_config$batch1_name %||% meta_config$batch1_Name
+args$batch2_Name <- args$batch2_Name %||% meta_config$batch2_name %||% meta_config$batch2_Name
+args$DA_method <- meta_config$DA_method %||% meta_config$da_method %||% args$DA_method %||% "ANCOMBC"
+args$comparison <- args$comparison %||% meta_config$comparison
+args$hetQ_p_cutoff <- as.numeric(meta_config$hetQ_p_cutoff %||% meta_config$hetq_p_cutoff %||% args$hetQ_p_cutoff)
+args$fisher_q_cutoff <- as.numeric(meta_config$fisher_q_cutoff %||% args$fisher_q_cutoff)
+
+base_dir <- project_config$base_dir %||% meta_config$base_dir %||% "Exp_Output"
+output_value <- meta_config$output_dir %||% meta_config$out_dir %||% project_config$output_dir %||% args$out_trial
+if (is.null(output_value)) {
+    stop("Provide --out-trial or meta_differential_abundance.output_dir/project.output_dir in --analysis-config.", call. = FALSE)
+}
+out_dir <- resolve_output_path(output_value, base_dir = base_dir)
+
+required_inputs <- list(
+    batch1_name = args$batch1_Name,
+    batch2_name = args$batch2_Name,
+    DA_method = args$DA_method,
+    comparison = args$comparison
+)
+missing_inputs <- names(required_inputs)[vapply(required_inputs, function(x) {
+    is.null(x) || length(x) == 0 || all(is.na(x)) || all(!nzchar(trimws(as.character(x))))
+}, logical(1))]
+if (length(missing_inputs) > 0) {
+    stop("Missing required DA meta-analysis input(s): ", paste(missing_inputs, collapse = ", "), call. = FALSE)
+}
 
 
 #------------------------------------------------
@@ -65,10 +109,11 @@ B2_ExpID <- B2_name_components[2]
 #---------------------------------------------------
 # Read in Limma Voom Differential Abundance Results
 #---------------------------------------------------
-B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch1_Name, "/", 
-                                         args$DA_method, "/",
-                                         args$comparison, "/",
-                                         args$batch1_Name,"_", args$comparison, "_", args$DA_method, "Results.tsv"),
+B1_DA_results <- readin_DA(file = file.path(base_dir,
+                                            args$batch1_Name,
+                                            args$DA_method,
+                                            args$comparison,
+                                            paste0(args$batch1_Name, "_", args$comparison, "_", args$DA_method, "Results.tsv")),
                            batch_label = B1_ExpID) |>
                     rename(
                         b1 = batch,
@@ -78,10 +123,11 @@ B1_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch1_Name, "/",
                         se_b1 = se,
                         direction_b1 = direction
                     )
-B2_DA_results <- readin_DA(file = paste0("Exp_Output/", args$batch2_Name, "/", 
-                                         args$DA_method, "/",
-                                         args$comparison, "/",
-                                         args$batch2_Name,"_", args$comparison, "_", args$DA_method, "Results.tsv"),
+B2_DA_results <- readin_DA(file = file.path(base_dir,
+                                            args$batch2_Name,
+                                            args$DA_method,
+                                            args$comparison,
+                                            paste0(args$batch2_Name, "_", args$comparison, "_", args$DA_method, "Results.tsv")),
                            batch_label = B2_ExpID) |>
                     rename(
                         b2 = batch,
@@ -114,7 +160,7 @@ calc_fisher_q <- function(Composite_DA_df,
     Composite_DA_df |> 
     rowwise() |>
     mutate(
-        fisher_p = sumlog(c(p_b1, p_b2))$p
+        fisher_p = metap::sumlog(c(p_b1, p_b2))$p
     ) |> ungroup() |>
     mutate(
         fisher_q = p.adjust(fisher_p, method = "BH"),
@@ -252,15 +298,13 @@ if (nrow(agreed_struc0_df) > 0) {
 
 
 
-if (!dir.exists(paste0("Exp_Output/", args$out_trial, "/", args$DA_method))) {
-    dir.create(paste0("Exp_Output/", args$out_trial, "/", args$DA_method),
-    recursive = TRUE)
+out_method_dir <- file.path(out_dir, args$DA_method)
+if (!dir.exists(out_method_dir)) {
+    dir.create(out_method_dir, recursive = TRUE)
 }
 
 ggsave(
-    filename = paste0("Exp_Output/", args$out_trial, "/",
-                      args$DA_method, "/",
-                      B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_logFC_concordance.png"),
+    filename = file.path(out_method_dir, paste0(B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_logFC_concordance.png")),
     plot = ConcordancePlot,
     width = 7,
     height = 6,
@@ -269,18 +313,14 @@ ggsave(
 
 write.table(
     Comp_DA_results,
-    file = paste0("Exp_Output/", args$out_trial, "/",
-                  args$DA_method, "/",
-                  B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_shared_taxa_meta.tsv"),
+    file = file.path(out_method_dir, paste0(B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_shared_taxa_meta.tsv")),
     sep = "\t",
     quote = FALSE,
     row.names = FALSE
 )
 
 write.table(Taxa_of_Interest, 
-          file = paste0("Exp_Output/", args$out_trial, "/",
-                        args$DA_method, "/",
-                        B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_taxa_of_interest.csv"),
+          file = file.path(out_method_dir, paste0(B1_ExpID, "v", B2_ExpID, "_", args$comparison, "_taxa_of_interest.csv")),
           sep = ",",
           col.names = FALSE,
           row.names = FALSE)

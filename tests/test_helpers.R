@@ -135,6 +135,12 @@ stopifnot(saved_file == tmp_file)
 loaded <- load_physeq(tmp_file)
 stopifnot(inherits(loaded, "phyloseq"))
 stopifnot(nsamples(loaded) == nsamples(physeq))
+annotated <- annotate_physeq_source(loaded, "010126.1_BatchOne", tmp_file, 1)
+annotated_meta <- as(sample_data(annotated), "data.frame")
+stopifnot(all(annotated_meta$SourceTrialName == "010126.1_BatchOne"))
+stopifnot(all(annotated_meta$SourceTrialID == "010126.1"))
+stopifnot(all(annotated_meta$SourcePhyseqPath == tmp_file))
+stopifnot(all(annotated_meta$SourceOrder == 1))
 
 asv_test_dir <- tempfile("asv_fasta_paths_")
 dir.create(asv_test_dir, recursive = TRUE)
@@ -239,6 +245,26 @@ ranked_glommed <- rank_taxa_by_abundance(glommed)
 stopifnot(identical(ranked_glommed$taxon, c("g__GenusA", "g__GenusB")))
 stopifnot(identical(select_top_taxa_by_abundance(glommed, top_n = 1), "g__GenusA"))
 expect_error(select_top_taxa_by_abundance(glommed, top_n = 0), "positive integer")
+
+taxa_selection_file <- file.path(tempdir(), "selected_taxa.tsv")
+taxa_selection_written <- write_taxa_selection_table(
+  list(CompA = c("g__GenusA", "g__GenusB"), CompB = "g__GenusC"),
+  taxa_selection_file,
+  source = "unit_test",
+  taxa_level = "Genus",
+  selection_reason = "helper test"
+)
+stopifnot(identical(taxa_selection_written, taxa_selection_file))
+taxa_selection_df <- read.delim(taxa_selection_file, stringsAsFactors = FALSE)
+stopifnot(identical(names(taxa_selection_df), taxa_selection_columns()))
+stopifnot(nrow(taxa_selection_df) == 3)
+read_selection <- read_taxa_selection_table(
+  taxa_selection_file,
+  comparisons = "CompA",
+  taxa_level = "Genus"
+)
+stopifnot(identical(read_selection$CompA, c("g__GenusA", "g__GenusB")))
+expect_error(read_taxa_selection_table(taxa_selection_file, comparisons = "Missing"), "No taxa remained")
 
 rel <- counts_normalization(physeq, "RelAbund")
 rel_mat <- otu_samples_by_taxa(rel)

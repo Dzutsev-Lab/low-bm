@@ -5,10 +5,12 @@
 
 project:
   name: "low_biomass_analysis"
-  batch_table: "config/local/batch.tsv"
   base_dir: "Exp_Output"
   trialID: "<trialID>"
   output_dir: "Exp_Output/<trialID>_<trial_descript>"
+  # Standard analyses consume one endpoint. For multi-batch analyses, first run
+  # `low-bm meta compile-phyloseq`, then point these fields at CompPhyseq.RData
+  # and MergedASV.fasta.
   compiled_physeq: "Exp_Output/<trialID>_<trial_descript>/<trialID>_physeq.RData"
   # Optional. If omitted, BLAST candidate preparation can look for MergedASV.fasta
   # or <trialID>_ASV.fasta beside compiled_physeq.
@@ -16,7 +18,6 @@ project:
   norm_method: "log2HostMapped"
   pseudocount: 1
   tax_agg_level: "Genus"
-  techrep_avg: false
 
 ordination:
   batch_adj_covar: false
@@ -78,8 +79,14 @@ blast_confirmation:
   # Top-abundance candidate selection. Set candidate_source to "top_abundance"
   # and provide candidate_comparisons to run a BLAST confirmation that does not
   # depend on differential-abundance outputs.
+  #
+  # Manual/reviewed candidate selection. Set candidate_source to "taxa_file"
+  # and point candidate_taxa_file at a SelectedTaxa TSV with columns:
+  # source, comparison, taxa_level, taxon, selection_metric, selection_reason.
   candidate_source: null
   candidate_comparisons: ["Top10Genera"]
+  candidate_taxa_file: null
+  candidate_selection_name: null
   top_n_taxa: 10
   candidate_sample_filter: null
   candidate_norm_method: "log2HostMapped"

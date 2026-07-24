@@ -8,6 +8,8 @@ Exp_Output/
 SLURM_stderr/
 SLURM_stdout/
 snakemake_logs/
+analysis_logs/
+meta_logs/
 .low-bm/
 experiment_batch_configs/
 experiment_batch_configs.tsv

@@ -1,0 +1,33 @@
+# BLAST-only config for confirming top taxa by abundance.
+# Copy to config/local/analysis_blast_top_abundance.yaml and edit project paths.
+
+project:
+  name: "low_biomass_analysis"
+  base_dir: "Exp_Output"
+  trialID: "<trialID>"
+  output_dir: "Exp_Output/<trialID>_<trial_descript>"
+  compiled_physeq: "Exp_Output/<trialID>_<trial_descript>/<trialID>_physeq.RData"
+  compiled_asv_fasta: null
+  tax_agg_level: "Genus"
+  pseudocount: 1
+
+blast_confirmation:
+  candidate_source: "top_abundance"
+  candidate_comparisons: ["Top10Genera"]
+  candidate_selection_name: "Top10Genera"
+  top_n_taxa: 10
+  candidate_sample_filter: null
+  candidate_norm_method: "log2HostMapped"
+  candidate_pseudocount: 1
+
+  reference_db: "ncbi20_k2"
+  ref_base_dir: "Ref_Data"
+  tax_db_sql: "Ref_Data/taxdump/tax_db.sqlite"
+  max_target_seqs: 5
+  num_threads: null
+  min_pident: 90
+  min_qcovs: 90
+  max_evalue: 1e-20
+  top_n_asvs: 20
+  min_rel_abund: 0.05
+  plot_ranks: ["genus", "species"]
