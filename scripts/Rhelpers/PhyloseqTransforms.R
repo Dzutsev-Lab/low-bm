@@ -171,6 +171,10 @@ counts_normalization <- function(physeq, norm_method = "noNorm", pseudocount = 1
   if (norm_method == "HostMapped") {
     return(divide_by_sample_factor(physeq, "Host_mapped_reads"))
   }
+  if (norm_method == "log2Raw") {
+    physeq <- divide_by_sample_factor(physeq, "Raw_reads")
+    return(phyloseq::transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
+  }
   if (norm_method == "log2HostMapped") {
     physeq <- divide_by_sample_factor(physeq, "Host_mapped_reads")
     return(phyloseq::transform_sample_counts(physeq, function(x) log2(x + pseudocount)))
