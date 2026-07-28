@@ -27,45 +27,85 @@ load_config() {
   local analysis_config="$1"
   local config_text
 
+  require_command python3
   config_text="$(
-    Rscript -e '
-args <- commandArgs(trailingOnly = TRUE)
-source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
-cfg <- load_yaml_config(args[1])
-project <- cfg$project %||% list()
-blast <- cfg$blast_confirmation
-if (is.null(blast)) {
-  stop("analysis_config.yaml is missing blast_confirmation.", call. = FALSE)
-}
-is_missing <- function(x) {
-  is.null(x) || length(x) == 0 || all(is.na(x)) || all(!nzchar(trimws(as.character(x))))
-}
-io_dir <- analysis_output_dir(project, blast, section_keys = c("io_dir", "output_dir", "out_dir"))
-comparisons <- config_value(blast, "candidate_comparisons") %||% config_value(blast, "DA_comparisons")
-required <- c("reference_db")
-missing <- required[vapply(required, function(k) is_missing(config_value(blast, k)), logical(1))]
-if (is_missing(io_dir)) {
-  missing <- c("project.output_dir or blast_confirmation.io_dir", missing)
-}
-if (is_missing(comparisons)) {
-  missing <- c("blast_confirmation.candidate_comparisons or blast_confirmation.DA_comparisons", missing)
-}
-if (length(missing) > 0) {
-  stop("blast_confirmation is missing required field(s): ", paste(missing, collapse = ", "), call. = FALSE)
-}
-emit <- function(key, value) {
-  if (is_missing(value)) value <- ""
-  cat(key, "\t", paste(as.character(value), collapse = ","), "\n", sep = "")
-}
-emit("TRIAL_DIR", file.path(io_dir, "BlastAnalysis"))
-emit("REFERENCE_DB", config_value(blast, "reference_db"))
-emit("REF_BASE_DIR", config_value(blast, "ref_base_dir") %||% "Ref_Data")
-emit("NUM_THREADS", config_value(blast, "num_threads"))
-emit("MAX_TARGET_SEQS", config_value(blast, "max_target_seqs") %||% 5)
-for (comparison in comparisons) {
-  emit("COMPARISON", comparison)
-}
-' "$analysis_config"
+    python3 - "$analysis_config" <<'PY'
+import sys
+from pathlib import Path
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    raise SystemExit(
+        "Required Python package not found: pyyaml. "
+        "Recreate the low-bm-bio-tools analysis environment from workflow/envs/bio-tools-env.yaml."
+    )
+
+
+def is_missing(value):
+    if value is None:
+        return True
+    if isinstance(value, list):
+        return len(value) == 0 or all(is_missing(item) for item in value)
+    return str(value).strip().lower() in {"", "null", "none", "~"}
+
+
+def as_list(value):
+    if isinstance(value, list):
+        return [str(item) for item in value if not is_missing(item)]
+    if is_missing(value):
+        return []
+    return [str(value)]
+
+
+def first_present(values, keys):
+    for key in keys:
+        value = values.get(key)
+        if not is_missing(value):
+            return value
+    return None
+
+
+def emit(key, value):
+    if is_missing(value):
+        value = ""
+    print(f"{key}\t{value}")
+
+
+config_path = Path(sys.argv[1])
+with config_path.open() as handle:
+    cfg = yaml.safe_load(handle) or {}
+
+project = cfg.get("project") or {}
+blast = cfg.get("blast_confirmation")
+if blast is None:
+    raise SystemExit("analysis_config.yaml is missing blast_confirmation.")
+if not isinstance(project, dict) or not isinstance(blast, dict):
+    raise SystemExit("analysis_config.yaml project and blast_confirmation must be mappings.")
+
+io_dir = first_present(blast, ("io_dir", "output_dir", "out_dir")) or project.get("output_dir")
+comparisons = blast.get("candidate_comparisons")
+if is_missing(comparisons):
+    comparisons = blast.get("DA_comparisons")
+
+missing = []
+if is_missing(io_dir):
+    missing.append("project.output_dir or blast_confirmation.io_dir")
+if is_missing(blast.get("reference_db")):
+    missing.append("reference_db")
+if is_missing(comparisons):
+    missing.append("blast_confirmation.candidate_comparisons or blast_confirmation.DA_comparisons")
+if missing:
+    raise SystemExit("blast_confirmation is missing required field(s): " + ", ".join(missing))
+
+emit("TRIAL_DIR", str(Path(str(io_dir)) / "BlastAnalysis"))
+emit("REFERENCE_DB", blast.get("reference_db"))
+emit("REF_BASE_DIR", blast.get("ref_base_dir") or "Ref_Data")
+emit("NUM_THREADS", blast.get("num_threads"))
+emit("MAX_TARGET_SEQS", blast.get("max_target_seqs") or 5)
+for comparison in as_list(comparisons):
+    emit("COMPARISON", comparison)
+PY
   )"
 
   COMPARISONS=()

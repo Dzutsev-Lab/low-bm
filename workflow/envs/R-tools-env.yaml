@@ -8,6 +8,7 @@ dependencies:
   - r-argparse
   - r-circlize
   - r-ckmeans.1d.dp
+  - r-data.table
   - r-digest
   - r-dplyr
   - r-fsa
@@ -41,4 +42,3 @@ dependencies:
   - bioconductor-shortread
   - bioconductor-summarizedexperiment
   - bioconductor-sva
-

@@ -5,6 +5,7 @@ channels:
   - defaults
 dependencies:
   - python=3.11
+  - pyyaml
   - biopython
   - bwa
   - samtools
@@ -13,4 +14,3 @@ dependencies:
   - blast
   - trimmomatic
   - openjdk
-
