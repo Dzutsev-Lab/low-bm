@@ -20,6 +20,7 @@ dependencies:
   - r-tibble
   - r-tidyr
   - r-tidyverse
+  - r-yaml
   - r-torch
   - r-withr
   - r-ggplot2
@@ -28,4 +29,3 @@ dependencies:
   - bioconductor-biomformat
   - bioconductor-decontam
   - bioconductor-phyloseq
-

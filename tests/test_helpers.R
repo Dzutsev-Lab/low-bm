@@ -4,6 +4,8 @@ source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
 source(file.path("scripts", "Rhelpers", "ASVFasta.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
+source(file.path("scripts", "Rhelpers", "KrakenTaxonomy.R"))
+source(file.path("scripts", "Rhelpers", "MicRocleanDecontamination.R"))
 source(file.path("scripts", "Rhelpers", "TaxaSelection.R"))
 source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
 source(file.path("scripts", "Rhelpers", "LEfSeAnalysis.R"))
@@ -87,6 +89,47 @@ make_test_physeq <- function() {
 }
 
 physeq <- make_test_physeq()
+
+kraken_test_info <- data.frame(
+  status = c("C", "U"),
+  ASVid = c("ASV1", "ASV2"),
+  taxid = c(123, 0),
+  stringsAsFactors = FALSE
+)
+kraken_tax_matrix <- build_kraken_tax_matrix(
+  kraken_info = kraken_test_info,
+  asv_ids = c("ASV1", "ASV2", "ASV3"),
+  sql_db = "unused.sqlite",
+  add_unclassified_prefix = TRUE,
+  taxonomy_fetcher = function(ids, sqlFile, desiredTaxa) {
+    tax <- matrix(
+      NA_character_,
+      nrow = length(ids),
+      ncol = length(desiredTaxa),
+      dimnames = list(NULL, desiredTaxa)
+    )
+    tax[, "superkingdom"] <- "Bacteria"
+    tax[, "phylum"] <- "Firmicutes"
+    tax[, "genus"] <- "GenusA"
+    tax
+  }
+)
+stopifnot(identical(rownames(kraken_tax_matrix), c("ASV1", "ASV2", "ASV3")))
+stopifnot(kraken_tax_matrix["ASV1", "Domain"] == "d__Bacteria")
+stopifnot(kraken_tax_matrix["ASV1", "Species"] == "UC_g__GenusA")
+stopifnot(is.na(kraken_tax_matrix["ASV2", "Domain"]))
+stopifnot(is.na(kraken_tax_matrix["ASV3", "Domain"]))
+
+microclean_meta <- build_microclean_metadata(physeq)
+stopifnot(sum(microclean_meta$is_control) == 1)
+stopifnot(identical(rownames(microclean_meta), sample_names(physeq)))
+retained_counts <- otu_samples_by_taxa(physeq)[, c("ASV1", "ASV3"), drop = FALSE]
+retained_counts["SampleA_rep1", "ASV1"] <- 11
+cleaned_physeq <- apply_decontaminated_taxa(physeq, retained_counts)
+stopifnot(identical(taxa_names(cleaned_physeq), c("ASV1", "ASV3")))
+stopifnot(identical(sample_names(cleaned_physeq), sample_names(physeq)))
+stopifnot(otu_samples_by_taxa(cleaned_physeq)["SampleA_rep1", "ASV1"] == 11)
+stopifnot(identical(rownames(as(tax_table(cleaned_physeq), "matrix")), c("ASV1", "ASV3")))
 
 validated <- validate_metadata_df(as(sample_data(physeq), "data.frame"))
 stopifnot("ControlStatus" %in% names(validated))

@@ -24,9 +24,10 @@ creation fails or a package is missing.
 
 ## 2. Confirm Patched micRoclean Source Pins
 
-This repository tracks `workflow/envs/micRoclean-source.env` as part of the
-reproducibility record. It should contain the patched package Git URL plus fixed
-commit SHA values:
+This is required only if you plan to run optional
+`low-bm meta decontaminate-phyloseq`. This repository tracks
+`workflow/envs/micRoclean-source.env` as part of the reproducibility record. It
+should contain the patched package Git URL plus fixed commit SHA values:
 
 ```bash
 MICROCLEAN_GIT_URL=git@github.com:your-org/micRoclean.git
@@ -122,6 +123,10 @@ Expected terminal files:
 - `<out_root>/<trialID>_<trial_descript>/<trialID>_ASV.fasta`
 - `<out_root>/<trialID>_<trial_descript>/effective_config.yaml`
 - clean rule logs under `<out_root>/<trialID>_<trial_descript>/Logs`
+
+The phyloseq and ASV FASTA endpoints are pre-micRoclean, Kraken-annotated
+processing outputs. Optional micRoclean decontamination is run later with
+`low-bm meta decontaminate-phyloseq`.
 
 ## 6. Containerization Follow-Up
 

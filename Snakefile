@@ -29,7 +29,6 @@ DADA_DENOISE_DIR = f"{IP_DIR}/03_Dada_Denoising"
 NEG_ALIGNMENT_DIR = f"{IP_DIR}/04_Neg_Alignment"
 NEG_ALIGN_FILT_DIR = f"{IP_DIR}/05_Neg_Alignment_Filter"
 POS_ALIGNMENT_DIR = f"{IP_DIR}/06_Pos_Alignment"
-MICROCLEAN_DECONTAM_DIR = f"{IP_DIR}/07_micRoclean_Decontam"
 MOTHUR_TAX_DIR = f"{IP_DIR}/08.1_Mothur_Taxonomy"
 KRAKEN_TAX_DIR = f"{IP_DIR}/08.2_Kraken_Taxonomy"
 BLAST_TAX_DIR = f"{IP_DIR}/08.3_BLAST_Taxonomy"
@@ -524,67 +523,22 @@ rule bacterial_alignment:
 
 
 #-------------------------------------
-# 07 micRoclean Decontamination
-#------------------------------------- 
-rule micRoclean_decontamination_detection:
-    input:
-        seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
-        sample_names = f"{OUT_DIR}/sample.names",
-        metadata_sheet = METADATA
-    output:
-        decontaminated_seq_table = f"{MICROCLEAN_DECONTAM_DIR}/DecontamSeqTable.tsv",
-        decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names",
-        filtering_report = f"{MICROCLEAN_DECONTAM_DIR}/DecontamFilterReport.tsv",
-        missing_metadata_report = f"{MICROCLEAN_DECONTAM_DIR}/DroppedSamplesMissingMetadata.tsv",
-        
-    threads: 8
-    log:    f"{LOG_DIR}/07.1_micRoclean_decontam.log"
-    conda: conda_env("micRoclean-env")
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p "$(dirname "{log}")" "$(dirname "{output.decontaminated_seq_table}")" "$(dirname "{output.decontaminated_names}")" "$(dirname "{output.filtering_report}")" "$(dirname "{output.missing_metadata_report}")"
-        exec > "{log}" 2>&1
-        Rscript scripts/Decontamination.R \
-            --seq-table {input.seq_table} \
-            --bacterial-names {input.bacterial_names} \
-            --sample-names {input.sample_names} \
-            --metadata {input.metadata_sheet} \
-            --trialID {TRIAL_ID} \
-            --out {MICROCLEAN_DECONTAM_DIR}
-        """
-
-rule decontamination_filter:
-    input:
-        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
-        decontaminated_names = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.names"
-    output:
-        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
-    threads: 8
-    log:    f"{LOG_DIR}/07.2_decontam_filter.log"
-    conda: conda_env("bio-tools-env")
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p "$(dirname "{log}")" "$(dirname "{output.decontaminated_ASV_fa}")"
-        exec > "{log}" 2>&1
-        seqtk subseq "{input.bacterial_ASV_fa}" "{input.decontaminated_names}" > "{output.decontaminated_ASV_fa}" 2> "{log}"
-        """
-
+# 07 Canonical Pre-Decontamination ASV FASTA
+#-------------------------------------
+# copies the intermediate ASV to output directory to use as pipeline endpoint (used in batch compilation)
 rule canonical_asv_fasta:
     input:
-        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta"
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
     output:
         asv_fasta = f"{PHYLOSEQ_DIR}/{TRIAL_ID}_ASV.fasta"
-    log: f"{LOG_DIR}/07.3_canonical_asv_fasta.log"
+    log: f"{LOG_DIR}/07_canonical_asv_fasta.log"
     conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
         mkdir -p "$(dirname "{log}")" "$(dirname "{output.asv_fasta}")"
         exec > "{log}" 2>&1
-        cp "{input.decontaminated_ASV_fa}" "{output.asv_fasta}"
+        cp "{input.bacterial_ASV_fa}" "{output.asv_fasta}"
         """
 
 #--------------------------------------
@@ -592,7 +546,7 @@ rule canonical_asv_fasta:
 #--------------------------------------
 rule kraken_classification:
     input:
-        decontaminated_ASV_fa = f"{MICROCLEAN_DECONTAM_DIR}/decontaminated.ASV.fasta",
+        bacterial_ASV_fa = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta",
         kraken_database = f"{REF_DIR}/{KRAKEN_DB}"
     output:
         kraken_class_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
@@ -609,7 +563,7 @@ rule kraken_classification:
                 --db {input.kraken_database} \
                 --report {output.kraken_report_file} \
                 --output {output.kraken_class_file} \
-                {input.decontaminated_ASV_fa}
+                {input.bacterial_ASV_fa}
         """
 
 #--------------------------------------

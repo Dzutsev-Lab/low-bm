@@ -20,6 +20,24 @@ meta_compile:
   output_asv_fasta: "MergedASV.fasta"
   techrep_avg: false
 
+meta_decontamination:
+  # Optional micRoclean sensitivity/QC endpoint. Point this at one processing
+  # phyloseq or one deliberately compiled phyloseq; no implicit compile occurs.
+  input_physeq: "Exp_Output/<trialID>_<trial_descript>/<trialID>_physeq.RData"
+  output_dir: "Exp_Output/<trialID>_<trial_descript>_microclean"
+  output_physeq: "DecontamPhyseq.RData"
+  output_filter_report: "DecontamFilterReport.tsv"
+  output_decontaminated_names: "decontaminated.ASV.names"
+  output_contaminant_names: "contaminant.ASV.names"
+
+  # Defaults match the previous processing-step micRoclean assumptions.
+  sample_type_column: "SampleType"
+  control_sample_types: ["NegativeControl"]
+  batch_column: "ProcessingBatch"
+  research_goal: "biomarker"
+  control_name: "Control"
+  blocklist: ["FakeBlockedTaxa"]
+
 meta_differential_abundance:
   # Legacy two-result-table meta-analysis. Batch names are processing output
   # directory names such as <trialID>_<trial_descript>.

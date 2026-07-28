@@ -13,6 +13,7 @@ library(Biostrings)
 library(taxonomizr)
 
 source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
+source(file.path("scripts", "Rhelpers", "KrakenTaxonomy.R"))
 
 
 
@@ -137,6 +138,23 @@ sample_meta_data_df <- sample_meta_data_df |>
   column_to_rownames(var = "SampleName")
 raw_seq_table <- raw_seq_table[rownames(sample_meta_data_df), , drop = FALSE]
 
+missing_bacterial_IDs <- setdiff(bacterial_IDs, colnames(raw_seq_table))
+if (length(missing_bacterial_IDs) > 0) {
+  warning(
+    "Dropping ",
+    length(missing_bacterial_IDs),
+    " bacterial ASV ID(s) because they are absent from the sequence table.",
+    call. = FALSE
+  )
+}
+
+bacterial_IDs <- bacterial_IDs[bacterial_IDs %in% colnames(raw_seq_table)]
+if (length(bacterial_IDs) == 0) {
+  stop("No bacterial ASVs from --bacterial-names are present in the sequence table.", call. = FALSE)
+}
+
+raw_seq_table <- raw_seq_table[, bacterial_IDs, drop = FALSE]
+
 #------------------------------------
 # Kraken Taxonomy Table Construction
 #------------------------------------
@@ -152,109 +170,23 @@ if (!file.exists(sql_db)) {
 }
 
 
-# Import ASVid -> TaxID info from .kraken2 file
+# Import ASVid -> TaxID info from .kraken2 file. Kraken annotates the bacterial
+# ASV universe; unclassified ASVs are retained with missing taxonomy.
 kraken_info <- read.delim(args$kraken_file, header = FALSE, sep = "\t", stringsAsFactors = FALSE)
 colnames(kraken_info)[1:3] <- c("status", "ASVid", "taxid")
 
-# trimming kraken information to ASVid and TaxID for all with positive classifications
-kraken_info <- kraken_info[kraken_info$status == "C" & kraken_info$taxid != 0, c("ASVid", "taxid")]
-kraken_info$taxid <- as.integer(kraken_info$taxid)
-
-desiredTaxa <- c("superkingdom",
-                 "phylum",
-                 "class",
-                 "order",
-                 "family",
-                 "genus",
-                 "species")
-
-kraken_tax_df <- getTaxonomy(ids = kraken_info$taxid,
-                             sqlFile = sql_db,
-                             desiredTaxa = desiredTaxa)
-kraken_tax_df <- as.data.frame(kraken_tax_df, stringsAsFactors = FALSE)
-kraken_tax_df$ASVid <- kraken_info$ASVid
-
-kraken_tax_df <- dplyr::rename(kraken_tax_df,
-                               Domain  = superkingdom,
-                               Phylum  = phylum,
-                               Class   = class,
-                               Order   = order,
-                               Family  = family,
-                               Genus   = genus,
-                               Species = species)
-
-
-kraken_tax_matrix <- as.matrix(kraken_tax_df[, c("Domain",
-                                                 "Phylum",
-                                                 "Class",
-                                                 "Order",
-                                                 "Family",
-                                                 "Genus",
-                                                 "Species")])
-rownames(kraken_tax_matrix) <- kraken_tax_df$ASVid
-
-# Taxanomic tag added to all classified taxa
-taxa_level_prefix_addition <- function(tax_matrix) {
-
-  tax_prefixes <- c(
-    "Domain" = "d",
-    "Phylum" = "p",
-    "Class" = "c",
-    "Order" = "o",
-    "Family" = "f",
-    "Genus" = "g",
-    "Species" = "s",
-    "Strain" = "st",
-    "Substrain" = "sst"
-  )
-  for (i in seq_len(ncol(tax_matrix))) {
-    for (j in seq_len(nrow(tax_matrix))) {
-      if (!is.na(tax_matrix[j, i])) {
-        tax_matrix[j, i] <- paste0(tax_prefixes[colnames(tax_matrix)[i]],
-                                   "__",
-                                   tax_matrix[j, i])
-      } else {
-        tax_matrix[j, i] <- NA
-      }
-    }
-  }
-
-  tax_matrix
-}
-kraken_tax_matrix <- taxa_level_prefix_addition(kraken_tax_matrix)
-
-# Handling Unclassified Taxa
-unclassified_label_progigation <- function(tax_matrix) {
-  is_unassigned <- function(x) is.na(x) || x == "" || x == "Unclassified"
-  for (i in seq_len(nrow(tax_matrix))) {
-    row <- tax_matrix[i, , drop = TRUE]
-    assigned_index <- which(!vapply(row, is_unassigned, logical(1)))
-    if (length(assigned_index) == 0) next
-    lowest_assigned_index <- max(assigned_index)
-    lowest_assigned_value <- row[lowest_assigned_index]
-    fill_value <- paste0("UC_", lowest_assigned_value)
-    if (lowest_assigned_index < ncol(tax_matrix)) {
-      for (j in (lowest_assigned_index + 1):ncol(tax_matrix)) {
-        j
-        if (is_unassigned(row[j])) {
-          tax_matrix[i, j] <- fill_value
-        }
-      }
-    }
-  }
-  tax_matrix
-}
-
-if (isTRUE(args$add_unclassified_prefix)) {
-  kraken_tax_matrix <- unclassified_label_progigation(kraken_tax_matrix)
-}
+kraken_tax_matrix <- build_kraken_tax_matrix(
+  kraken_info = kraken_info,
+  asv_ids = colnames(raw_seq_table),
+  sql_db = sql_db,
+  add_unclassified_prefix = isTRUE(args$add_unclassified_prefix)
+)
 
 
 #--------------------------------------
 # Kraken Phyloseq Objects Construction
 #--------------------------------------
 anyDuplicated(colnames(raw_seq_table))
-anyDuplicated(kraken_info$ASVid)
 anyDuplicated(rownames(kraken_tax_matrix))
 physeq <- phyloseq(otu_table(raw_seq_table, taxa_are_rows = FALSE),
                      sample_data(sample_meta_data_df),

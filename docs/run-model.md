@@ -66,3 +66,8 @@ Post-processing analyses are handled outside the processing DAG through
 `low-bm analysis`; see `docs/analysis-run-model.md`. Multi-batch compilation
 and result-level meta-analyses live under `low-bm meta`; see
 `docs/meta-run-model.md`.
+
+The processing DAG's canonical `<trialID>_physeq.RData` endpoint is
+pre-micRoclean and Kraken-annotated. Optional micRoclean decontamination now
+runs through `low-bm meta decontaminate-phyloseq` to support deliberate pre/post
+comparison endpoints.

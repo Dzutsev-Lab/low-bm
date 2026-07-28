@@ -135,8 +135,10 @@ class HostRunnerSpec:
 
 R_TOOLS_ENV = Path("workflow/envs/R-tools-env.yaml")
 BIO_TOOLS_ENV = Path("workflow/envs/bio-tools-env.yaml")
+MICROCLEAN_ENV = Path("workflow/envs/micRoclean-env.yaml")
 R_TOOLS_ENV_PREFIX_ENVVAR = "LOW_BM_R_TOOLS_PREFIX"
 BIO_TOOLS_ENV_PREFIX_ENVVAR = "LOW_BM_BIO_TOOLS_PREFIX"
+MICROCLEAN_ENV_PREFIX_ENVVAR = "LOW_BM_MICROCLEAN_PREFIX"
 
 ANALYSIS_STEP_REGISTRY: dict[str, AnalysisStepSpec] = {
     "ordination": AnalysisStepSpec(
@@ -216,6 +218,12 @@ META_STEP_REGISTRY: dict[str, AnalysisStepSpec] = {
         argv_template=("Rscript", "scripts/PhyloseqCompiler.R", "--analysis-config", "{analysis_config}"),
         required_section="meta_compile",
         env_file=R_TOOLS_ENV,
+    ),
+    "decontaminate-phyloseq": AnalysisStepSpec(
+        name="decontaminate-phyloseq",
+        argv_template=("Rscript", "scripts/PhyloseqDecontamination.R", "--analysis-config", "{analysis_config}"),
+        required_section="meta_decontamination",
+        env_file=MICROCLEAN_ENV,
     ),
     "differential-abundance": AnalysisStepSpec(
         name="differential-abundance",
@@ -306,6 +314,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_meta_step_arguments(meta_compile_parser)
     meta_compile_parser.set_defaults(func=meta_compile_phyloseq_command)
+
+    meta_decontam_parser = meta_subparsers.add_parser(
+        "decontaminate-phyloseq",
+        help="Run optional micRoclean decontamination on one phyloseq endpoint.",
+    )
+    add_meta_step_arguments(meta_decontam_parser)
+    meta_decontam_parser.set_defaults(func=meta_decontaminate_phyloseq_command)
 
     meta_da_parser = meta_subparsers.add_parser(
         "differential-abundance",
@@ -591,6 +606,14 @@ def add_analysis_env_prefix_arguments(parser: argparse.ArgumentParser) -> None:
             f"when --env-mode prefix is used. Defaults to ${BIO_TOOLS_ENV_PREFIX_ENVVAR}."
         ),
     )
+    parser.add_argument(
+        "--microclean-env-prefix",
+        default=os.environ.get(MICROCLEAN_ENV_PREFIX_ENVVAR),
+        help=(
+            "Conda environment prefix for micRoclean meta steps when "
+            f"--env-mode prefix is used. Defaults to ${MICROCLEAN_ENV_PREFIX_ENVVAR}."
+        ),
+    )
 
 
 def add_master_job_arguments(parser: argparse.ArgumentParser) -> None:
@@ -838,6 +861,11 @@ def meta_validate_command(args: argparse.Namespace) -> int:
 def meta_compile_phyloseq_command(args: argparse.Namespace) -> int:
     """Run multi-batch phyloseq and ASV FASTA compilation."""
     return execute_meta_step(args, "compile-phyloseq")
+
+
+def meta_decontaminate_phyloseq_command(args: argparse.Namespace) -> int:
+    """Run optional micRoclean decontamination on one phyloseq endpoint."""
+    return execute_meta_step(args, "decontaminate-phyloseq")
 
 
 def meta_differential_abundance_command(args: argparse.Namespace) -> int:
@@ -1467,6 +1495,8 @@ def analysis_env_prefix_source(env_file: Path) -> tuple[str, str, str]:
         return "r_env_prefix", R_TOOLS_ENV_PREFIX_ENVVAR, "--r-env-prefix"
     if env_file == BIO_TOOLS_ENV:
         return "bio_env_prefix", BIO_TOOLS_ENV_PREFIX_ENVVAR, "--bio-env-prefix"
+    if env_file == MICROCLEAN_ENV:
+        return "microclean_env_prefix", MICROCLEAN_ENV_PREFIX_ENVVAR, "--microclean-env-prefix"
     raise SystemExit(f"No prefix option is registered for analysis environment file: {env_file}")
 
 
@@ -1509,8 +1539,53 @@ def ensure_managed_analysis_envs(spec: AnalysisRunSpec, label: str) -> int:
                     file=sys.stderr,
                 )
                 return completed.returncode
+            post_deploy_returncode = run_analysis_env_post_deploy(prefix, env_file, spec.manager, log)
+            if post_deploy_returncode != 0:
+                print(
+                    f"{label} environment post-deploy failed for {analysis_env_name(env_file)} "
+                    f"with exit code {post_deploy_returncode}. See {log_file}.",
+                    file=sys.stderr,
+                )
+                return post_deploy_returncode
             write_analysis_env_metadata(prefix, env_file, spec.manager)
     return 0
+
+
+def analysis_env_post_deploy_script(env_file: Path) -> Path | None:
+    """Return a Snakemake-style env post-deploy script when the env has one."""
+    script = repo_path(env_file).with_suffix(".post-deploy.sh")
+    return script if script.exists() else None
+
+
+def run_analysis_env_post_deploy(
+    prefix: Path,
+    env_file: Path,
+    manager: EnvManagerSpec,
+    log,
+) -> int:
+    """Run a managed analysis env's post-deploy script inside the new prefix."""
+    script = analysis_env_post_deploy_script(env_file)
+    if script is None:
+        return 0
+
+    command = [
+        manager.executable,
+        "run",
+        "--prefix",
+        str(prefix),
+        "bash",
+        str(script),
+    ]
+    log.write(f"$ {shlex.join(command)}\n")
+    log.flush()
+    completed = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    return completed.returncode
 
 
 def required_managed_analysis_envs(spec: AnalysisRunSpec) -> dict[Path, Path]:

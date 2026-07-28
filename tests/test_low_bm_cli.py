@@ -350,6 +350,7 @@ class AnalysisCommandTests(unittest.TestCase):
         self.assertNotIn("compile-phyloseq", cli.ANALYSIS_STEP_REGISTRY)
         self.assertNotIn("compile-phyloseq", cli.ANALYSIS_STEP_CHOICES)
         self.assertIn("compile-phyloseq", cli.META_STEP_REGISTRY)
+        self.assertIn("decontaminate-phyloseq", cli.META_STEP_REGISTRY)
 
     def test_analysis_run_defaults_to_managed_envs(self) -> None:
         args = cli.build_parser().parse_args(
@@ -464,6 +465,7 @@ class AnalysisCommandTests(unittest.TestCase):
         args = Args(
             r_env_prefix="/data/taylorng/conda/envs/low-bm-r-tools",
             bio_env_prefix="/data/taylorng/conda/envs/low-bm-bio-tools",
+            microclean_env_prefix=None,
         )
         prefixes = cli.resolve_analysis_env_prefixes(
             args,
@@ -565,6 +567,45 @@ class MetaCommandTests(unittest.TestCase):
             )
             self.assertEqual(spec.commands[0].command, spec.commands[0].execution_command)
             self.assertEqual(spec.log_dir, Path(tmp) / "meta_logs" / "20260102T030405Z_compile-phyloseq")
+
+    def test_meta_decontaminate_phyloseq_command_construction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            meta_config = Path(tmp) / "meta.yaml"
+            write_minimal_meta_config(meta_config)
+            args = Args(
+                analysis_config=str(meta_config),
+                log_root=str(Path(tmp) / "meta_logs"),
+                log_dir=None,
+                dry_run=True,
+                env_mode="direct",
+                manager="auto",
+            )
+            spec = cli.build_meta_run_spec(
+                args,
+                "decontaminate-phyloseq",
+                created_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            )
+            self.assertEqual(spec.expanded_steps, ["decontaminate-phyloseq"])
+            self.assertEqual(
+                spec.commands[0].command,
+                ["Rscript", "scripts/PhyloseqDecontamination.R", "--analysis-config", str(meta_config)],
+            )
+            self.assertEqual(spec.commands[0].command, spec.commands[0].execution_command)
+            self.assertEqual(spec.log_dir, Path(tmp) / "meta_logs" / "20260102T030405Z_decontaminate-phyloseq")
+
+    def test_meta_decontaminate_prefix_env_uses_microclean_prefix(self) -> None:
+        args = Args(
+            r_env_prefix=None,
+            bio_env_prefix=None,
+            microclean_env_prefix="/data/taylorng/conda/envs/low-bm-microclean",
+        )
+        prefixes = cli.resolve_analysis_env_prefixes(
+            args,
+            ["decontaminate-phyloseq"],
+            cli.META_STEP_REGISTRY,
+            validate_exists=False,
+        )
+        self.assertEqual(prefixes[cli.MICROCLEAN_ENV], Path(args.microclean_env_prefix))
 
     def test_meta_dry_run_writes_provenance_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -717,6 +758,10 @@ def write_minimal_meta_config(path: Path) -> None:
         "  batch_table: config/local/batch.tsv\n"
         "  output_physeq: CompPhyseq.RData\n"
         "  output_asv_fasta: MergedASV.fasta\n"
+        "meta_decontamination:\n"
+        "  input_physeq: Exp_Output/test/test_physeq.RData\n"
+        "  output_dir: Exp_Output/test_microclean\n"
+        "  output_physeq: DecontamPhyseq.RData\n"
         "meta_differential_abundance:\n"
         "  batch1_name: 010126.1_batch1\n"
         "  batch2_name: 010126.2_batch2\n"
