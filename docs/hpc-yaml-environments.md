@@ -84,14 +84,21 @@ Use `low-bm` for the normal validation path:
   --mode slurm
 ```
 
+SLURM batch submission uses isolated Snakemake workdirs by default, rooted at
+`.low-bm/snakemake-workdirs`, and shares rule conda environments through
+`.low-bm/snakemake-conda`. The dry-run output should show a different
+`--directory` value for each batch-table row.
+
 If you need to call Snakemake directly after the row config has been generated,
-keep the target before the config stack:
+keep `--configfile` as one flag followed by all config layers, then end the
+variable-length config list with `--` before the target:
 
 ```bash
-snakemake --profile profiles/slurm --dry-run all \
+snakemake --profile profiles/slurm --dry-run \
   --configfile config/local/processing.yaml \
-  --configfile config/local/processing-overrides.yaml \
-  --configfile experiment_batch_configs/<trialID>_runconfig.yaml
+    config/local/processing-overrides.yaml \
+    experiment_batch_configs/<trialID>_runconfig.yaml \
+  -- all
 ```
 
 ## 5. Run The Small Batch
@@ -116,6 +123,21 @@ For a single direct run, provide the batch row fields and the same config stack:
   --extra-configfile config/local/processing-overrides.yaml \
   --mode slurm
 ```
+
+`low-bm run` keeps the shared checkout-level Snakemake workdir by default for
+compatibility. Add `--isolated-workdir` when a single direct run should use the
+same isolated workdir and shared conda-prefix layout as batch SLURM rows.
+
+If a master job fails and leaves a stale isolated lock, first confirm that no
+matching Snakemake or master SLURM jobs are still running, then unlock only the
+affected row:
+
+```bash
+./low-bm batch unlock --trial-id <trialID>
+```
+
+Use `./low-bm batch unlock --all` only after confirming every row in the batch
+table is stopped. Do not use `--nolock` as the routine fix for lock errors.
 
 Expected terminal files:
 

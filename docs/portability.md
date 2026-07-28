@@ -18,6 +18,36 @@ Keeping these layers separate is the portability trick. The runner can be made
 reproducible without collapsing every rule dependency into one giant env, and a
 future container runner can replace only the runner layer first.
 
+## Batch Workdirs And Locks
+
+Concurrent `low-bm batch submit --mode slurm` runs use isolated Snakemake
+working directories by default:
+
+```bash
+./low-bm batch submit \
+  --workdir-root .low-bm/snakemake-workdirs \
+  --snakemake-conda-prefix .low-bm/snakemake-conda
+```
+
+Each batch-table row gets its own lock scope under `--workdir-root`, while
+`--snakemake-conda-prefix` keeps rule environments shared across rows. The
+workflow still writes biological outputs to the configured `IP_Data` and
+`Exp_Output` roots; the isolated workdir is for Snakemake metadata, locks, and
+runtime bookkeeping.
+
+Use `--shared-workdir` on `batch submit` to recover the legacy checkout-level
+lock behavior for debugging. Use `--isolated-workdir` on `low-bm run` when a
+single run should use the same isolated layout.
+
+Unlock stale isolated locks locally with:
+
+```bash
+./low-bm batch unlock --trial-id <trialID>
+```
+
+Only unlock after confirming no matching Snakemake or master jobs are still
+running.
+
 ## Why A Project-Local Runner Prefix?
 
 Global conda env names such as `low-bm-runner` are convenient, but they are also

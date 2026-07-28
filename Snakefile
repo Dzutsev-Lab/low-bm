@@ -2,19 +2,39 @@ import json
 import os, re, glob
 from pathlib import Path
 
+# Snakemake's --directory changes the process working directory. Keep project
+# config paths anchored to the checkout that owns this Snakefile.
+try:
+    REPO_ROOT = Path(workflow.source_path(".")).resolve()
+except NameError:
+    REPO_ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd().resolve()
+
+
+def repo_path(value):
+    text = os.path.expandvars(os.path.expanduser(str(value)))
+    path = Path(text)
+    if path.is_absolute():
+        return str(path)
+    return str(REPO_ROOT / path)
+
+
 # Input and Output Directories
 TRIAL_ID = config["trialID"]
 TRIAL_NAME = str(TRIAL_ID) + "_" + config["trial_descript"]
 EXP_DIR = config["exp_dir"]
 
-IN_DIR =    os.path.join(config["in_root"], EXP_DIR)
-IP_DIR =    os.path.join(config["ip_root"], EXP_DIR)
-OUT_DIR =   os.path.join(config["out_root"], TRIAL_NAME)
-METADATA =  os.path.join(config["in_root"], config["metadata"])
+IN_ROOT = repo_path(config["in_root"])
+IP_ROOT = repo_path(config["ip_root"])
+OUT_ROOT = repo_path(config["out_root"])
 
-SCRIPTS = config["script_dir"]
-REF_DIR = "Ref_Data"
-CONDA_ENV_DIR = config.get("conda_env_dir", "workflow/envs")
+IN_DIR =    os.path.join(IN_ROOT, EXP_DIR)
+IP_DIR =    os.path.join(IP_ROOT, EXP_DIR)
+OUT_DIR =   os.path.join(OUT_ROOT, TRIAL_NAME)
+METADATA =  os.path.join(IN_ROOT, config["metadata"])
+
+SCRIPTS = repo_path(config["script_dir"])
+REF_DIR = repo_path(config.get("ref_dir", "Ref_Data"))
+CONDA_ENV_DIR = repo_path(config.get("conda_env_dir", "workflow/envs"))
 
 
 def conda_env(name):
@@ -71,16 +91,16 @@ MAX_OFFSET = config["max_offset"]
 # Reference Data
 HOST = config["host"]
 if HOST == "human":
-    HOST_REF = config["human_ref"]
+    HOST_REF = repo_path(config["human_ref"])
 elif HOST == "mouse":
-    HOST_REF = config["mouse_ref"]
+    HOST_REF = repo_path(config["mouse_ref"])
 
-VIRAL_REF = config["viral_ref"]
-BACT16S_REF = config["bact16s_ref"]
+VIRAL_REF = repo_path(config["viral_ref"])
+BACT16S_REF = repo_path(config["bact16s_ref"])
 
 # mothur references
-MOTHUR_REFERENCE = config["mothur_reference"]
-MOTHUR_TAX_FILE = config["mothur_tax_file"]
+MOTHUR_REFERENCE = repo_path(config["mothur_reference"])
+MOTHUR_TAX_FILE = repo_path(config["mothur_tax_file"])
 # mothur params
 MOTHUR_CUTOFF = config["mothur_cutoff"]
 MOTHUR_METHOD = config["mothur_method"]
@@ -328,7 +348,7 @@ if PROCESS_UMIS:
             mkdir -p "$(dirname "{log}")" "$(dirname "{output.sel_umi_r1}")" "$(dirname "{output.count_summary}")"
             exec 2> "{log}"
 
-            python3 scripts/UMISelection.py \
+            python3 "{SCRIPTS}/UMISelection.py" \
                 --sample-name "{wildcards.s}" \
                 --r1 "{input.r1}" \
                 --r2 "{input.r2}" \
@@ -434,7 +454,8 @@ rule dada_denoising:
         mkdir -p "$(dirname "{log}")" "$(dirname "{output.seq_table}")" "{params.filtered_reads_dir}"
         exec > "{log}" 2>&1 
 
-        Rscript scripts/DadaASVFilter.R \
+        cd "{REPO_ROOT}"
+        Rscript "{SCRIPTS}/DadaASVFilter.R" \
             --fqs {input.dada_reads} \
             --sample-names {input.sample_names} \
             --filtered-fqs {output.filtered_reads} \
@@ -618,7 +639,8 @@ rule phyloseq_construction:
         set -euo pipefail
         mkdir -p "$(dirname "{log}")" "$(dirname "{output.phyloseq_object}")" "$(dirname "{output.missing_metadata_report}")"
         exec > "{log}" 2>&1
-        Rscript scripts/PhyloseqConstruction.R \
+        cd "{REPO_ROOT}"
+        Rscript "{SCRIPTS}/PhyloseqConstruction.R" \
             --kraken-file {input.kraken_class_file} \
             --bacterial-names {input.bacterial_names} \
             --raw-seq-table {input.raw_seq_table} \
@@ -661,7 +683,8 @@ rule read_counts:
         mkdir -p "$(dirname "{log}")" "$(dirname "{output.library_counts}")"
         exec > "{log}" 2>&1
 
-        Rscript scripts/ReadCountCompilation.R \
+        cd "{REPO_ROOT}"
+        Rscript "{SCRIPTS}/ReadCountCompilation.R" \
             --sample-name-file {input.sample_names} \
             --selected-dir {params.selected} \
             --dada-filter-counts {input.dada_read_counts} \

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 import json
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -187,6 +189,187 @@ class CommandConstructionTests(unittest.TestCase):
                 manager="auto",
             )
             self.assertEqual(batch_submit_command(args), 0)
+
+    def test_batch_submit_dry_run_emits_unique_isolated_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\n"
+                "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            write_minimal_processing_config(base_config)
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            workdir_root = Path(tmp) / "workdirs"
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                shared_workdir=False,
+                workdir_root=str(workdir_root),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                activate_command="",
+                master_cpus="4",
+                master_mem="8G",
+                master_time="1-00:00:00",
+                master_partition=None,
+                master_extra_sbatch=[],
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(batch_submit_command(args), 0)
+            text = stdout.getvalue()
+            self.assertIn("--directory", text)
+            self.assertIn(str((workdir_root / "010126.1_batch_one").resolve()), text)
+            self.assertIn(str((workdir_root / "010126.2_batch_two").resolve()), text)
+            self.assertIn("--conda-prefix", text)
+
+    def test_isolated_snakemake_command_uses_absolute_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_config = Path(tmp) / "010126.1_runconfig.yaml"
+            run_config.write_text('trialID: "010126.1"\ntrial_descript: "batch with spaces"\n')
+            base_config = Path(tmp) / "processing.yaml"
+            write_minimal_processing_config(base_config)
+            override_config = Path(tmp) / "override.yaml"
+            override_config.write_text("out_root: Exp_Output_validation/\n")
+            workdir_root = Path(tmp) / "workdirs"
+            conda_prefix = Path(tmp) / "snakemake-conda"
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[str(override_config)],
+                row_config=str(run_config),
+                trial_id=None,
+                trial_descript=None,
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                job_name=None,
+                dry_run=True,
+                unlock=False,
+                snakemake_arg=[],
+                isolated_workdir=True,
+                workdir_root=str(workdir_root),
+                snakemake_conda_prefix=str(conda_prefix),
+            )
+            spec = build_run_spec(args, run_config)
+            command = build_snakemake_command(spec)
+
+            self.assertEqual(command[0:2], ["snakemake", "--snakefile"])
+            self.assertEqual(command[command.index("--snakefile") + 1], str((REPO_ROOT / "Snakefile").resolve()))
+            self.assertEqual(command[command.index("--directory") + 1], str((workdir_root / "010126.1_batch_with_spaces").resolve()))
+            self.assertEqual(command[command.index("--profile") + 1], str((REPO_ROOT / "profiles" / "slurm").resolve()))
+            self.assertEqual(command[command.index("--conda-prefix") + 1], str(conda_prefix.resolve()))
+            config_paths = command[command.index("--configfile") + 1 : command.index("--")]
+            self.assertEqual(
+                config_paths,
+                [str(base_config.resolve()), str(override_config.resolve()), str(run_config.resolve())],
+            )
+
+    def test_shared_workdir_preserves_legacy_command_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_config = Path(tmp) / "010126.1_runconfig.yaml"
+            run_config.write_text('trialID: "010126.1"\ntrial_descript: "batch1"\n')
+            base_config = Path(tmp) / "processing.yaml"
+            write_minimal_processing_config(base_config)
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                row_config=str(run_config),
+                trial_id=None,
+                trial_descript=None,
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                job_name=None,
+                dry_run=True,
+                unlock=False,
+                snakemake_arg=[],
+                shared_workdir=True,
+                isolated_workdir=True,
+                workdir_root=str(Path(tmp) / "workdirs"),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+            )
+            command = build_snakemake_command(build_run_spec(args, run_config))
+            self.assertEqual(command[0:2], ["snakemake", "--profile"])
+            self.assertNotIn("--snakefile", command)
+            self.assertNotIn("--directory", command)
+            self.assertNotIn("--conda-prefix", command)
+
+    def test_batch_unlock_dry_run_builds_local_unlock_without_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            write_minimal_processing_config(base_config)
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            workdir_root = Path(tmp) / "workdirs"
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                trial_id=["010126.1"],
+                all=False,
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                shared_workdir=False,
+                workdir_root=str(workdir_root),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(cli.batch_unlock_command(args), 0)
+            text = stdout.getvalue()
+            self.assertIn("--unlock", text)
+            self.assertIn("--directory", text)
+            self.assertIn(str((workdir_root / "010126.1_batch_one").resolve()), text)
+            self.assertNotIn("-- all", text)
+
+    def test_batch_submit_rejects_duplicate_output_trial_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+                "010126.1\tbatch1\tBatch2\tmetadata/batch2.xlsx\n"
+            )
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[],
+                extra_configfile=[],
+                mode="slurm",
+                shared_workdir=False,
+            )
+            with self.assertRaisesRegex(SystemExit, "Duplicate batch output trial name"):
+                batch_submit_command(args)
 
     def test_execution_command_wraps_snakemake_in_runner_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

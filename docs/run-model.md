@@ -25,6 +25,21 @@ independent master job per row in the table. By default it reads the ignored
 local batch table at `config/local/batch.tsv`, which should be initialized from
 the tracked template at `config/templates/batch.tsv`.
 
+For `low-bm batch submit --mode slurm`, each row now uses an isolated
+Snakemake working directory under `.low-bm/snakemake-workdirs/`. The directory
+name is derived from the row's `<trialID>_<trial_descript>` output name, with
+unsafe path characters replaced. The submitted Snakemake command uses absolute
+paths for `--snakefile`, `--directory`, `--profile`, and all config files, so
+repo-relative config values still point at this checkout while the Snakemake
+lock lives in the row-specific workdir. Rule conda environments are shared
+through `.low-bm/snakemake-conda` by default, preventing each isolated row from
+rebuilding the same environments.
+
+Use `--shared-workdir` with `batch submit` only for debugging or legacy
+compatibility. `low-bm run` keeps the shared checkout-level Snakemake workdir
+by default, but `--isolated-workdir` enables the same per-trial pathing for a
+single run.
+
 Config loading is controlled by the launcher rather than by a `configfile:`
 directive in the Snakefile. The processing config stack is:
 
@@ -39,6 +54,30 @@ by `low-bm setup runner`. This runner layer contains Snakemake and the SLURM
 executor plugin, while rule-level bioinformatics tools remain in
 Snakemake-managed conda environments. See `docs/portability.md` for the
 portability rationale.
+
+## Unlocking Stale Locks
+
+Do not use `--nolock` as the normal fix for concurrent batch jobs. If a
+Snakemake master job dies and leaves a stale lock behind:
+
+1. Confirm no relevant Snakemake or master SLURM jobs are still running.
+2. Unlock only the affected isolated workdir, for example:
+
+   ```bash
+   ./low-bm batch unlock --trial-id 072826.6
+   ```
+
+3. Resubmit the failed row or batch.
+
+Use `./low-bm batch unlock --all` only when every row in the batch table is
+known to be stopped. `low-bm run --unlock` remains available for the single-run
+path and unlocks whichever workdir that run resolves to, shared by default or
+isolated when `--isolated-workdir` is supplied.
+
+Before launching many isolated SLURM rows concurrently, make sure shared BWA
+reference indexes such as `<reference>.bwt` already exist. Isolated Snakemake
+workdirs prevent lock contention between batches, which also means they no
+longer coordinate first-time creation of shared reference index files.
 
 The SLURM profile still delegates rule execution from the master job to SLURM.
 To reduce scheduler overhead for repeated sample-level prep work, it submits

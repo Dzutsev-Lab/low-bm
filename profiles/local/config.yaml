@@ -21,8 +21,6 @@ set-threads:
   host_viral_alignment: 8
   nonhost_nonviral_filter: 8
   bacterial_alignment: 8
-  micRoclean_decontamination_detection: 8
-  decontamination_filter: 8
   canonical_asv_fasta: 1
   kraken_classification: 16
   blast_db_construction: 16

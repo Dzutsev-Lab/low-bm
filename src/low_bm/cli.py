@@ -46,6 +46,8 @@ DEFAULT_META_LOG_ROOT = "meta_logs"
 DEFAULT_ANALYSIS_ENV_ROOT = ".low-bm/analysis/envs"
 DEFAULT_RUNNER_PREFIX = ".low-bm/runner/env"
 DEFAULT_RUNNER_ENV_FILE = "workflow/envs/runner-env.yaml"
+DEFAULT_SNAKEMAKE_WORKDIR_ROOT = ".low-bm/snakemake-workdirs"
+DEFAULT_SNAKEMAKE_CONDA_PREFIX = ".low-bm/snakemake-conda"
 ENV_MANAGERS = ("mamba", "conda", "micromamba")
 GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 REQUIRED_PROCESSING_CONFIG_KEYS = ("in_root", "ip_root", "out_root", "script_dir")
@@ -71,6 +73,10 @@ class RunSpec:
     dry_run: bool
     unlock: bool
     extra_snakemake_args: list[str]
+    trial_name: str | None = None
+    workdir: Path | None = None
+    snakefile: Path | None = None
+    snakemake_conda_prefix: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +275,13 @@ def build_parser() -> argparse.ArgumentParser:
     add_batch_submit_arguments(submit_parser)
     submit_parser.set_defaults(func=batch_submit_command)
 
+    unlock_parser = batch_subparsers.add_parser(
+        "unlock",
+        help="Unlock stale Snakemake locks for batch-table workdir(s).",
+    )
+    add_batch_unlock_arguments(unlock_parser)
+    unlock_parser.set_defaults(func=batch_unlock_command)
+
     analysis_parser = subparsers.add_parser("analysis", help="Run explicit post-processing analyses.")
     analysis_subparsers = analysis_parser.add_subparsers(dest="analysis_command", required=True)
     analysis_init_parser = analysis_subparsers.add_parser(
@@ -406,7 +419,23 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Root for master logs.")
     parser.add_argument("--job-name", help="Name for the SLURM master job.")
     parser.add_argument("--dry-run", action="store_true", help="Run a Snakemake dry-run.")
-    parser.add_argument("--unlock", action="store_true", help="Unlock the Snakemake working directory.")
+    parser.add_argument(
+        "--unlock",
+        action="store_true",
+        help=(
+            "Run snakemake --unlock for the resolved Snakemake workdir. "
+            "Use only after confirming no matching Snakemake/master jobs are running."
+        ),
+    )
+    parser.add_argument(
+        "--isolated-workdir",
+        action="store_true",
+        help=(
+            "Run Snakemake in an isolated per-trial workdir under --workdir-root. "
+            "The default for low-bm run remains the shared checkout workdir."
+        ),
+    )
+    add_snakemake_workdir_arguments(parser)
     parser.add_argument(
         "--print-command",
         action="store_true",
@@ -440,6 +469,15 @@ def add_batch_submit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target", default="all", help="Snakemake target rule or file.")
     parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Root for master logs.")
     parser.add_argument(
+        "--shared-workdir",
+        action="store_true",
+        help=(
+            "Use the checkout-level Snakemake workdir instead of the default "
+            "isolated per-row workdirs for SLURM batch submissions."
+        ),
+    )
+    add_snakemake_workdir_arguments(parser)
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Write row configs and print what would be submitted or run.",
@@ -456,6 +494,71 @@ def add_batch_submit_arguments(parser: argparse.ArgumentParser) -> None:
         help="Extra raw argument passed to Snakemake. May be repeated.",
     )
     add_master_job_arguments(parser)
+
+
+def add_batch_unlock_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add arguments for unlocking batch-row Snakemake workdirs."""
+    add_common_config_arguments(parser)
+    add_runner_arguments(parser)
+    parser.add_argument(
+        "--batch-table",
+        default=DEFAULT_BATCH_TABLE,
+        help=f"Canonical batch TSV. Defaults to {DEFAULT_BATCH_TABLE}.",
+    )
+    parser.add_argument(
+        "--trial-id",
+        action="append",
+        default=[],
+        help="Trial ID to unlock. May be repeated. Mutually exclusive with --all.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Unlock every row in the batch table.",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["slurm", "local"],
+        default="slurm",
+        help="Profile mode to resolve for the unlock command. Defaults to slurm.",
+    )
+    parser.add_argument("--profile", help="Snakemake profile path. Defaults to profiles/<mode>.")
+    parser.add_argument("--target", default="all", help=argparse.SUPPRESS)
+    parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Root for unlock logs.")
+    parser.add_argument(
+        "--shared-workdir",
+        action="store_true",
+        help="Unlock the shared checkout-level Snakemake workdir instead of isolated row workdirs.",
+    )
+    add_snakemake_workdir_arguments(parser)
+    parser.add_argument("--dry-run", action="store_true", help="Print unlock command(s) without running them.")
+    parser.add_argument("--print-command", action="store_true", help="Print each resolved unlock command.")
+    parser.add_argument(
+        "--snakemake-arg",
+        action="append",
+        default=[],
+        help="Extra raw argument passed to Snakemake. May be repeated.",
+    )
+
+
+def add_snakemake_workdir_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add Snakemake workdir and rule-env cache options."""
+    parser.add_argument(
+        "--workdir-root",
+        default=DEFAULT_SNAKEMAKE_WORKDIR_ROOT,
+        help=(
+            "Root for isolated per-trial Snakemake workdirs. "
+            f"Defaults to {DEFAULT_SNAKEMAKE_WORKDIR_ROOT}."
+        ),
+    )
+    parser.add_argument(
+        "--snakemake-conda-prefix",
+        default=DEFAULT_SNAKEMAKE_CONDA_PREFIX,
+        help=(
+            "Shared Snakemake rule-environment prefix used with isolated workdirs. "
+            f"Defaults to {DEFAULT_SNAKEMAKE_CONDA_PREFIX}."
+        ),
+    )
 
 
 def add_analysis_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -725,6 +828,11 @@ def batch_submit_command(args: argparse.Namespace) -> int:
     if not rows:
         print(f"No rows found in {args.batch_table}.")
         return 0
+    validate_unique_batch_rows(rows)
+    if should_use_batch_isolated_workdirs(args):
+        warn_missing_shared_reference_indexes(
+            resolve_configfiles(args.configfile, args.extra_configfile)
+        )
 
     exit_code = 0
     for row in rows:
@@ -739,6 +847,7 @@ def batch_submit_command(args: argparse.Namespace) -> int:
         row_args.metadata = None
         row_args.process_umis = None
         row_args.unlock = False
+        row_args.isolated_workdir = should_use_batch_isolated_workdirs(args)
         row_args.job_name = None
         spec = build_run_spec(row_args, row_config)
         print(f"[{row.trialID}] prepared {row_config}")
@@ -758,6 +867,46 @@ def batch_submit_command(args: argparse.Namespace) -> int:
             exit_code = result
             if args.mode == "local":
                 break
+    return exit_code
+
+
+def batch_unlock_command(args: argparse.Namespace) -> int:
+    """Unlock one or more batch-row Snakemake workdirs locally."""
+    if bool(args.all) == bool(args.trial_id):
+        raise SystemExit("Choose exactly one of --trial-id or --all for batch unlock.")
+
+    batch_table = Path(args.batch_table)
+    ensure_batch_table_exists(batch_table)
+    rows = read_batch_table(batch_table)
+    validate_unique_batch_rows(rows)
+    selected_rows = select_batch_unlock_rows(rows, args.trial_id, args.all)
+
+    exit_code = 0
+    for row in selected_rows:
+        row_config = write_run_config(row, args.run_config_dir)
+        row_args = argparse.Namespace(**vars(args))
+        row_args.row_config = str(row_config)
+        row_args.trial_id = None
+        row_args.trial_descript = None
+        row_args.exp_dir = None
+        row_args.metadata = None
+        row_args.process_umis = None
+        row_args.job_name = None
+        row_args.unlock = True
+        row_args.dry_run = False
+        row_args.isolated_workdir = not args.shared_workdir
+        row_args.print_command = args.print_command or args.dry_run
+        spec = build_run_spec(row_args, row_config)
+        if args.dry_run:
+            command = build_execution_command(spec, row_args)
+            print(f"[{row.trialID}] would unlock: {shlex.join(command)}")
+            continue
+        result = execute_run_spec(spec, row_args)
+        if result != 0:
+            exit_code = result
+        else:
+            target = spec.workdir if spec.workdir else REPO_ROOT
+            print(f"[{row.trialID}] unlocked Snakemake workdir: {target}")
     return exit_code
 
 
@@ -1016,7 +1165,10 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
         raise SystemExit(f"Missing row config: {row_config}")
     row_values = load_simple_run_config(row_config)
     trial_id = row_values.get("trialID") or args.trial_id or "run"
-    profile = Path(args.profile) if args.profile else REPO_ROOT / "profiles" / args.mode
+    trial_description = row_values.get("trial_descript") or getattr(args, "trial_descript", None) or ""
+    trial_name = build_trial_name(trial_id, trial_description)
+    isolated_workdir = should_use_isolated_workdir(args)
+    profile = resolve_profile_path(args, isolated_workdir)
     # Config order is deliberate: base project defaults, optional user
     # overrides, then the generated per-row values for this batch.
     configfiles = resolve_configfiles(args.configfile, args.extra_configfile)
@@ -1024,6 +1176,13 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
     configfiles.append(row_config)
     log_dir = Path(args.log_root) / trial_id
     job_name = args.job_name or f"low-bm-{trial_id}"
+    workdir = resolve_isolated_snakemake_workdir(args, trial_name) if isolated_workdir else None
+    snakefile = (REPO_ROOT / "Snakefile").resolve() if isolated_workdir else None
+    conda_prefix = (
+        repo_path(Path(getattr(args, "snakemake_conda_prefix", DEFAULT_SNAKEMAKE_CONDA_PREFIX))).resolve()
+        if isolated_workdir
+        else None
+    )
     return RunSpec(
         configfiles=configfiles,
         target=args.target,
@@ -1035,7 +1194,149 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
         dry_run=args.dry_run,
         unlock=args.unlock,
         extra_snakemake_args=list(args.snakemake_arg or []),
+        trial_name=trial_name,
+        workdir=workdir,
+        snakefile=snakefile,
+        snakemake_conda_prefix=conda_prefix,
     )
+
+
+def build_trial_name(trial_id: str, trial_description: str) -> str:
+    """Return the output trial name used by the Snakefile."""
+    if trial_description:
+        return f"{trial_id}_{trial_description}"
+    return trial_id
+
+
+def should_use_batch_isolated_workdirs(args: argparse.Namespace) -> bool:
+    """Return the batch-submit default: isolated only for SLURM unless opted out."""
+    return getattr(args, "mode", "slurm") == "slurm" and not bool(getattr(args, "shared_workdir", False))
+
+
+def should_use_isolated_workdir(args: argparse.Namespace) -> bool:
+    """Return whether this resolved Snakemake invocation should use --directory."""
+    if bool(getattr(args, "shared_workdir", False)):
+        return False
+    return bool(getattr(args, "isolated_workdir", False))
+
+
+def resolve_profile_path(args: argparse.Namespace, isolated_workdir: bool) -> Path:
+    """Resolve the profile path, using absolute paths for isolated commands."""
+    profile = Path(args.profile) if getattr(args, "profile", None) else REPO_ROOT / "profiles" / args.mode
+    if isolated_workdir:
+        return repo_path(profile).resolve()
+    return profile
+
+
+def resolve_isolated_snakemake_workdir(args: argparse.Namespace, trial_name: str) -> Path:
+    """Resolve the per-trial Snakemake workdir under --workdir-root."""
+    root = repo_path(Path(getattr(args, "workdir_root", DEFAULT_SNAKEMAKE_WORKDIR_ROOT))).resolve()
+    return root / sanitize_path_slug(trial_name)
+
+
+def sanitize_path_slug(value: str) -> str:
+    """Keep trial-derived workdir names stable and shell/path friendly."""
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value)).strip("._-")
+    slug = re.sub(r"_+", "_", slug)
+    return slug or "run"
+
+
+def validate_unique_batch_rows(rows: list[BatchRow]) -> None:
+    """Reject batch rows that would collide in output or generated config paths."""
+    duplicate_names = duplicate_values(row.trial_name for row in rows)
+    if duplicate_names:
+        raise SystemExit(
+            "Duplicate batch output trial name(s): "
+            + ", ".join(duplicate_names)
+            + ". Each trialID + trial_descript pair must resolve to a unique output directory."
+        )
+    duplicate_ids = duplicate_values(row.trialID for row in rows)
+    if duplicate_ids:
+        raise SystemExit(
+            "Duplicate trialID value(s): "
+            + ", ".join(duplicate_ids)
+            + ". Generated row configs are keyed by trialID, so trialID values must be unique."
+        )
+    duplicate_workdirs = duplicate_values(sanitize_path_slug(row.trial_name) for row in rows)
+    if duplicate_workdirs:
+        raise SystemExit(
+            "Duplicate isolated Snakemake workdir slug(s): "
+            + ", ".join(duplicate_workdirs)
+            + ". Adjust trialID/trial_descript values so sanitized workdir names are unique."
+        )
+
+
+def duplicate_values(values) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return sorted(duplicates)
+
+
+def select_batch_unlock_rows(
+    rows: list[BatchRow],
+    trial_ids: list[str],
+    unlock_all: bool,
+) -> list[BatchRow]:
+    """Return rows selected by `batch unlock` or raise for missing IDs."""
+    if unlock_all:
+        return rows
+    requested = set(trial_ids)
+    selected = [row for row in rows if row.trialID in requested]
+    found = {row.trialID for row in selected}
+    missing = sorted(requested - found)
+    if missing:
+        raise SystemExit(
+            "Requested trial ID(s) not found in batch table: " + ", ".join(missing)
+        )
+    return selected
+
+
+def warn_missing_shared_reference_indexes(configfiles: list[Path]) -> None:
+    """Warn when isolated batch runs may race while creating shared BWA indexes."""
+    values = merge_top_level_yaml_scalar_values(configfiles)
+    ref_keys = shared_bwa_reference_keys(values)
+    missing_indexes: list[Path] = []
+    for key in ref_keys:
+        value = clean_yaml_scalar(values.get(key))
+        if not value:
+            continue
+        index_path = repo_path(Path(f"{value}.bwt"))
+        if not index_path.exists():
+            missing_indexes.append(index_path)
+    if not missing_indexes:
+        return
+    rendered = ", ".join(str(path) for path in missing_indexes)
+    print(
+        "Warning: isolated batch workdirs do not coordinate creation of shared "
+        "BWA reference indexes. Missing index sentinel(s): "
+        f"{rendered}. Prepare shared indexes before concurrent submissions, "
+        "or run one indexing pass before launching multiple isolated batches.",
+        file=sys.stderr,
+    )
+
+
+def shared_bwa_reference_keys(values: dict[str, str]) -> list[str]:
+    host = clean_yaml_scalar(values.get("host", "")).lower()
+    keys: list[str] = []
+    if host == "human":
+        keys.append("human_ref")
+    elif host == "mouse":
+        keys.append("mouse_ref")
+    else:
+        keys.extend(["human_ref", "mouse_ref"])
+    keys.extend(["viral_ref", "bact16s_ref"])
+    return keys
+
+
+def merge_top_level_yaml_scalar_values(configfiles: list[Path]) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for configfile in configfiles:
+        values.update(top_level_yaml_scalar_values(repo_path(configfile)))
+    return values
 
 
 def resolve_configfiles(configfiles: list[str], extra_configfiles: list[str]) -> list[Path]:
@@ -1099,6 +1400,21 @@ def top_level_yaml_keys(path: Path) -> set[str]:
     return keys
 
 
+def top_level_yaml_scalar_values(path: Path) -> dict[str, str]:
+    """Return simple top-level scalar key/value pairs without PyYAML."""
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        if not line or line.startswith((" ", "\t", "#")):
+            continue
+        key, sep, value = line.partition(":")
+        if not sep:
+            continue
+        cleaned = clean_yaml_scalar(value)
+        if cleaned:
+            values[key.strip()] = cleaned
+    return values
+
+
 def top_level_yaml_section_values(path: Path, section: str) -> dict[str, str]:
     """Return simple scalar key/value pairs from one top-level YAML section."""
     values: dict[str, str] = {}
@@ -1122,8 +1438,18 @@ def top_level_yaml_section_values(path: Path, section: str) -> dict[str, str]:
 def is_missing_yaml_scalar(value: str | None) -> bool:
     if value is None:
         return True
-    value = value.strip().strip('"').strip("'")
+    value = clean_yaml_scalar(value)
     return not value or value.lower() in {"null", "none", "~"}
+
+
+def clean_yaml_scalar(value: str | None) -> str:
+    """Strip comments and simple YAML quotes from a scalar value."""
+    if value is None:
+        return ""
+    value = value.split("#", 1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    return value
 
 
 def ensure_batch_table_exists(batch_table: Path) -> None:
@@ -1925,7 +2251,14 @@ def hash_file(path: Path) -> str:
 
 def build_snakemake_command(spec: RunSpec) -> list[str]:
     """Build the Snakemake argv list without executing it."""
-    command = ["snakemake", "--profile", str(spec.profile)]
+    command = ["snakemake"]
+    if spec.snakefile:
+        command.extend(["--snakefile", str(spec.snakefile)])
+    if spec.workdir:
+        command.extend(["--directory", str(spec.workdir)])
+    command.extend(["--profile", str(spec.profile)])
+    if spec.snakemake_conda_prefix:
+        command.extend(["--conda-prefix", str(spec.snakemake_conda_prefix)])
     if spec.dry_run:
         command.append("--dry-run")
     if spec.unlock:
@@ -1936,7 +2269,7 @@ def build_snakemake_command(spec: RunSpec) -> list[str]:
         # more files. Keep the whole config stack under a single flag so later
         # files override earlier files in the documented order.
         command.append("--configfile")
-        command.extend(str(configfile) for configfile in spec.configfiles)
+        command.extend(format_snakemake_path(configfile, absolute=bool(spec.workdir)) for configfile in spec.configfiles)
     if not spec.unlock and spec.target:
         # The explicit "--" ends --configfile's variable-length file list.
         # Without it, a target like "all" can be swallowed as another config
@@ -1944,6 +2277,13 @@ def build_snakemake_command(spec: RunSpec) -> list[str]:
         # applying the config stack in Snakemake 9.23.
         command.extend(["--", spec.target])
     return command
+
+
+def format_snakemake_path(path: Path, absolute: bool) -> str:
+    """Render a command path, anchoring repo-relative paths when isolated."""
+    if absolute:
+        return str(repo_path(path).resolve())
+    return str(path)
 
 
 def build_execution_command(spec: RunSpec, args: argparse.Namespace) -> list[str]:
@@ -1969,6 +2309,7 @@ def build_execution_command(spec: RunSpec, args: argparse.Namespace) -> list[str
 def execute_run_spec(spec: RunSpec, args: argparse.Namespace) -> int:
     """Record provenance, then run locally or submit a SLURM master job."""
     spec.log_dir.mkdir(parents=True, exist_ok=True)
+    prepare_snakemake_runtime_dirs(spec)
     command = build_execution_command(spec, args)
     write_provenance(spec, args, command)
 
@@ -1980,6 +2321,14 @@ def execute_run_spec(spec: RunSpec, args: argparse.Namespace) -> int:
     if spec.mode == "local" or spec.dry_run or spec.unlock:
         return run_local_command(command, spec)
     return submit_master_job(command, spec, args)
+
+
+def prepare_snakemake_runtime_dirs(spec: RunSpec) -> None:
+    """Create isolated workdir and shared conda cache roots before execution."""
+    if spec.workdir:
+        spec.workdir.mkdir(parents=True, exist_ok=True)
+    if spec.snakemake_conda_prefix and not spec.unlock:
+        spec.snakemake_conda_prefix.mkdir(parents=True, exist_ok=True)
 
 
 def run_local_command(command: list[str], spec: RunSpec) -> int:
@@ -2099,10 +2448,17 @@ def write_provenance(spec: RunSpec, args: argparse.Namespace, execution_command:
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "low_bm_version": __version__,
         "trial_id": spec.trial_id,
+        "trial_name": spec.trial_name,
         "mode": spec.mode,
         "target": spec.target,
         "profile": str(spec.profile),
         "configfiles": [str(path) for path in spec.configfiles],
+        "isolated_workdir": bool(spec.workdir),
+        "snakemake_workdir": str(spec.workdir) if spec.workdir else None,
+        "snakefile": str(spec.snakefile) if spec.snakefile else None,
+        "snakemake_conda_prefix": (
+            str(spec.snakemake_conda_prefix) if spec.snakemake_conda_prefix else None
+        ),
         "snakemake_command": snakemake_command,
         "execution_command": execution_command,
         "runner": getattr(args, "runner", "host"),
