@@ -19,6 +19,18 @@ This creates `config/local/meta.yaml` from `config/templates/meta.yaml`.
 ./low-bm meta compile-phyloseq --analysis-config config/local/meta.yaml
 ```
 
+Like `low-bm analysis`, meta steps use project-managed conda/mamba environments
+from `workflow/envs/*.yaml` by default. If you already maintain a shared R
+analysis env on an HPC system, run meta steps by explicit prefix:
+
+```bash
+./low-bm meta compile-phyloseq \
+  --analysis-config config/local/meta.yaml \
+  --env-mode prefix \
+  --manager /data/taylorng/conda/bin/mamba \
+  --r-env-prefix /data/taylorng/conda/envs/low-bm-r-tools
+```
+
 The compiler reads `meta_compile.batch_table`, `meta_compile.trial_list`, or
 `meta_compile.physeqs`, then writes:
 

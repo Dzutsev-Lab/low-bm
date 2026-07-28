@@ -54,9 +54,43 @@ Run selected steps in order:
   --analysis-config config/local/analysis.yaml
 ```
 
-By default, the CLI runs scripts through the named conda/mamba environments
-declared in `workflow/envs/R-tools-env.yaml` and `workflow/envs/bio-tools-env.yaml`.
-If you already activated the right environment yourself, use:
+By default, the CLI creates and reuses project-local conda/mamba environments
+from the YAML files declared in `workflow/envs/R-tools-env.yaml` and
+`workflow/envs/bio-tools-env.yaml`. These managed prefixes live under
+`.low-bm/analysis/envs`, are named with an environment-file hash, and are run
+with `mamba/conda run --prefix` so they do not depend on global conda env-name
+lookup.
+
+```bash
+./low-bm analysis run abundance-barplots ordination \
+  --analysis-config config/local/analysis.yaml
+```
+
+On HPC systems where you already maintain shared analysis envs and want to use
+those instead of the project-managed copies, use explicit prefixes:
+
+```bash
+./low-bm analysis run abundance-barplots ordination \
+  --analysis-config config/local/analysis.yaml \
+  --env-mode prefix \
+  --manager /data/taylorng/conda/bin/mamba \
+  --r-env-prefix /data/taylorng/conda/envs/low-bm-r-tools
+```
+
+For BLAST confirmation, include the bio-tools prefix as well:
+
+```bash
+./low-bm analysis run blast-confirmation \
+  --analysis-config config/local/analysis.yaml \
+  --env-mode prefix \
+  --r-env-prefix /data/taylorng/conda/envs/low-bm-r-tools \
+  --bio-env-prefix /data/taylorng/conda/envs/low-bm-bio-tools
+```
+
+The same values can be supplied through `LOW_BM_R_TOOLS_PREFIX` and
+`LOW_BM_BIO_TOOLS_PREFIX`. If you want the older global env-name behavior, use
+`--env-mode named`. If you already activated the right environment yourself,
+use:
 
 ```bash
 ./low-bm analysis run ordination --analysis-config config/local/analysis.yaml --env-mode direct

@@ -43,12 +43,13 @@ DEFAULT_RUN_CONFIG_DIR = "experiment_batch_configs"
 DEFAULT_LOG_ROOT = "snakemake_logs"
 DEFAULT_ANALYSIS_LOG_ROOT = "analysis_logs"
 DEFAULT_META_LOG_ROOT = "meta_logs"
+DEFAULT_ANALYSIS_ENV_ROOT = ".low-bm/analysis/envs"
 DEFAULT_RUNNER_PREFIX = ".low-bm/runner/env"
 DEFAULT_RUNNER_ENV_FILE = "workflow/envs/runner-env.yaml"
 ENV_MANAGERS = ("mamba", "conda", "micromamba")
 GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 REQUIRED_PROCESSING_CONFIG_KEYS = ("in_root", "ip_root", "out_root", "script_dir")
-ANALYSIS_ENV_MODES = ("named", "direct")
+ANALYSIS_ENV_MODES = ("managed", "named", "prefix", "direct")
 
 
 @dataclass
@@ -90,6 +91,7 @@ class AnalysisCommandSpec:
     command: list[str]
     execution_command: list[str]
     env_name: str | None
+    env_prefix: Path | None
     env_file: Path | None
 
 
@@ -133,6 +135,8 @@ class HostRunnerSpec:
 
 R_TOOLS_ENV = Path("workflow/envs/R-tools-env.yaml")
 BIO_TOOLS_ENV = Path("workflow/envs/bio-tools-env.yaml")
+R_TOOLS_ENV_PREFIX_ENVVAR = "LOW_BM_R_TOOLS_PREFIX"
+BIO_TOOLS_ENV_PREFIX_ENVVAR = "LOW_BM_BIO_TOOLS_PREFIX"
 
 ANALYSIS_STEP_REGISTRY: dict[str, AnalysisStepSpec] = {
     "ordination": AnalysisStepSpec(
@@ -489,17 +493,18 @@ def add_analysis_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--env-mode",
         choices=ANALYSIS_ENV_MODES,
-        default="named",
+        default="managed",
         help=(
-            "Use named conda/mamba envs from workflow/envs/*.yaml, or run directly "
-            "in the current environment."
+            "Create/use project-local envs from workflow/envs/*.yaml, use named "
+            "envs, use explicit prefixes, or run directly in the current environment."
         ),
     )
     parser.add_argument(
         "--manager",
         default="auto",
-        help="Conda-compatible manager for --env-mode named. Defaults to auto.",
+        help="Conda-compatible manager for --env-mode managed, named, or prefix. Defaults to auto.",
     )
+    add_analysis_env_prefix_arguments(parser)
 
 
 def add_meta_config_argument(parser: argparse.ArgumentParser) -> None:
@@ -546,16 +551,45 @@ def add_meta_step_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--env-mode",
         choices=ANALYSIS_ENV_MODES,
-        default="named",
+        default="managed",
         help=(
-            "Use named conda/mamba envs from workflow/envs/*.yaml, or run directly "
-            "in the current environment."
+            "Create/use project-local envs from workflow/envs/*.yaml, use named "
+            "envs, use explicit prefixes, or run directly in the current environment."
         ),
     )
     parser.add_argument(
         "--manager",
         default="auto",
-        help="Conda-compatible manager for --env-mode named. Defaults to auto.",
+        help="Conda-compatible manager for --env-mode managed, named, or prefix. Defaults to auto.",
+    )
+    add_analysis_env_prefix_arguments(parser)
+
+
+def add_analysis_env_prefix_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add explicit analysis environment prefix options."""
+    parser.add_argument(
+        "--analysis-env-root",
+        default=os.environ.get("LOW_BM_ANALYSIS_ENV_ROOT", DEFAULT_ANALYSIS_ENV_ROOT),
+        help=(
+            "Root for project-managed analysis conda prefixes when --env-mode "
+            f"managed is used. Defaults to {DEFAULT_ANALYSIS_ENV_ROOT}."
+        ),
+    )
+    parser.add_argument(
+        "--r-env-prefix",
+        default=os.environ.get(R_TOOLS_ENV_PREFIX_ENVVAR),
+        help=(
+            "Conda environment prefix for R-heavy analysis steps when "
+            f"--env-mode prefix is used. Defaults to ${R_TOOLS_ENV_PREFIX_ENVVAR}."
+        ),
+    )
+    parser.add_argument(
+        "--bio-env-prefix",
+        default=os.environ.get(BIO_TOOLS_ENV_PREFIX_ENVVAR),
+        help=(
+            "Conda environment prefix for BLAST/bioinformatics analysis steps "
+            f"when --env-mode prefix is used. Defaults to ${BIO_TOOLS_ENV_PREFIX_ENVVAR}."
+        ),
     )
 
 
@@ -751,6 +785,10 @@ def analysis_run_command(args: argparse.Namespace) -> int:
         print(f"Analysis dry-run complete. See {spec.log_dir}.")
         return 0
 
+    env_returncode = ensure_managed_analysis_envs(spec, "Analysis")
+    if env_returncode != 0:
+        return env_returncode
+
     for index, command_spec in enumerate(spec.commands, start=1):
         returncode = run_analysis_step(command_spec, spec.log_dir, index)
         if returncode != 0:
@@ -820,6 +858,10 @@ def execute_meta_step(args: argparse.Namespace, step: str) -> int:
     if spec.dry_run:
         print(f"Meta-analysis dry-run complete. See {spec.log_dir}.")
         return 0
+
+    env_returncode = ensure_managed_analysis_envs(spec, "Meta-analysis")
+    if env_returncode != 0:
+        return env_returncode
 
     returncode = run_analysis_step(command_spec, spec.log_dir, 1)
     if returncode != 0:
@@ -1189,7 +1231,26 @@ def build_analysis_run_spec(
     if env_mode not in ANALYSIS_ENV_MODES:
         raise SystemExit(f"Unsupported analysis env mode: {env_mode}")
 
-    manager = resolve_env_manager(getattr(args, "manager", "auto")) if env_mode == "named" else None
+    manager = (
+        resolve_env_manager(getattr(args, "manager", "auto"))
+        if env_mode in {"managed", "named", "prefix"}
+        else None
+    )
+    if env_mode == "managed":
+        env_prefixes = resolve_managed_analysis_env_prefixes(
+            args,
+            expanded_steps,
+            ANALYSIS_STEP_REGISTRY,
+        )
+    elif env_mode == "prefix":
+        env_prefixes = resolve_analysis_env_prefixes(
+            args,
+            expanded_steps,
+            ANALYSIS_STEP_REGISTRY,
+            validate_exists=not bool(getattr(args, "dry_run", False)),
+        )
+    else:
+        env_prefixes = {}
     timestamp = created_utc or datetime.now(timezone.utc)
     log_dir = resolve_analysis_log_dir(args, expanded_steps, timestamp)
 
@@ -1199,6 +1260,7 @@ def build_analysis_run_spec(
             analysis_config=analysis_config,
             env_mode=env_mode,
             manager=manager,
+            env_prefixes=env_prefixes,
             registry=ANALYSIS_STEP_REGISTRY,
         )
         for step in expanded_steps
@@ -1228,7 +1290,26 @@ def build_meta_run_spec(
     if env_mode not in ANALYSIS_ENV_MODES:
         raise SystemExit(f"Unsupported meta-analysis env mode: {env_mode}")
 
-    manager = resolve_env_manager(getattr(args, "manager", "auto")) if env_mode == "named" else None
+    manager = (
+        resolve_env_manager(getattr(args, "manager", "auto"))
+        if env_mode in {"managed", "named", "prefix"}
+        else None
+    )
+    if env_mode == "managed":
+        env_prefixes = resolve_managed_analysis_env_prefixes(
+            args,
+            [step],
+            META_STEP_REGISTRY,
+        )
+    elif env_mode == "prefix":
+        env_prefixes = resolve_analysis_env_prefixes(
+            args,
+            [step],
+            META_STEP_REGISTRY,
+            validate_exists=not bool(getattr(args, "dry_run", False)),
+        )
+    else:
+        env_prefixes = {}
     timestamp = created_utc or datetime.now(timezone.utc)
     log_dir = resolve_analysis_log_dir(args, [step], timestamp)
     command = build_analysis_command_spec(
@@ -1236,6 +1317,7 @@ def build_meta_run_spec(
         analysis_config=meta_config,
         env_mode=env_mode,
         manager=manager,
+        env_prefixes=env_prefixes,
         registry=META_STEP_REGISTRY,
     )
     return AnalysisRunSpec(
@@ -1268,6 +1350,7 @@ def build_analysis_command_spec(
     analysis_config: Path,
     env_mode: str,
     manager: EnvManagerSpec | None,
+    env_prefixes: dict[Path, Path] | None = None,
     registry: dict[str, AnalysisStepSpec] = ANALYSIS_STEP_REGISTRY,
 ) -> AnalysisCommandSpec:
     step_spec = registry[step]
@@ -1276,12 +1359,16 @@ def build_analysis_command_spec(
         for token in step_spec.argv_template
     ]
     env_name = analysis_env_name(step_spec.env_file) if step_spec.env_file is not None else None
-    execution_command = wrap_analysis_command(command, env_name, env_mode, manager)
+    env_prefix = None
+    if step_spec.env_file is not None and env_prefixes is not None:
+        env_prefix = env_prefixes.get(step_spec.env_file)
+    execution_command = wrap_analysis_command(command, env_name, env_prefix, env_mode, manager)
     return AnalysisCommandSpec(
         step=step,
         command=command,
         execution_command=execution_command,
         env_name=env_name,
+        env_prefix=env_prefix,
         env_file=step_spec.env_file,
     )
 
@@ -1289,13 +1376,24 @@ def build_analysis_command_spec(
 def wrap_analysis_command(
     command: list[str],
     env_name: str | None,
+    env_prefix: Path | None,
     env_mode: str,
     manager: EnvManagerSpec | None,
 ) -> list[str]:
-    if env_mode == "direct" or env_name is None:
+    if env_mode == "direct" or (env_name is None and env_prefix is None):
         return command
     if manager is None:
-        raise SystemExit("--env-mode named requires a conda-compatible manager.")
+        raise SystemExit(f"--env-mode {env_mode} requires a conda-compatible manager.")
+    if env_mode in {"managed", "prefix"}:
+        if env_prefix is None:
+            raise SystemExit(f"--env-mode {env_mode} requires an environment prefix for each selected step.")
+        return [
+            manager.executable,
+            "run",
+            "--prefix",
+            str(env_prefix),
+            *command,
+        ]
     return [
         manager.executable,
         "run",
@@ -1303,6 +1401,140 @@ def wrap_analysis_command(
         env_name,
         *command,
     ]
+
+
+def resolve_analysis_env_prefixes(
+    args: argparse.Namespace,
+    steps: list[str],
+    registry: dict[str, AnalysisStepSpec],
+    validate_exists: bool,
+) -> dict[Path, Path]:
+    """Resolve explicit conda prefixes needed by the selected analysis steps."""
+    prefixes: dict[Path, Path] = {}
+    for env_file in selected_analysis_env_files(steps, registry):
+        option_name, envvar_name, label = analysis_env_prefix_source(env_file)
+        value = getattr(args, option_name, None)
+        if not value:
+            raise SystemExit(
+                f"--env-mode prefix requires {label} for steps that use {analysis_env_name(env_file)} "
+                f"(or set ${envvar_name})."
+            )
+        prefix = repo_path(Path(value)).resolve()
+        if validate_exists and not prefix.is_dir():
+            raise SystemExit(f"Missing analysis environment prefix for {analysis_env_name(env_file)}: {prefix}")
+        prefixes[env_file] = prefix
+    return prefixes
+
+
+def resolve_managed_analysis_env_prefixes(
+    args: argparse.Namespace,
+    steps: list[str],
+    registry: dict[str, AnalysisStepSpec],
+) -> dict[Path, Path]:
+    """Resolve project-local prefixes derived from selected env YAMLs."""
+    env_root = repo_path(Path(getattr(args, "analysis_env_root", DEFAULT_ANALYSIS_ENV_ROOT))).resolve()
+    return {
+        env_file: managed_analysis_env_prefix(env_file, env_root)
+        for env_file in selected_analysis_env_files(steps, registry)
+    }
+
+
+def managed_analysis_env_prefix(env_file: Path, env_root: Path) -> Path:
+    """Return a deterministic prefix for one analysis environment YAML."""
+    env_name = re.sub(r"[^A-Za-z0-9._-]+", "-", analysis_env_name(env_file)).strip("-")
+    env_hash = hash_file(repo_path(env_file))[:12]
+    return env_root / f"{env_name}-{env_hash}"
+
+
+def selected_analysis_env_files(
+    steps: list[str],
+    registry: dict[str, AnalysisStepSpec],
+) -> list[Path]:
+    """Return unique environment YAML paths used by selected steps."""
+    env_files: list[Path] = []
+    seen: set[Path] = set()
+    for step in steps:
+        env_file = registry[step].env_file
+        if env_file is not None and env_file not in seen:
+            env_files.append(env_file)
+            seen.add(env_file)
+    return env_files
+
+
+def analysis_env_prefix_source(env_file: Path) -> tuple[str, str, str]:
+    """Map an analysis env file to its CLI/env-var prefix source."""
+    if env_file == R_TOOLS_ENV:
+        return "r_env_prefix", R_TOOLS_ENV_PREFIX_ENVVAR, "--r-env-prefix"
+    if env_file == BIO_TOOLS_ENV:
+        return "bio_env_prefix", BIO_TOOLS_ENV_PREFIX_ENVVAR, "--bio-env-prefix"
+    raise SystemExit(f"No prefix option is registered for analysis environment file: {env_file}")
+
+
+def ensure_managed_analysis_envs(spec: AnalysisRunSpec, label: str) -> int:
+    """Create any missing project-managed analysis environments."""
+    if spec.env_mode != "managed":
+        return 0
+    if spec.manager is None:
+        raise SystemExit("--env-mode managed requires a conda-compatible manager.")
+
+    required_envs = required_managed_analysis_envs(spec)
+    if not required_envs:
+        return 0
+
+    log_file = spec.log_dir / "analysis_env_setup.log"
+    with log_file.open("a") as log:
+        for env_file, prefix in required_envs.items():
+            if prefix.is_dir():
+                log.write(f"# Reusing {analysis_env_name(env_file)} at {prefix}\n")
+                continue
+
+            prefix.parent.mkdir(parents=True, exist_ok=True)
+            env_path = repo_path(env_file)
+            command = build_conda_env_create_command(prefix, env_path, spec.manager)
+            print(f"Creating {label.lower()} environment {analysis_env_name(env_file)} at {prefix}.")
+            log.write(f"\n# {datetime.now(timezone.utc).isoformat()}\n")
+            log.write(f"$ {shlex.join(command)}\n")
+            log.flush()
+            completed = subprocess.run(
+                command,
+                cwd=REPO_ROOT,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            if completed.returncode != 0:
+                print(
+                    f"{label} environment setup failed for {analysis_env_name(env_file)} "
+                    f"with exit code {completed.returncode}. See {log_file}.",
+                    file=sys.stderr,
+                )
+                return completed.returncode
+            write_analysis_env_metadata(prefix, env_file, spec.manager)
+    return 0
+
+
+def required_managed_analysis_envs(spec: AnalysisRunSpec) -> dict[Path, Path]:
+    """Return unique env YAML to prefix mappings from an analysis run spec."""
+    required: dict[Path, Path] = {}
+    for command_spec in spec.commands:
+        if command_spec.env_file is not None and command_spec.env_prefix is not None:
+            required[command_spec.env_file] = command_spec.env_prefix
+    return required
+
+
+def write_analysis_env_metadata(prefix: Path, env_file: Path, manager: EnvManagerSpec) -> None:
+    """Write a small sidecar showing which YAML produced a managed env."""
+    metadata_path = prefix.parent / f"{prefix.name}.json"
+    metadata = {
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "env_prefix": str(prefix),
+        "env_file": str(env_file),
+        "env_file_sha256": hash_file(repo_path(env_file)),
+        "manager": manager.name,
+        "manager_executable": manager.executable,
+        "low_bm_version": __version__,
+    }
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
 
 def analysis_env_name(env_file: Path) -> str:
@@ -1324,7 +1556,9 @@ def write_analysis_provenance(spec: AnalysisRunSpec) -> None:
             "command": command_spec.command,
             "execution_command": command_spec.execution_command,
             "env_name": command_spec.env_name,
+            "env_prefix": str(command_spec.env_prefix) if command_spec.env_prefix else None,
             "env_file": str(command_spec.env_file) if command_spec.env_file else None,
+            "env_file_sha256": hash_file(repo_path(command_spec.env_file)) if command_spec.env_file else None,
         }
         for command_spec in spec.commands
     ]
@@ -1357,7 +1591,9 @@ def write_meta_provenance(spec: AnalysisRunSpec) -> None:
             "command": command_spec.command,
             "execution_command": command_spec.execution_command,
             "env_name": command_spec.env_name,
+            "env_prefix": str(command_spec.env_prefix) if command_spec.env_prefix else None,
             "env_file": str(command_spec.env_file) if command_spec.env_file else None,
+            "env_file_sha256": hash_file(repo_path(command_spec.env_file)) if command_spec.env_file else None,
         }
         for command_spec in spec.commands
     ]
@@ -1467,7 +1703,12 @@ def load_runner_metadata(metadata_path: Path | None) -> dict[str, object]:
 
 def build_runner_create_command(prefix: Path, env_file: Path, manager: EnvManagerSpec) -> list[str]:
     """Build the command that creates the project-local runner environment."""
-    if manager.name == "micromamba":
+    return build_conda_env_create_command(prefix, env_file, manager)
+
+
+def build_conda_env_create_command(prefix: Path, env_file: Path, manager: EnvManagerSpec) -> list[str]:
+    """Build a conda-compatible environment create command."""
+    if is_micromamba_manager(manager):
         return [
             manager.executable,
             "create",
@@ -1487,6 +1728,11 @@ def build_runner_create_command(prefix: Path, env_file: Path, manager: EnvManage
         "--file",
         str(env_file),
     ]
+
+
+def is_micromamba_manager(manager: EnvManagerSpec) -> bool:
+    """Return true for micromamba even when the executable was passed by path."""
+    return manager.name == "micromamba" or Path(manager.executable).name == "micromamba"
 
 
 def remove_runner_prefix(prefix: Path) -> None:

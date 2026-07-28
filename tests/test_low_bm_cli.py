@@ -351,6 +351,19 @@ class AnalysisCommandTests(unittest.TestCase):
         self.assertNotIn("compile-phyloseq", cli.ANALYSIS_STEP_CHOICES)
         self.assertIn("compile-phyloseq", cli.META_STEP_REGISTRY)
 
+    def test_analysis_run_defaults_to_managed_envs(self) -> None:
+        args = cli.build_parser().parse_args(
+            [
+                "analysis",
+                "run",
+                "abundance-barplots",
+                "--analysis-config",
+                "config/local/analysis.yaml",
+            ]
+        )
+        self.assertEqual(args.env_mode, "managed")
+        self.assertEqual(args.analysis_env_root, cli.DEFAULT_ANALYSIS_ENV_ROOT)
+
     def test_analysis_command_construction_covers_registered_steps(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             analysis_config = Path(tmp) / "analysis.yaml"
@@ -374,6 +387,92 @@ class AnalysisCommandTests(unittest.TestCase):
                 self.assertEqual(command_spec.command, command_spec.execution_command)
                 self.assertIn("--analysis-config", command_spec.command)
                 self.assertEqual(command_spec.command[-1], str(analysis_config))
+
+    def test_analysis_managed_env_wraps_r_steps_with_project_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            analysis_config = Path(tmp) / "analysis.yaml"
+            write_minimal_analysis_config(analysis_config)
+            env_root = Path(tmp) / "analysis_envs"
+            args = Args(
+                analysis_config=str(analysis_config),
+                steps=["abundance-barplots"],
+                log_root=str(Path(tmp) / "analysis_logs"),
+                log_dir=None,
+                dry_run=True,
+                env_mode="managed",
+                manager="/bin/echo",
+                analysis_env_root=str(env_root),
+                r_env_prefix=None,
+                bio_env_prefix=None,
+            )
+            spec = cli.build_analysis_run_spec(
+                args,
+                created_utc=datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            )
+            expected_prefix = cli.managed_analysis_env_prefix(cli.R_TOOLS_ENV, env_root.resolve())
+            self.assertEqual(spec.commands[0].env_prefix, expected_prefix)
+            self.assertEqual(
+                spec.commands[0].execution_command,
+                [
+                    "/bin/echo",
+                    "run",
+                    "--prefix",
+                    str(expected_prefix),
+                    "Rscript",
+                    "scripts/AbundanceBarPlots.R",
+                    "--analysis-config",
+                    str(analysis_config),
+                ],
+            )
+
+    def test_analysis_prefix_env_wraps_r_steps_with_prefix(self) -> None:
+        analysis_config = Path("config/local/analysis.yaml")
+        r_prefix = Path("/data/taylorng/conda/envs/low-bm-r-tools")
+        command_spec = cli.build_analysis_command_spec(
+            step="abundance-barplots",
+            analysis_config=analysis_config,
+            env_mode="prefix",
+            manager=EnvManagerSpec(name="mamba", executable="/data/taylorng/conda/bin/mamba"),
+            env_prefixes={cli.R_TOOLS_ENV: r_prefix},
+        )
+        self.assertEqual(command_spec.env_prefix, r_prefix)
+        self.assertEqual(
+            command_spec.execution_command,
+            [
+                "/data/taylorng/conda/bin/mamba",
+                "run",
+                "--prefix",
+                str(r_prefix),
+                "Rscript",
+                "scripts/AbundanceBarPlots.R",
+                "--analysis-config",
+                str(analysis_config),
+            ],
+        )
+
+    def test_analysis_prefix_env_requires_prefix_for_selected_env(self) -> None:
+        args = Args(r_env_prefix=None, bio_env_prefix=None)
+        with self.assertRaisesRegex(SystemExit, "--r-env-prefix"):
+            cli.resolve_analysis_env_prefixes(
+                args,
+                ["abundance-barplots"],
+                cli.ANALYSIS_STEP_REGISTRY,
+                validate_exists=False,
+            )
+
+    def test_analysis_prefix_env_resolves_blast_confirmation_envs(self) -> None:
+        args = Args(
+            r_env_prefix="/data/taylorng/conda/envs/low-bm-r-tools",
+            bio_env_prefix="/data/taylorng/conda/envs/low-bm-bio-tools",
+        )
+        prefixes = cli.resolve_analysis_env_prefixes(
+            args,
+            ["blast-candidates", "blast-search", "blast-plots"],
+            cli.ANALYSIS_STEP_REGISTRY,
+            validate_exists=False,
+        )
+        self.assertEqual(prefixes[cli.R_TOOLS_ENV], Path(args.r_env_prefix))
+        self.assertEqual(prefixes[cli.BIO_TOOLS_ENV], Path(args.bio_env_prefix))
 
     def test_analysis_composite_expands_in_order(self) -> None:
         self.assertEqual(
