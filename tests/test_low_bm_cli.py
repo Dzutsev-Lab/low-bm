@@ -371,13 +371,13 @@ class CommandConstructionTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "Duplicate batch output trial name"):
                 batch_submit_command(args)
 
-    def test_execution_command_wraps_snakemake_in_runner_prefix(self) -> None:
+    def test_execution_command_uses_direct_runner_snakemake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
             run_config.write_text('trialID: "010126.1"\n')
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
-            runner_prefix, manager = write_fake_runner(Path(tmp))
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
             args = Args(
                 configfile=[str(base_config)],
                 extra_configfile=[],
@@ -398,9 +398,12 @@ class CommandConstructionTests(unittest.TestCase):
             )
             spec = build_run_spec(args, run_config)
             command = build_execution_command(spec, args)
-            self.assertEqual(command[0:4], [str(manager), "run", "--prefix", str(runner_prefix.resolve())])
-            self.assertIn("snakemake", command)
+            self.assertEqual(command[0], str(runner_prefix.resolve() / "bin" / "snakemake"))
+            self.assertNotIn("run", command[0:4])
+            self.assertEqual(command[1:3], ["--conda-base-path", str(runner_prefix.resolve())])
             self.assertEqual(command.count("--configfile"), 1)
+            self.assertIn("--config", command)
+            self.assertIn(f"low_bm_repo_root={REPO_ROOT.resolve()}", command)
             self.assertEqual(command[-2:], ["--", "all"])
 
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
@@ -447,7 +450,12 @@ class CommandConstructionTests(unittest.TestCase):
                 extra_snakemake_args=[],
             )
             runner_prefix, manager = write_fake_runner(Path(tmp))
-            command = [str(manager), "run", "--prefix", str(runner_prefix), "snakemake", "all"]
+            command = [
+                str(runner_prefix.resolve() / "bin" / "snakemake"),
+                "--conda-base-path",
+                str(runner_prefix.resolve()),
+                "all",
+            ]
             args = Args(
                 activate_command="",
                 master_cpus="4",
@@ -459,10 +467,57 @@ class CommandConstructionTests(unittest.TestCase):
             )
             script = write_master_script(command, spec, args)
             text = script.read_text()
-            self.assertIn(str(manager), text)
-            self.assertIn(str(runner_prefix), text)
+            self.assertNotIn(str(manager), text)
+            self.assertIn(str(runner_prefix.resolve()), text)
+            self.assertIn(f"export PATH={runner_prefix.resolve() / 'bin'}:$PATH", text)
             self.assertIn("Missing runner env", text)
             self.assertNotIn("activate low-bm-runner", text)
+
+    def test_batch_prepare_envs_dry_run_builds_serial_local_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\n"
+                "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            write_minimal_processing_config(base_config)
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                trial_id=[],
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                shared_workdir=False,
+                workdir_root=str(Path(tmp) / "workdirs"),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(cli.batch_prepare_envs_command(args), 0)
+            text = stdout.getvalue()
+            self.assertIn("[010126.1] would prepare envs:", text)
+            self.assertIn("[010126.2] would prepare envs:", text)
+            self.assertEqual(text.count("--conda-create-envs-only"), 2)
+            self.assertEqual(text.count(str(runner_prefix.resolve() / "bin" / "snakemake")), 2)
+            self.assertNotIn("sbatch", text)
+
+    def test_snakefile_uses_launcher_repo_root_config(self) -> None:
+        text = (REPO_ROOT / "Snakefile").read_text()
+        self.assertIn('config.get("low_bm_repo_root"', text)
+        self.assertNotIn("workflow.source_path", text)
 
     def test_missing_default_processing_config_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -886,6 +941,12 @@ class RunnerSetupTests(unittest.TestCase):
 def write_fake_runner(root: Path) -> tuple[Path, Path]:
     runner_prefix = root / "runner" / "env"
     runner_prefix.mkdir(parents=True)
+    runner_bin = runner_prefix / "bin"
+    runner_bin.mkdir(parents=True)
+    for executable in ("snakemake", "python", "conda"):
+        path = runner_bin / executable
+        path.write_text("#!/usr/bin/env bash\nexit 0\n")
+        path.chmod(0o755)
     manager = root / "bin" / "mamba"
     manager.parent.mkdir(parents=True)
     manager.write_text("#!/usr/bin/env bash\nexit 0\n")

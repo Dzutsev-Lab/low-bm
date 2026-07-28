@@ -5,7 +5,6 @@
 executor: slurm
 software-deployment-method:
   - conda
-conda-frontend: mamba
 jobs: 100
 local-cores: 4
 # Submit these per-sample rules as SLURM arrays to reduce scheduler overhead

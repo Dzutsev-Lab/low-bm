@@ -55,6 +55,22 @@ executor plugin, while rule-level bioinformatics tools remain in
 Snakemake-managed conda environments. See `docs/portability.md` for the
 portability rationale.
 
+The default processing runner calls `.low-bm/runner/env/bin/snakemake`
+directly and prepends `.low-bm/runner/env/bin` to `PATH` inside local runs and
+master jobs. This avoids concurrent `mamba run` lock contention while keeping
+Snakemake and its executor plugin pinned to the project-local runner prefix.
+
+When rule conda environments may need to be created, prepare them serially
+before launching many SLURM rows:
+
+```bash
+./low-bm batch prepare-envs
+```
+
+This uses the same batch table, config stack, isolated workdir resolver, and
+shared `.low-bm/snakemake-conda` prefix as `batch submit`, but it runs locally
+with `--conda-create-envs-only`.
+
 ## Unlocking Stale Locks
 
 Do not use `--nolock` as the normal fix for concurrent batch jobs. If a

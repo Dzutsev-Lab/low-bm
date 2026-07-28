@@ -2,12 +2,10 @@ import json
 import os, re, glob
 from pathlib import Path
 
-# Snakemake's --directory changes the process working directory. Keep project
-# config paths anchored to the checkout that owns this Snakefile.
-try:
-    REPO_ROOT = Path(workflow.source_path(".")).resolve()
-except NameError:
-    REPO_ROOT = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd().resolve()
+# Snakemake's --directory changes the process working directory, and SLURM
+# execution can evaluate sources from Snakemake's runtime cache. The low-bm
+# launcher injects the real checkout path so config paths stay repo-relative.
+REPO_ROOT = Path(config.get("low_bm_repo_root", Path.cwd())).resolve()
 
 
 def repo_path(value):

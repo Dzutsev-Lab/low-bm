@@ -35,6 +35,16 @@ workflow still writes biological outputs to the configured `IP_Data` and
 `Exp_Output` roots; the isolated workdir is for Snakemake metadata, locks, and
 runtime bookkeeping.
 
+Before launching many rows whose rule environments have not been built yet, run
+the environment preparation step serially:
+
+```bash
+./low-bm batch prepare-envs
+```
+
+This creates the Snakemake-managed conda environments in the shared
+`.low-bm/snakemake-conda` prefix without submitting rule jobs to SLURM.
+
 Use `--shared-workdir` on `batch submit` to recover the legacy checkout-level
 lock behavior for debugging. Use `--isolated-workdir` on `low-bm run` when a
 single run should use the same isolated layout.
@@ -68,16 +78,24 @@ Validate it with:
 ./low-bm doctor runner --mode slurm
 ```
 
-## Why `conda run --prefix`?
+## Why Direct Runner Entrypoints?
 
 Shell activation depends on startup files, shell type, and site-specific module
-state. Those details often differ between a login shell and a submitted SLURM
-job. `conda run --prefix .low-bm/runner/env snakemake ...` makes the target env
-explicit in the command itself, which is easier to record in provenance and
-easier to replay.
+state. `mamba run --prefix ...` also creates a process lock under the user's
+global mamba cache, which can fail when many master jobs start at once on a
+shared filesystem. The processing launcher therefore runs the pinned entrypoint
+directly:
+
+```bash
+.low-bm/runner/env/bin/snakemake ...
+```
+
+The launcher prepends `.low-bm/runner/env/bin` to `PATH` and passes
+`--conda-base-path .low-bm/runner/env`, so Snakemake can still find the runner
+prefix's `conda` while avoiding the outer mamba lock.
 
 `--activate-command` remains available as an advanced submitted-SLURM fallback,
-but normal use should go through `low-bm setup runner`.
+but the direct runner path is the default lock-safe processing path.
 
 ## How This Leads To Containers
 
@@ -85,7 +103,7 @@ The inner Snakemake command is still built independently from the runner. Today
 the host runner wraps it like this:
 
 ```bash
-conda run --prefix .low-bm/runner/env snakemake ...
+.low-bm/runner/env/bin/snakemake --conda-base-path .low-bm/runner/env ...
 ```
 
 A later container runner can wrap the same inner command like this:

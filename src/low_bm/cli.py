@@ -137,6 +137,7 @@ class HostRunnerSpec:
     prefix: Path
     manager: EnvManagerSpec
     metadata_path: Path
+    bin_dir: Path
 
 
 R_TOOLS_ENV = Path("workflow/envs/R-tools-env.yaml")
@@ -274,6 +275,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_batch_submit_arguments(submit_parser)
     submit_parser.set_defaults(func=batch_submit_command)
+
+    prepare_envs_parser = batch_subparsers.add_parser(
+        "prepare-envs",
+        help="Create Snakemake rule conda environments before concurrent batch runs.",
+    )
+    add_batch_prepare_envs_arguments(prepare_envs_parser)
+    prepare_envs_parser.set_defaults(func=batch_prepare_envs_command)
 
     unlock_parser = batch_subparsers.add_parser(
         "unlock",
@@ -533,6 +541,40 @@ def add_batch_unlock_arguments(parser: argparse.ArgumentParser) -> None:
     add_snakemake_workdir_arguments(parser)
     parser.add_argument("--dry-run", action="store_true", help="Print unlock command(s) without running them.")
     parser.add_argument("--print-command", action="store_true", help="Print each resolved unlock command.")
+    parser.add_argument(
+        "--snakemake-arg",
+        action="append",
+        default=[],
+        help="Extra raw argument passed to Snakemake. May be repeated.",
+    )
+
+
+def add_batch_prepare_envs_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add arguments for serialized Snakemake rule-environment creation."""
+    add_common_config_arguments(parser)
+    add_runner_arguments(parser)
+    parser.add_argument(
+        "--batch-table",
+        default=DEFAULT_BATCH_TABLE,
+        help=f"Canonical batch TSV. Defaults to {DEFAULT_BATCH_TABLE}.",
+    )
+    parser.add_argument(
+        "--trial-id",
+        action="append",
+        default=[],
+        help="Trial ID whose rule environments should be prepared. May be repeated. Defaults to all rows.",
+    )
+    parser.add_argument("--profile", help="Snakemake profile path. Defaults to profiles/local.")
+    parser.add_argument("--target", default="all", help="Snakemake target rule or file.")
+    parser.add_argument("--log-root", default=DEFAULT_LOG_ROOT, help="Root for environment-prep logs.")
+    parser.add_argument(
+        "--shared-workdir",
+        action="store_true",
+        help="Prepare environments from the shared checkout-level Snakemake workdir.",
+    )
+    add_snakemake_workdir_arguments(parser)
+    parser.add_argument("--dry-run", action="store_true", help="Print preparation command(s) without running them.")
+    parser.add_argument("--print-command", action="store_true", help="Print each resolved preparation command.")
     parser.add_argument(
         "--snakemake-arg",
         action="append",
@@ -910,6 +952,48 @@ def batch_unlock_command(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def batch_prepare_envs_command(args: argparse.Namespace) -> int:
+    """Prepare Snakemake rule conda environments sequentially for batch rows."""
+    batch_table = Path(args.batch_table)
+    ensure_batch_table_exists(batch_table)
+    rows = read_batch_table(batch_table)
+    if not rows:
+        print(f"No rows found in {args.batch_table}.")
+        return 0
+    validate_unique_batch_rows(rows)
+    selected_rows = select_batch_rows_by_trial_ids(rows, args.trial_id)
+
+    exit_code = 0
+    for row in selected_rows:
+        row_config = write_run_config(row, args.run_config_dir)
+        row_args = argparse.Namespace(**vars(args))
+        row_args.row_config = str(row_config)
+        row_args.trial_id = None
+        row_args.trial_descript = None
+        row_args.exp_dir = None
+        row_args.metadata = None
+        row_args.process_umis = None
+        row_args.job_name = f"low-bm-prepare-envs-{row.trialID}"
+        row_args.mode = "local"
+        row_args.profile = args.profile or str(REPO_ROOT / "profiles" / "local")
+        row_args.unlock = False
+        row_args.dry_run = False
+        row_args.isolated_workdir = not args.shared_workdir
+        row_args.print_command = args.print_command or args.dry_run
+        row_args.snakemake_arg = list(args.snakemake_arg or []) + ["--conda-create-envs-only"]
+        spec = build_run_spec(row_args, row_config)
+        command = build_execution_command(spec, row_args)
+        if args.dry_run:
+            print(f"[{row.trialID}] would prepare envs: {shlex.join(command)}")
+            continue
+        result = execute_run_spec(spec, row_args)
+        if result != 0:
+            exit_code = result
+            break
+        print(f"[{row.trialID}] prepared Snakemake rule environments.")
+    return exit_code
+
+
 def analysis_init_command(args: argparse.Namespace) -> int:
     """Create an editable local analysis config from the tracked template."""
     destination_arg = Path(args.analysis_config)
@@ -1054,34 +1138,37 @@ def execute_meta_step(args: argparse.Namespace, step: str) -> int:
 
 def setup_runner_command(args: argparse.Namespace) -> int:
     """Create or validate the project-local Snakemake runner environment."""
-    prefix = Path(args.runner_prefix)
+    prefix_arg = Path(args.runner_prefix)
+    prefix = repo_path(prefix_arg)
     env_file = REPO_ROOT / DEFAULT_RUNNER_ENV_FILE
     if not env_file.exists():
         raise SystemExit(f"Missing runner environment file: {DEFAULT_RUNNER_ENV_FILE}")
 
-    manager = resolve_env_manager(args.manager, metadata_path=runner_metadata_path(prefix))
+    metadata_path = runner_metadata_path(prefix_arg)
+    manager = resolve_env_manager(args.manager, metadata_path=metadata_path)
     if path_exists_for_repo_run(prefix):
         if not args.force:
+            resolved_prefix = prefix.resolve()
             runner = HostRunnerSpec(
-                prefix=prefix,
+                prefix=resolved_prefix,
                 manager=manager,
-                metadata_path=runner_metadata_path(prefix),
+                metadata_path=metadata_path,
+                bin_dir=runner_bin_dir(resolved_prefix),
             )
             print(f"Runner env already exists: {prefix}")
             return check_runner_command(runner, ["snakemake", "--version"], "snakemake")
         remove_runner_prefix(prefix)
 
-    command = build_runner_create_command(prefix, env_file, manager)
-    print(f"Creating runner env at {prefix} with {manager.name}.")
+    command = build_runner_create_command(prefix_arg, env_file, manager)
+    print(f"Creating runner env at {prefix_arg} with {manager.name}.")
     completed = subprocess.run(command, cwd=REPO_ROOT, check=False)
     if completed.returncode != 0:
         return completed.returncode
 
-    metadata_path = runner_metadata_path(prefix)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "runner_prefix": str(prefix),
+        "runner_prefix": str(prefix_arg),
         "env_file": DEFAULT_RUNNER_ENV_FILE,
         "env_file_sha256": hash_file(env_file),
         "manager": manager.name,
@@ -1090,8 +1177,14 @@ def setup_runner_command(args: argparse.Namespace) -> int:
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Wrote runner metadata: {metadata_path}")
+    resolved_prefix = prefix.resolve()
     return check_runner_command(
-        HostRunnerSpec(prefix=prefix, manager=manager, metadata_path=metadata_path),
+        HostRunnerSpec(
+            prefix=resolved_prefix,
+            manager=manager,
+            metadata_path=metadata_path,
+            bin_dir=runner_bin_dir(resolved_prefix),
+        ),
         ["snakemake", "--version"],
         "snakemake",
     )
@@ -1283,6 +1376,13 @@ def select_batch_unlock_rows(
 ) -> list[BatchRow]:
     """Return rows selected by `batch unlock` or raise for missing IDs."""
     if unlock_all:
+        return rows
+    return select_batch_rows_by_trial_ids(rows, trial_ids)
+
+
+def select_batch_rows_by_trial_ids(rows: list[BatchRow], trial_ids: list[str]) -> list[BatchRow]:
+    """Return all rows or the rows matching requested trial IDs."""
+    if not trial_ids:
         return rows
     requested = set(trial_ids)
     selected = [row for row in rows if row.trialID in requested]
@@ -2145,6 +2245,42 @@ def remove_runner_prefix(prefix: Path) -> None:
     shutil.rmtree(target)
 
 
+def runner_bin_dir(prefix: Path) -> Path:
+    """Return the executable directory for the project-local runner prefix."""
+    return prefix / ("Scripts" if os.name == "nt" else "bin")
+
+
+def required_runner_executables(runner: HostRunnerSpec) -> list[Path]:
+    """Return runner executables needed for direct processing launches."""
+    return [runner.bin_dir / name for name in ("snakemake", "python", "conda")]
+
+
+def validate_host_runner_executables(runner: HostRunnerSpec) -> None:
+    """Fail early when a runner prefix is missing direct entrypoints."""
+    missing = [path for path in required_runner_executables(runner) if not path.exists()]
+    if missing:
+        rendered = ", ".join(str(path) for path in missing)
+        raise SystemExit(
+            f"Missing runner executable(s): {rendered}. "
+            "Run `low-bm setup runner --force` to recreate the runner prefix."
+        )
+
+
+def runner_process_env(runner: HostRunnerSpec) -> dict[str, str]:
+    """Return an environment where runner-prefix tools win PATH lookup."""
+    env = os.environ.copy()
+    env["PATH"] = str(runner.bin_dir) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def execution_environment(args: argparse.Namespace) -> dict[str, str] | None:
+    """Return subprocess env overrides for default direct-runner execution."""
+    if getattr(args, "activate_command", ""):
+        return None
+    runner = resolve_host_runner(args)
+    return runner_process_env(runner)
+
+
 def resolve_host_runner(args: argparse.Namespace) -> HostRunnerSpec:
     """Resolve the V1 host runner.
 
@@ -2164,34 +2300,45 @@ def resolve_host_runner(args: argparse.Namespace) -> HostRunnerSpec:
             "or use --activate-command for an advanced submitted-SLURM fallback."
         )
     manager = resolve_env_manager(getattr(args, "manager", "auto"), metadata_path=metadata_path)
-    return HostRunnerSpec(prefix=prefix.resolve(), manager=manager, metadata_path=metadata_path)
+    resolved_prefix = prefix.resolve()
+    runner = HostRunnerSpec(
+        prefix=resolved_prefix,
+        manager=manager,
+        metadata_path=metadata_path,
+        bin_dir=runner_bin_dir(resolved_prefix),
+    )
+    validate_host_runner_executables(runner)
+    return runner
 
 
 def wrap_runner_command(runner: HostRunnerSpec, command: list[str]) -> list[str]:
-    """Run a command inside the project-local runner prefix without shell activation.
+    """Run known runner commands directly from the project-local prefix.
 
-    `conda run -p` style invocation is a portability bridge: it avoids relying on
-    interactive shell startup files, `source activate`, or a site-specific module
-    being reloaded inside every generated master job.
+    Direct entrypoints avoid concurrent `mamba run` processes contending for
+    the user's global mamba lock directory while preserving the pinned runner
+    environment.
     """
-    return [
-        runner.manager.executable,
-        "run",
-        "--prefix",
-        str(runner.prefix),
-        *command,
-    ]
+    if not command:
+        return command
+    executable = command[0]
+    if executable in {"snakemake", "python", "conda", "mamba"}:
+        return [str(runner.bin_dir / executable), *command[1:]]
+    return command
 
 
 def wrap_snakemake_command(runner: HostRunnerSpec, command: list[str]) -> list[str]:
     """Wrap a Snakemake argv list in the active runner implementation."""
-    return wrap_runner_command(runner, command)
+    wrapped = wrap_runner_command(runner, command)
+    if "--conda-base-path" not in wrapped:
+        wrapped = [wrapped[0], "--conda-base-path", str(runner.prefix), *wrapped[1:]]
+    return wrapped
 
 
 def run_runner_command(runner: HostRunnerSpec, command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         wrap_runner_command(runner, command),
         cwd=REPO_ROOT,
+        env=runner_process_env(runner),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -2259,6 +2406,7 @@ def build_snakemake_command(spec: RunSpec) -> list[str]:
     command.extend(["--profile", str(spec.profile)])
     if spec.snakemake_conda_prefix:
         command.extend(["--conda-prefix", str(spec.snakemake_conda_prefix)])
+    command.extend(["--config", f"low_bm_repo_root={REPO_ROOT.resolve()}"])
     if spec.dry_run:
         command.append("--dry-run")
     if spec.unlock:
@@ -2319,7 +2467,7 @@ def execute_run_spec(spec: RunSpec, args: argparse.Namespace) -> int:
     # Dry-runs and unlocks should happen immediately in the current shell; they
     # are Snakemake control operations, not cluster work to submit.
     if spec.mode == "local" or spec.dry_run or spec.unlock:
-        return run_local_command(command, spec)
+        return run_local_command(command, spec, args)
     return submit_master_job(command, spec, args)
 
 
@@ -2331,7 +2479,7 @@ def prepare_snakemake_runtime_dirs(spec: RunSpec) -> None:
         spec.snakemake_conda_prefix.mkdir(parents=True, exist_ok=True)
 
 
-def run_local_command(command: list[str], spec: RunSpec) -> int:
+def run_local_command(command: list[str], spec: RunSpec, args: argparse.Namespace) -> int:
     """Execute Snakemake directly and tee all output into the run log."""
     log_file = spec.log_dir / ("snakemake.dryrun.log" if spec.dry_run else "snakemake.log")
     with log_file.open("a") as log:
@@ -2341,6 +2489,7 @@ def run_local_command(command: list[str], spec: RunSpec) -> int:
         completed = subprocess.run(
             command,
             cwd=REPO_ROOT,
+            env=execution_environment(args),
             stdout=log,
             stderr=subprocess.STDOUT,
             check=False,
@@ -2413,7 +2562,8 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
         # to be site- and account-specific.
         lines.append(activate_command)
     else:
-        prefix = Path(args.runner_prefix)
+        prefix = repo_path(Path(args.runner_prefix)).resolve()
+        bin_dir = runner_bin_dir(prefix)
         # A submitted master job starts later, possibly on another node. This
         # guard catches deleted or unmounted project-local runner envs before a
         # confusing Snakemake failure scrolls by.
@@ -2424,6 +2574,21 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
                 f"  echo {shlex.quote(missing_message)} >&2",
                 "  exit 2",
                 "fi",
+                (
+                    f"if [[ ! -x {shlex.quote(str(bin_dir / 'snakemake'))} "
+                    f"|| ! -x {shlex.quote(str(bin_dir / 'conda'))} ]]; then"
+                ),
+                (
+                    "  echo "
+                    + shlex.quote(
+                        "Runner env is missing snakemake or conda executables. "
+                        "Run low-bm setup runner --force."
+                    )
+                    + " >&2"
+                ),
+                "  exit 2",
+                "fi",
+                f"export PATH={shlex.quote(str(bin_dir))}:$PATH",
             ]
         )
     lines.extend(
@@ -2439,6 +2604,14 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
     script.write_text("\n".join(lines))
     script.chmod(0o755)
     return script
+
+
+def provenance_runner_bin_dir(args: argparse.Namespace) -> str | None:
+    """Return the direct runner bin directory recorded for processing runs."""
+    if getattr(args, "activate_command", ""):
+        return None
+    prefix = repo_path(Path(getattr(args, "runner_prefix", DEFAULT_RUNNER_PREFIX))).resolve()
+    return str(runner_bin_dir(prefix))
 
 
 def write_provenance(spec: RunSpec, args: argparse.Namespace, execution_command: list[str]) -> None:
@@ -2463,6 +2636,7 @@ def write_provenance(spec: RunSpec, args: argparse.Namespace, execution_command:
         "execution_command": execution_command,
         "runner": getattr(args, "runner", "host"),
         "runner_prefix": getattr(args, "runner_prefix", None),
+        "runner_bin_dir": provenance_runner_bin_dir(args),
         "manager": getattr(args, "manager", None),
         "git_commit": git_commit(),
         "activate_command_set": bool(getattr(args, "activate_command", "")),

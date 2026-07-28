@@ -89,6 +89,20 @@ SLURM batch submission uses isolated Snakemake workdirs by default, rooted at
 `.low-bm/snakemake-conda`. The dry-run output should show a different
 `--directory` value for each batch-table row.
 
+If the shared Snakemake rule environments are not already built, create them
+serially before submitting many rows:
+
+```bash
+./low-bm batch prepare-envs \
+  --batch-table config/local/batch.tsv \
+  --configfile config/local/processing.yaml \
+  --extra-configfile config/local/processing-overrides.yaml
+```
+
+This runs locally with `--conda-create-envs-only` and avoids concurrent
+environment creation races. It also avoids the outer `mamba run` wrapper used
+by older launcher versions.
+
 If you need to call Snakemake directly after the row config has been generated,
 keep `--configfile` as one flag followed by all config layers, then end the
 variable-length config list with `--` before the target:
@@ -138,6 +152,8 @@ affected row:
 
 Use `./low-bm batch unlock --all` only after confirming every row in the batch
 table is stopped. Do not use `--nolock` as the routine fix for lock errors.
+Do not delete mamba or conda lock files until you have confirmed no mamba,
+conda, Snakemake, or master jobs are still running.
 
 Expected terminal files:
 

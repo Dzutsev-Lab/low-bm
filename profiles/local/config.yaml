@@ -4,7 +4,6 @@
 # keeps conda execution as the canonical local/runtime mode.
 software-deployment-method:
   - conda
-conda-frontend: mamba
 cores: 16
 latency-wait: 60
 rerun-incomplete: true
