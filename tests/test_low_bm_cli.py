@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import io
+import os
 import tempfile
 import unittest
 import json
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
@@ -406,6 +408,48 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertIn(f"low_bm_repo_root={REPO_ROOT.resolve()}", command)
             self.assertEqual(command[-2:], ["--", "all"])
 
+    def test_runner_process_env_uses_absolute_conda_shell_shim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            runner = cli.resolve_host_runner(
+                Args(runner="host", runner_prefix=str(runner_prefix), manager="auto")
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "PATH": "/usr/bin",
+                    "PYTHONTZPATH": ".low-bm/runner/env/share/zoneinfo",
+                },
+                clear=True,
+            ):
+                env = cli.runner_process_env(runner)
+
+            shim = cli.runner_shell_shim_path(runner.prefix)
+            self.assertEqual(env["BASH_ENV"], str(shim))
+            self.assertEqual(env["PATH"].split(os.pathsep)[0], str(runner.bin_dir))
+            self.assertNotIn("PYTHONTZPATH", env)
+            self.assertTrue(shim.exists())
+
+    def test_runner_shell_shim_calls_conda_through_absolute_python(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            conda = runner_prefix / "bin" / "conda"
+            conda.write_text("#!.low-bm/runner/env/bin/python\n")
+            conda.chmod(0o755)
+            runner = cli.resolve_host_runner(
+                Args(runner="host", runner_prefix=str(runner_prefix), manager="auto")
+            )
+
+            shim = cli.ensure_runner_shell_shim(runner)
+            text = shim.read_text()
+
+            self.assertIn("conda() {", text)
+            self.assertIn(str(runner.bin_dir / "python"), text)
+            self.assertIn(str(runner.bin_dir / "conda"), text)
+            self.assertIn('"$@"', text)
+            self.assertIn("unset PYTHONTZPATH", text)
+
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
@@ -470,8 +514,11 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertNotIn(str(manager), text)
             self.assertIn(str(runner_prefix.resolve()), text)
             self.assertIn(f"export PATH={runner_prefix.resolve() / 'bin'}:$PATH", text)
+            self.assertIn(f"export BASH_ENV={cli.runner_shell_shim_path(runner_prefix.resolve())}", text)
+            self.assertIn("unset PYTHONTZPATH", text)
             self.assertIn("Missing runner env", text)
             self.assertNotIn("activate low-bm-runner", text)
+            self.assertTrue(cli.runner_shell_shim_path(runner_prefix.resolve()).exists())
 
     def test_batch_prepare_envs_dry_run_builds_serial_local_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -911,6 +958,25 @@ class RunnerSetupTests(unittest.TestCase):
             build_runner_create_command(prefix, env_file, micro)[0:2],
             ["/usr/bin/micromamba", "create"],
         )
+
+    def test_doctor_runner_checks_conda_through_shell_shim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            conda = runner_prefix / "bin" / "conda"
+            conda.write_text("#!.low-bm/runner/env/bin/python\n")
+            conda.chmod(0o755)
+            args = Args(
+                mode="local",
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(cli.doctor_runner_command(args), 0)
+
+            self.assertIn("[ok] conda via shell shim", stdout.getvalue())
 
     def test_resolve_manager_uses_runner_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

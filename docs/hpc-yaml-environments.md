@@ -103,6 +103,15 @@ This runs locally with `--conda-create-envs-only` and avoids concurrent
 environment creation races. It also avoids the outer `mamba run` wrapper used
 by older launcher versions.
 
+If this step reports `bad interpreter: .low-bm/runner/env/bin/python` or
+`Error running conda info`, the runner env's conda entrypoint is using a
+relative interpreter path that breaks once Snakemake runs from an isolated
+workdir. Current `low-bm` launchers export `.low-bm/runner/conda-shell.sh`
+through `BASH_ENV`, so Snakemake's bash probes call conda through absolute
+runner-prefix paths. After updating, validate with `./low-bm doctor runner` and
+rerun `batch prepare-envs`; do not delete mamba or conda lock files unless you
+have confirmed no related processes are still running.
+
 If you need to call Snakemake directly after the row config has been generated,
 keep `--configfile` as one flag followed by all config layers, then end the
 variable-length config list with `--` before the target:

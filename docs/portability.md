@@ -94,6 +94,16 @@ The launcher prepends `.low-bm/runner/env/bin` to `PATH` and passes
 `--conda-base-path .low-bm/runner/env`, so Snakemake can still find the runner
 prefix's `conda` while avoiding the outer mamba lock.
 
+Some conda installs write entrypoint scripts whose interpreter path is relative
+to the repo checkout, such as `.low-bm/runner/env/bin/python`. Isolated
+Snakemake workdirs intentionally run from a different directory, so those
+entrypoints can fail with `bad interpreter` or `Error running conda info`. The
+launcher writes `.low-bm/runner/conda-shell.sh` and exports it through
+`BASH_ENV`, making Snakemake's internal bash probes call the runner prefix's
+conda through absolute paths. If `doctor runner` reports the runner executables
+are present, rerun `batch prepare-envs`; rebuilding the runner env is not
+normally required for this error.
+
 `--activate-command` remains available as an advanced submitted-SLURM fallback,
 but the direct runner path is the default lock-safe processing path.
 
