@@ -17,6 +17,8 @@ conda_env_dir: "workflow/envs"
 # -------------------------
 # Reference Genomes
 # -------------------------
+# BWA sidecars (.amb, .ann, .bwt, .pac, .sa) are prepared once with
+# `low-bm references prepare-bwa-indexes` and are not built by processing runs.
 host: "human"
 human_ref: "Ref_Data/clean.human.fa"
 mouse_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"

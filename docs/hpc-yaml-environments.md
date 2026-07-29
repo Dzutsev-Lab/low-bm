@@ -76,6 +76,14 @@ Create and validate the project-local runner first:
 Use `low-bm` for the normal validation path:
 
 ```bash
+./low-bm references prepare-bwa-indexes \
+  --configfile config/local/processing.yaml \
+  --extra-configfile config/local/processing-overrides.yaml
+
+./low-bm references check \
+  --configfile config/local/processing.yaml \
+  --extra-configfile config/local/processing-overrides.yaml
+
 ./low-bm batch submit \
   --batch-table config/local/batch.tsv \
   --configfile config/local/processing.yaml \
@@ -87,7 +95,9 @@ Use `low-bm` for the normal validation path:
 SLURM batch submission uses isolated Snakemake workdirs by default, rooted at
 `.low-bm/snakemake-workdirs`, and shares rule conda environments through
 `.low-bm/snakemake-conda`. The dry-run output should show a different
-`--directory` value for each batch-table row.
+`--directory` value for each batch-table row. The BWA reference index dry-run
+is separate because shared indexes are prepared once and then consumed by all
+future batches using the same references.
 
 If the shared Snakemake rule environments are not already built, create them
 serially before submitting many rows:

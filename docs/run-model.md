@@ -60,6 +60,17 @@ directly and prepends `.low-bm/runner/env/bin` to `PATH` inside local runs and
 master jobs. This avoids concurrent `mamba run` lock contention while keeping
 Snakemake and its executor plugin pinned to the project-local runner prefix.
 
+Shared BWA indexes are reference assets, not trial-processing outputs. Prepare
+or validate them once for the active processing config before launching batches:
+
+```bash
+./low-bm references prepare-bwa-indexes
+./low-bm references check
+```
+
+The check requires the full BWA sidecar set: `.amb`, `.ann`, `.bwt`, `.pac`,
+and `.sa`. Processing consumes those files but no longer builds them.
+
 When rule conda environments may need to be created, prepare them serially
 before launching many SLURM rows:
 
@@ -91,11 +102,11 @@ path and unlocks whichever workdir that run resolves to, shared by default or
 isolated when `--isolated-workdir` is supplied.
 
 Before launching many isolated SLURM rows concurrently, make sure shared BWA
-reference indexes such as `<reference>.bwt` already exist. Isolated Snakemake
-workdirs prevent lock contention between batches, which also means they no
-longer coordinate first-time creation of shared reference index files. Isolated
-`batch submit --mode slurm` now fails before submission when these index
-sentinels are missing.
+reference indexes already exist. Isolated Snakemake workdirs prevent lock
+contention between batches, which also means they no longer coordinate
+first-time creation of shared reference index files. Isolated
+`batch submit --mode slurm` now fails before submission when these sidecars are
+missing.
 
 The SLURM profile still delegates rule execution from the master job to SLURM.
 Lightweight sample-prep stages now run as one batch-level job per stage rather

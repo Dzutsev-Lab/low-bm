@@ -43,6 +43,7 @@ DEFAULT_RUN_CONFIG_DIR = "experiment_batch_configs"
 DEFAULT_LOG_ROOT = "snakemake_logs"
 DEFAULT_ANALYSIS_LOG_ROOT = "analysis_logs"
 DEFAULT_META_LOG_ROOT = "meta_logs"
+DEFAULT_REFERENCE_LOG_ROOT = "reference_logs"
 DEFAULT_ANALYSIS_ENV_ROOT = ".low-bm/analysis/envs"
 DEFAULT_RUNNER_PREFIX = ".low-bm/runner/env"
 DEFAULT_RUNNER_ENV_FILE = "workflow/envs/runner-env.yaml"
@@ -52,6 +53,8 @@ ENV_MANAGERS = ("mamba", "conda", "micromamba")
 GIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 REQUIRED_PROCESSING_CONFIG_KEYS = ("in_root", "ip_root", "out_root", "script_dir")
 ANALYSIS_ENV_MODES = ("managed", "named", "prefix", "direct")
+BWA_INDEX_EXTENSIONS = (".amb", ".ann", ".bwt", ".pac", ".sa")
+BWA_INDEX_MANIFEST_SCHEMA_VERSION = 1
 
 
 @dataclass
@@ -138,6 +141,14 @@ class HostRunnerSpec:
     manager: EnvManagerSpec
     metadata_path: Path
     bin_dir: Path
+
+
+@dataclass(frozen=True)
+class BwaReferenceSpec:
+    """One configured reference FASTA and its processing config key."""
+
+    key: str
+    path: Path
 
 
 R_TOOLS_ENV = Path("workflow/envs/R-tools-env.yaml")
@@ -290,6 +301,22 @@ def build_parser() -> argparse.ArgumentParser:
     add_batch_unlock_arguments(unlock_parser)
     unlock_parser.set_defaults(func=batch_unlock_command)
 
+    references_parser = subparsers.add_parser("references", help="Check and prepare shared reference assets.")
+    references_subparsers = references_parser.add_subparsers(dest="references_command", required=True)
+    references_check_parser = references_subparsers.add_parser(
+        "check",
+        help="Validate configured BWA reference indexes.",
+    )
+    add_references_check_arguments(references_check_parser)
+    references_check_parser.set_defaults(func=references_check_command)
+
+    references_prepare_parser = references_subparsers.add_parser(
+        "prepare-bwa-indexes",
+        help="Create or refresh configured BWA reference indexes.",
+    )
+    add_references_prepare_arguments(references_prepare_parser)
+    references_prepare_parser.set_defaults(func=references_prepare_bwa_indexes_command)
+
     analysis_parser = subparsers.add_parser("analysis", help="Run explicit post-processing analyses.")
     analysis_subparsers = analysis_parser.add_subparsers(dest="analysis_command", required=True)
     analysis_init_parser = analysis_subparsers.add_parser(
@@ -371,8 +398,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def add_common_config_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add config-layering options shared by single-row and table runs."""
+def add_processing_config_stack_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add processing config-layering options."""
     # Snakemake applies later --configfile entries as overrides, so the row
     # config is appended after the base config in build_run_spec().
     parser.add_argument(
@@ -390,6 +417,11 @@ def add_common_config_arguments(parser: argparse.ArgumentParser) -> None:
         default=[],
         help="Additional config override file, layered after --configfile.",
     )
+
+
+def add_common_config_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add config-layering options shared by single-row and table runs."""
+    add_processing_config_stack_arguments(parser)
     parser.add_argument(
         "--run-config-dir",
         default=DEFAULT_RUN_CONFIG_DIR,
@@ -599,6 +631,59 @@ def add_snakemake_workdir_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Shared Snakemake rule-environment prefix used with isolated workdirs. "
             f"Defaults to {DEFAULT_SNAKEMAKE_CONDA_PREFIX}."
+        ),
+    )
+
+
+def add_reference_scope_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add options selecting which configured BWA references are considered."""
+    parser.add_argument(
+        "--all-configured-hosts",
+        action="store_true",
+        help="Include both human_ref and mouse_ref instead of only the configured host reference.",
+    )
+
+
+def add_references_check_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add arguments for validating configured reference indexes."""
+    add_processing_config_stack_arguments(parser)
+    add_reference_scope_arguments(parser)
+
+
+def add_references_prepare_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add arguments for preparing configured BWA reference indexes."""
+    add_processing_config_stack_arguments(parser)
+    add_reference_scope_arguments(parser)
+    parser.add_argument("--log-root", default=DEFAULT_REFERENCE_LOG_ROOT, help="Root for reference preparation logs.")
+    parser.add_argument("--log-dir", help="Exact reference preparation log directory. Defaults under --log-root.")
+    parser.add_argument("--dry-run", action="store_true", help="Print work to do without running BWA or writing manifests.")
+    parser.add_argument("--print-command", action="store_true", help="Print each resolved BWA/index command.")
+    parser.add_argument("--force", action="store_true", help="Rebuild indexes even when all sidecars already exist.")
+    parser.add_argument(
+        "--env-mode",
+        choices=ANALYSIS_ENV_MODES,
+        default="managed",
+        help="Create/use a project-local bio-tools env, use a named env, use an explicit prefix, or run directly.",
+    )
+    parser.add_argument(
+        "--manager",
+        default="auto",
+        help="Conda-compatible manager for --env-mode managed, named, or prefix. Defaults to auto.",
+    )
+    parser.add_argument(
+        "--analysis-env-root",
+        default=DEFAULT_ANALYSIS_ENV_ROOT,
+        help=(
+            "Root for project-managed conda prefixes when --env-mode managed is used. "
+            f"Defaults to {DEFAULT_ANALYSIS_ENV_ROOT}."
+        ),
+    )
+    parser.add_argument(
+        "--bio-env-prefix",
+        default=os.environ.get(BIO_TOOLS_ENV_PREFIX_ENVVAR),
+        help=(
+            "Conda environment prefix for BWA/bioinformatics tools when --env-mode "
+            f"prefix is used. Defaults to ${BIO_TOOLS_ENV_PREFIX_ENVVAR}."
         ),
     )
 
@@ -992,6 +1077,320 @@ def batch_prepare_envs_command(args: argparse.Namespace) -> int:
             break
         print(f"[{row.trialID}] prepared Snakemake rule environments.")
     return exit_code
+
+
+def references_check_command(args: argparse.Namespace) -> int:
+    """Validate configured shared BWA indexes without modifying them."""
+    refs = resolve_bwa_references_for_args(args)
+    warnings = bwa_reference_manifest_warnings(refs)
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+
+    failures = missing_bwa_reference_inputs(refs)
+    if failures:
+        raise SystemExit(render_bwa_reference_failure(failures))
+
+    for ref in refs:
+        print(f"[ok] {ref.key}: {ref.path}")
+    print(f"BWA reference check passed for {len(refs)} reference(s).")
+    return 0
+
+
+def references_prepare_bwa_indexes_command(args: argparse.Namespace) -> int:
+    """Prepare configured shared BWA indexes outside the processing DAG."""
+    refs = resolve_bwa_references_for_args(args)
+    missing_fastas = [f"{ref.key}: missing FASTA {ref.path}" for ref in refs if not ref.path.exists()]
+    if missing_fastas:
+        raise SystemExit("Cannot prepare BWA indexes for missing reference FASTA(s):\n" + "\n".join(f"- {item}" for item in missing_fastas))
+
+    created_utc = datetime.now(timezone.utc)
+    log_dir = resolve_reference_log_dir(args, created_utc)
+    if not args.dry_run:
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+    env_mode, manager, env_prefix = resolve_reference_bio_env(args, validate_exists=not args.dry_run)
+    if not args.dry_run:
+        env_result = ensure_reference_bio_env(env_mode, manager, env_prefix, log_dir)
+        if env_result != 0:
+            return env_result
+
+    exit_code = 0
+    bwa_version: str | None = None
+    for ref in refs:
+        missing_sidecars = missing_bwa_index_sidecars(ref.path)
+        manifest_status, manifest_detail = bwa_index_manifest_status(ref)
+        needs_rebuild = bool(args.force or missing_sidecars or manifest_status == "stale_checksum")
+        command = build_reference_bwa_command(["bwa", "index", str(ref.path)], env_mode, manager, env_prefix)
+
+        if needs_rebuild:
+            if args.print_command or args.dry_run:
+                print(f"[{ref.key}] {shlex.join(command)}")
+            if args.dry_run:
+                continue
+
+            log_file = reference_step_log_file(log_dir, ref)
+            print(f"[run] {ref.key}: indexing {ref.path}")
+            with log_file.open("a") as log:
+                log.write(f"\n# {datetime.now(timezone.utc).isoformat()}\n")
+                log.write(f"$ {shlex.join(command)}\n")
+                log.flush()
+                completed = subprocess.run(
+                    command,
+                    cwd=REPO_ROOT,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            if completed.returncode != 0:
+                print(f"BWA indexing failed for {ref.key} with exit code {completed.returncode}. See {log_file}.", file=sys.stderr)
+                exit_code = completed.returncode
+                continue
+
+            missing_after = missing_bwa_index_sidecars(ref.path)
+            if missing_after:
+                print(
+                    f"BWA indexing completed for {ref.key}, but required sidecar(s) are still missing: "
+                    + ", ".join(str(path) for path in missing_after),
+                    file=sys.stderr,
+                )
+                exit_code = 1
+                continue
+
+            if bwa_version is None:
+                bwa_version = detect_bwa_version(env_mode, manager, env_prefix)
+            write_bwa_index_manifest(ref, bwa_version)
+            print(f"[ok] {ref.key}: indexed {ref.path}")
+            continue
+
+        if manifest_status == "fresh":
+            print(f"[skip] {ref.key}: complete BWA index already exists")
+            continue
+
+        if args.dry_run:
+            print(f"[{ref.key}] would write manifest: {bwa_index_manifest_path(ref.path)} ({manifest_detail})")
+            continue
+
+        if bwa_version is None:
+            bwa_version = detect_bwa_version(env_mode, manager, env_prefix)
+        write_bwa_index_manifest(ref, bwa_version)
+        print(f"[manifest] {ref.key}: wrote {bwa_index_manifest_path(ref.path)}")
+
+    return exit_code
+
+
+def resolve_bwa_references_for_args(args: argparse.Namespace) -> list[BwaReferenceSpec]:
+    configfiles = resolve_configfiles(args.configfile, args.extra_configfile)
+    validate_processing_config_stack(configfiles)
+    values = merge_top_level_yaml_scalar_values(configfiles)
+    return resolve_bwa_references(values, all_configured_hosts=bool(getattr(args, "all_configured_hosts", False)))
+
+
+def resolve_bwa_references(values: dict[str, str], all_configured_hosts: bool = False) -> list[BwaReferenceSpec]:
+    refs: list[BwaReferenceSpec] = []
+    missing_keys: list[str] = []
+    seen_paths: set[Path] = set()
+    for key in selected_bwa_reference_keys(values, all_configured_hosts):
+        value = clean_yaml_scalar(values.get(key))
+        if not value:
+            missing_keys.append(key)
+            continue
+        path = repo_path(Path(value)).resolve()
+        if path in seen_paths:
+            continue
+        refs.append(BwaReferenceSpec(key=key, path=path))
+        seen_paths.add(path)
+    if missing_keys:
+        raise SystemExit("Processing config is missing BWA reference value(s): " + ", ".join(missing_keys))
+    return refs
+
+
+def selected_bwa_reference_keys(values: dict[str, str], all_configured_hosts: bool = False) -> list[str]:
+    if all_configured_hosts:
+        host_keys = ["human_ref", "mouse_ref"]
+    else:
+        host = clean_yaml_scalar(values.get("host", "")).lower()
+        if host == "human":
+            host_keys = ["human_ref"]
+        elif host == "mouse":
+            host_keys = ["mouse_ref"]
+        else:
+            raise SystemExit("Processing config key 'host' must be either 'human' or 'mouse' for BWA reference resolution.")
+    return [*host_keys, "viral_ref", "bact16s_ref"]
+
+
+def bwa_index_sidecars(reference: Path) -> list[Path]:
+    return [Path(f"{reference}{extension}") for extension in BWA_INDEX_EXTENSIONS]
+
+
+def missing_bwa_index_sidecars(reference: Path) -> list[Path]:
+    return [path for path in bwa_index_sidecars(reference) if not path.exists()]
+
+
+def missing_bwa_reference_inputs(refs: list[BwaReferenceSpec]) -> list[str]:
+    failures: list[str] = []
+    for ref in refs:
+        if not ref.path.exists():
+            failures.append(f"{ref.key}: missing FASTA {ref.path}")
+            continue
+        for sidecar in missing_bwa_index_sidecars(ref.path):
+            failures.append(f"{ref.key}: missing BWA sidecar {sidecar}")
+    return failures
+
+
+def render_bwa_reference_failure(failures: list[str]) -> str:
+    rendered = "\n".join(f"- {failure}" for failure in failures)
+    return (
+        "Missing BWA reference index files:\n"
+        f"{rendered}\n"
+        "Run `low-bm references prepare-bwa-indexes` before processing batches that use these references."
+    )
+
+
+def bwa_index_manifest_path(reference: Path) -> Path:
+    return Path(f"{reference}.low-bm-bwa-index.json")
+
+
+def bwa_index_manifest_status(ref: BwaReferenceSpec) -> tuple[str, str]:
+    manifest = bwa_index_manifest_path(ref.path)
+    if not manifest.exists():
+        return "missing", f"missing manifest {manifest}"
+    try:
+        values = json.loads(manifest.read_text())
+    except json.JSONDecodeError:
+        return "invalid", f"invalid manifest JSON {manifest}"
+    if values.get("schema_version") != BWA_INDEX_MANIFEST_SCHEMA_VERSION:
+        return "invalid", f"unsupported manifest schema in {manifest}"
+    if values.get("reference_sha256") != hash_file(ref.path):
+        return "stale_checksum", f"manifest checksum does not match {ref.path}"
+    expected_sidecars = [str(path) for path in bwa_index_sidecars(ref.path)]
+    if values.get("sidecars") != expected_sidecars:
+        return "invalid", f"manifest sidecar list is stale for {ref.path}"
+    if not values.get("bwa_version"):
+        return "invalid", f"manifest is missing bwa_version for {ref.path}"
+    return "fresh", str(manifest)
+
+
+def bwa_reference_manifest_warnings(refs: list[BwaReferenceSpec]) -> list[str]:
+    warnings: list[str] = []
+    for ref in refs:
+        if not ref.path.exists() or missing_bwa_index_sidecars(ref.path):
+            continue
+        status, detail = bwa_index_manifest_status(ref)
+        if status != "fresh":
+            warnings.append(f"{ref.key}: {detail}")
+    return warnings
+
+
+def write_bwa_index_manifest(ref: BwaReferenceSpec, bwa_version: str) -> None:
+    manifest = {
+        "schema_version": BWA_INDEX_MANIFEST_SCHEMA_VERSION,
+        "reference_path": str(ref.path),
+        "reference_sha256": hash_file(ref.path),
+        "bwa_version": bwa_version,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "sidecars": [str(path) for path in bwa_index_sidecars(ref.path)],
+    }
+    bwa_index_manifest_path(ref.path).write_text(json.dumps(manifest, indent=2) + "\n")
+
+
+def resolve_reference_log_dir(args: argparse.Namespace, created_utc: datetime) -> Path:
+    if getattr(args, "log_dir", None):
+        return repo_path(Path(args.log_dir))
+    timestamp = created_utc.strftime("%Y%m%dT%H%M%SZ")
+    return repo_path(Path(getattr(args, "log_root", DEFAULT_REFERENCE_LOG_ROOT))) / f"{timestamp}_bwa-indexes"
+
+
+def reference_step_log_file(log_dir: Path, ref: BwaReferenceSpec) -> Path:
+    path_hash = hashlib.sha256(str(ref.path).encode()).hexdigest()[:8]
+    return log_dir / f"bwa-index.{sanitize_path_slug(ref.key)}.{path_hash}.log"
+
+
+def resolve_reference_bio_env(
+    args: argparse.Namespace,
+    validate_exists: bool,
+) -> tuple[str, EnvManagerSpec | None, Path | None]:
+    env_mode = getattr(args, "env_mode", "managed")
+    if env_mode not in ANALYSIS_ENV_MODES:
+        raise SystemExit(f"Unsupported reference env mode: {env_mode}")
+    manager = resolve_env_manager(getattr(args, "manager", "auto")) if env_mode in {"managed", "named", "prefix"} else None
+    if env_mode == "managed":
+        env_root = repo_path(Path(getattr(args, "analysis_env_root", DEFAULT_ANALYSIS_ENV_ROOT))).resolve()
+        return env_mode, manager, managed_analysis_env_prefix(BIO_TOOLS_ENV, env_root)
+    if env_mode == "prefix":
+        value = getattr(args, "bio_env_prefix", None)
+        if not value:
+            raise SystemExit(f"--env-mode prefix requires --bio-env-prefix or ${BIO_TOOLS_ENV_PREFIX_ENVVAR}.")
+        prefix = repo_path(Path(value)).resolve()
+        if validate_exists and not prefix.is_dir():
+            raise SystemExit(f"Missing bio-tools environment prefix: {prefix}")
+        return env_mode, manager, prefix
+    return env_mode, manager, None
+
+
+def ensure_reference_bio_env(
+    env_mode: str,
+    manager: EnvManagerSpec | None,
+    env_prefix: Path | None,
+    log_dir: Path,
+) -> int:
+    if env_mode != "managed" or env_prefix is None:
+        return 0
+    if env_prefix.is_dir():
+        return 0
+    if manager is None:
+        raise SystemExit("--env-mode managed requires a conda-compatible manager.")
+    env_prefix.parent.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "reference_env_setup.log"
+    command = build_conda_env_create_command(env_prefix, repo_path(BIO_TOOLS_ENV), manager)
+    print(f"Creating reference bio-tools environment at {env_prefix}.")
+    with log_file.open("a") as log:
+        log.write(f"\n# {datetime.now(timezone.utc).isoformat()}\n")
+        log.write(f"$ {shlex.join(command)}\n")
+        log.flush()
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    if completed.returncode != 0:
+        print(f"Reference bio-tools environment setup failed with exit code {completed.returncode}. See {log_file}.", file=sys.stderr)
+        return completed.returncode
+    write_analysis_env_metadata(env_prefix, BIO_TOOLS_ENV, manager)
+    return 0
+
+
+def build_reference_bwa_command(
+    command: list[str],
+    env_mode: str,
+    manager: EnvManagerSpec | None,
+    env_prefix: Path | None,
+) -> list[str]:
+    return wrap_analysis_command(
+        command,
+        analysis_env_name(BIO_TOOLS_ENV),
+        env_prefix,
+        env_mode,
+        manager,
+    )
+
+
+def detect_bwa_version(env_mode: str, manager: EnvManagerSpec | None, env_prefix: Path | None) -> str:
+    command = build_reference_bwa_command(["bwa"], env_mode, manager, env_prefix)
+    completed = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    for line in completed.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("version:"):
+            return stripped.split(":", 1)[1].strip()
+    return "unknown"
 
 
 def analysis_init_command(args: argparse.Namespace) -> int:
@@ -1420,41 +1819,18 @@ def select_batch_rows_by_trial_ids(rows: list[BatchRow], trial_ids: list[str]) -
 
 
 def require_shared_reference_indexes(configfiles: list[Path]) -> None:
-    """Fail when isolated batch runs would race while creating shared BWA indexes."""
-    values = merge_top_level_yaml_scalar_values(configfiles)
-    ref_keys = shared_bwa_reference_keys(values)
-    missing_indexes: list[Path] = []
-    for key in ref_keys:
-        value = clean_yaml_scalar(values.get(key))
-        if not value:
-            continue
-        index_path = repo_path(Path(f"{value}.bwt"))
-        if not index_path.exists():
-            missing_indexes.append(index_path)
-    if not missing_indexes:
-        return
-    rendered = "\n".join(f"- {path}" for path in missing_indexes)
-    raise SystemExit(
-        "Isolated batch workdirs do not coordinate first-time creation of shared "
-        "BWA reference indexes. Missing index sentinel(s):\n"
-        f"{rendered}\n"
-        "Prepare shared indexes before concurrent submissions, or run one indexing "
-        "pass before launching multiple isolated batches. Use --shared-workdir only "
-        "for compatibility/debug runs where shared Snakemake locking is acceptable."
+    """Fail when isolated batch runs are missing shared BWA indexes."""
+    refs = resolve_bwa_references(
+        merge_top_level_yaml_scalar_values(configfiles),
+        all_configured_hosts=False,
     )
-
-
-def shared_bwa_reference_keys(values: dict[str, str]) -> list[str]:
-    host = clean_yaml_scalar(values.get("host", "")).lower()
-    keys: list[str] = []
-    if host == "human":
-        keys.append("human_ref")
-    elif host == "mouse":
-        keys.append("mouse_ref")
-    else:
-        keys.extend(["human_ref", "mouse_ref"])
-    keys.extend(["viral_ref", "bact16s_ref"])
-    return keys
+    failures = missing_bwa_reference_inputs(refs)
+    if not failures:
+        return
+    raise SystemExit(
+        render_bwa_reference_failure(failures)
+        + "\nIsolated batch workdirs do not create or coordinate shared reference indexes."
+    )
 
 
 def merge_top_level_yaml_scalar_values(configfiles: list[Path]) -> dict[str, str]:

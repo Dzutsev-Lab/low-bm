@@ -45,6 +45,17 @@ the environment preparation step serially:
 This creates the Snakemake-managed conda environments in the shared
 `.low-bm/snakemake-conda` prefix without submitting rule jobs to SLURM.
 
+Shared BWA reference indexes are prepared outside the processing DAG:
+
+```bash
+./low-bm references prepare-bwa-indexes
+./low-bm references check
+```
+
+The processing DAG requires the existing `.amb`, `.ann`, `.bwt`, `.pac`, and
+`.sa` sidecars for each configured host, viral, and bacterial reference. This
+keeps isolated batch masters from racing over shared reference files.
+
 Use `--shared-workdir` on `batch submit` to recover the legacy checkout-level
 lock behavior for debugging. Use `--isolated-workdir` on `low-bm run` when a
 single run should use the same isolated layout.

@@ -11,7 +11,6 @@ printshellcmds: true
 show-failed-logs: true
 
 set-threads:
-  index_ref_bwa: 8
   norm_fastq: 4
   umi_selection: 4
   umi_dedup: 8

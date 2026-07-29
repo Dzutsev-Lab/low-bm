@@ -99,6 +99,11 @@ elif HOST == "mouse":
 
 VIRAL_REF = repo_path(config["viral_ref"])
 BACT16S_REF = repo_path(config["bact16s_ref"])
+BWA_INDEX_EXTENSIONS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+
+
+def bwa_index_files(reference):
+    return [f"{reference}{extension}" for extension in BWA_INDEX_EXTENSIONS]
 
 # mothur references
 MOTHUR_REFERENCE = repo_path(config["mothur_reference"])
@@ -211,26 +216,6 @@ rule validate_fastqs:
             --sample-names "{output.sample_names}" \
             --report "{log.report}" \
             --ok "{output.validation_ok}"
-        """
-
-#----------------------------
-# Reference Indexing
-#----------------------------  
-rule index_ref_bwa:
-    input:
-        reference = "{ref}"
-    output:
-        # indexing produces many files but .bwt is the key one (will use as sentinel)
-        bwt = "{ref}.bwt"
-    threads: 8
-    log: f"{LOG_DIR}/00_bwa_{{ref}}_ref.log"
-    conda: conda_env("bio-tools-env")
-    shell:
-        r"""
-        set -euo pipefail
-        mkdir -p "$(dirname "{log}")"
-        exec > {log} 2>&1
-        bwa index {input.reference}
         """
 
 #-------------------------------------
@@ -414,7 +399,7 @@ rule host_viral_alignment:
     input:
         rep_asv_fasta = f"{DADA_DENOISE_DIR}/ASV.fasta",
         reference_fasta = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag],
-        reference_bwt = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag] + ".bwt"
+        reference_indexes = lambda wc: bwa_index_files({"host": HOST_REF, "viral": VIRAL_REF}[wc.tag])
     output:
         sam = f"{NEG_ALIGNMENT_DIR}/{{tag}}.ASV.sam",
         unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.{{tag}}.ASV.names"
@@ -458,7 +443,9 @@ rule nonhost_nonviral_filter:
 #------------------------------------- 
 rule bacterial_alignment:
     input:
-        nonhost_nonviral_ASVs = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.ASV.fasta"
+        nonhost_nonviral_ASVs = f"{NEG_ALIGN_FILT_DIR}/nonhost.nonviral.ASV.fasta",
+        reference_fasta = BACT16S_REF,
+        reference_indexes = bwa_index_files(BACT16S_REF)
     output:
         bacterial_alignment = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.sam",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
@@ -470,7 +457,7 @@ rule bacterial_alignment:
         r"""
         set -euo pipefail
         mkdir -p "$(dirname "{log}")" "$(dirname "{output.bacterial_alignment}")" "$(dirname "{output.bacterial_names}")" "$(dirname "{output.bacterial_ASVs}")"
-        bwa mem -t {threads} "{BACT16S_REF}" "{input.nonhost_nonviral_ASVs}" > "{output.bacterial_alignment}" 2> "{log}"
+        bwa mem -t {threads} "{input.reference_fasta}" "{input.nonhost_nonviral_ASVs}" > "{output.bacterial_alignment}" 2> "{log}"
         samtools view -F 4 "{output.bacterial_alignment}" | cut -f1 | sort -u > "{output.bacterial_names}"
         seqtk subseq "{input.nonhost_nonviral_ASVs}" "{output.bacterial_names}" > "{output.bacterial_ASVs}" 2> "{log}"
         """

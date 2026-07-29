@@ -21,7 +21,6 @@ default-resources:
   runtime: 240
 
 set-threads:
-  index_ref_bwa: 8
   norm_fastq: 4
   umi_selection: 4
   umi_dedup: 8
@@ -37,9 +36,6 @@ set-threads:
   read_counts: 8
 
 set-resources:
-  index_ref_bwa:
-    mem_mb: 16000
-    runtime: 240
   norm_fastq:
     mem_mb: 8000
     runtime: 120

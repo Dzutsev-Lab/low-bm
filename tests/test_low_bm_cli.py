@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 import json
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -27,6 +27,8 @@ from low_bm.cli import (
     build_run_spec,
     build_runner_create_command,
     build_snakemake_command,
+    references_check_command,
+    references_prepare_bwa_indexes_command,
     resolve_env_manager,
     validate_microclean_source,
     write_master_script,
@@ -166,7 +168,10 @@ class CommandConstructionTests(unittest.TestCase):
                 "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
             )
             base_config = Path(tmp) / "processing.yaml"
-            write_minimal_processing_config(base_config)
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                write_bwa_sidecars(refs / ref_name)
             runner_prefix, _manager = write_fake_runner(Path(tmp))
             args = Args(
                 batch_table=str(table),
@@ -201,7 +206,10 @@ class CommandConstructionTests(unittest.TestCase):
                 "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\n"
             )
             base_config = Path(tmp) / "processing.yaml"
-            write_minimal_processing_config(base_config)
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                write_bwa_sidecars(refs / ref_name)
             runner_prefix, _manager = write_fake_runner(Path(tmp))
             workdir_root = Path(tmp) / "workdirs"
             args = Args(
@@ -392,7 +400,7 @@ class CommandConstructionTests(unittest.TestCase):
                 shared_workdir=False,
             )
 
-            with self.assertRaisesRegex(SystemExit, "Missing index sentinel"):
+            with self.assertRaisesRegex(SystemExit, "Missing BWA reference index files"):
                 batch_submit_command(args)
 
     def test_isolated_batch_submit_allows_existing_shared_bwa_indexes(self) -> None:
@@ -406,7 +414,7 @@ class CommandConstructionTests(unittest.TestCase):
             refs = Path(tmp) / "refs"
             write_processing_config_with_refs(base_config, refs)
             for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
-                (refs / f"{ref_name}.bwt").write_text("index\n")
+                write_bwa_sidecars(refs / ref_name)
             runner_prefix, _manager = write_fake_runner(Path(tmp))
             args = Args(
                 batch_table=str(table),
@@ -481,6 +489,131 @@ class CommandConstructionTests(unittest.TestCase):
             text = stdout.getvalue()
             self.assertIn("would submit master job script", text)
             self.assertNotIn("--directory", text)
+
+    def test_references_check_succeeds_with_sidecars_and_warns_without_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                write_bwa_sidecars(refs / ref_name)
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                all_configured_hosts=False,
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(references_check_command(args), 0)
+
+            self.assertIn("BWA reference check passed for 3 reference(s)", stdout.getvalue())
+            self.assertIn("missing manifest", stderr.getvalue())
+
+    def test_references_check_fails_for_missing_sidecars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                all_configured_hosts=False,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "missing BWA sidecar"):
+                references_check_command(args)
+
+    def test_references_check_warns_on_stale_manifest_without_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                reference = refs / ref_name
+                write_bwa_sidecars(reference)
+                write_bwa_manifest(reference, reference_sha256="stale")
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                all_configured_hosts=False,
+            )
+
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(references_check_command(args), 0)
+
+            self.assertIn("manifest checksum does not match", stderr.getvalue())
+
+    def test_prepare_bwa_indexes_dry_run_prints_missing_and_stale_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa"):
+                reference = refs / ref_name
+                write_bwa_sidecars(reference)
+                write_bwa_manifest(reference, reference_sha256="stale")
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                all_configured_hosts=False,
+                log_root=str(Path(tmp) / "reference_logs"),
+                log_dir=None,
+                dry_run=True,
+                print_command=False,
+                force=False,
+                env_mode="direct",
+                manager="auto",
+                analysis_env_root=str(Path(tmp) / "analysis_envs"),
+                bio_env_prefix=None,
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(references_prepare_bwa_indexes_command(args), 0)
+            text = stdout.getvalue()
+            self.assertEqual(text.count("bwa index"), 3)
+            self.assertIn(str(refs / "human.fa"), text)
+            self.assertIn(str(refs / "viral.fa"), text)
+            self.assertIn(str(refs / "bacteria.fa"), text)
+
+    def test_prepare_bwa_indexes_skips_complete_refs_unless_forced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                reference = refs / ref_name
+                write_bwa_sidecars(reference)
+                write_bwa_manifest(reference)
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                all_configured_hosts=False,
+                log_root=str(Path(tmp) / "reference_logs"),
+                log_dir=None,
+                dry_run=True,
+                print_command=False,
+                force=False,
+                env_mode="direct",
+                manager="auto",
+                analysis_env_root=str(Path(tmp) / "analysis_envs"),
+                bio_env_prefix=None,
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(references_prepare_bwa_indexes_command(args), 0)
+            self.assertNotIn("bwa index", stdout.getvalue())
+
+            args.force = True
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(references_prepare_bwa_indexes_command(args), 0)
+            self.assertEqual(stdout.getvalue().count("bwa index"), 3)
 
     def test_execution_command_uses_direct_runner_snakemake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1069,6 +1202,18 @@ class ProfileConfigurationTests(unittest.TestCase):
         self.assertNotIn("slurm-array-jobs", profile_text)
         self.assertNotIn("slurm-array-limit", profile_text)
 
+    def test_profiles_do_not_configure_bwa_index_rule(self) -> None:
+        for profile in ("slurm", "local"):
+            profile_text = (REPO_ROOT / "profiles" / profile / "config.yaml").read_text()
+            self.assertNotIn("index_ref_bwa", profile_text)
+
+    def test_snakefile_consumes_bwa_indexes_without_building_them(self) -> None:
+        text = (REPO_ROOT / "Snakefile").read_text()
+        self.assertNotIn("rule index_ref_bwa:", text)
+        self.assertIn("def bwa_index_files(reference):", text)
+        self.assertIn("reference_indexes = lambda wc: bwa_index_files", text)
+        self.assertIn("reference_indexes = bwa_index_files(BACT16S_REF)", text)
+
     def test_snakefile_uses_manifest_and_batch_level_sample_prep(self) -> None:
         text = (REPO_ROOT / "Snakefile").read_text()
         self.assertIn("rule validate_fastqs:", text)
@@ -1199,6 +1344,23 @@ def write_processing_config_with_refs(path: Path, refs: Path) -> None:
         f"viral_ref: {viral}\n"
         f"bact16s_ref: {bacteria}\n"
     )
+
+
+def write_bwa_sidecars(reference: Path) -> None:
+    for extension in cli.BWA_INDEX_EXTENSIONS:
+        Path(f"{reference}{extension}").write_text("index\n")
+
+
+def write_bwa_manifest(reference: Path, reference_sha256: str | None = None) -> None:
+    manifest = {
+        "schema_version": cli.BWA_INDEX_MANIFEST_SCHEMA_VERSION,
+        "reference_path": str(reference),
+        "reference_sha256": reference_sha256 or cli.hash_file(reference),
+        "bwa_version": "0.7.17-test",
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "sidecars": [str(Path(f"{reference}{extension}")) for extension in cli.BWA_INDEX_EXTENSIONS],
+    }
+    cli.bwa_index_manifest_path(reference).write_text(json.dumps(manifest, indent=2) + "\n")
 
 
 def write_minimal_analysis_config(path: Path) -> None:
