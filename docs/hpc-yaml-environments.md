@@ -118,10 +118,12 @@ If this step reports `bad interpreter: .low-bm/runner/env/bin/python`,
 `.low-bm/runner/env/bin/activate`, the runner env is leaking relative paths into
 an isolated workdir. Current `low-bm` launchers generate
 `.low-bm/runner/conda-shell.sh` for Snakemake's bash probes and
-`.low-bm/runner/conda-base-shim/` for rule-job activation. After updating,
-validate with `./low-bm doctor runner` and rerun `batch prepare-envs`; do not
-delete mamba or conda lock files unless you have confirmed no related processes
-are still running.
+`.low-bm/runner/conda-base-shim/` for rule-job activation. They also refresh
+`.low-bm/runner/env/bin/activate` with absolute paths for Snakemake job-step
+activation paths that still source that file directly. After updating, validate
+with `./low-bm doctor runner` and rerun `batch prepare-envs`; do not delete
+mamba or conda lock files unless you have confirmed no related processes are
+still running.
 
 If you need to call Snakemake directly after the row config has been generated,
 keep `--configfile` as one flag followed by all config layers, then end the

@@ -112,8 +112,10 @@ Snakemake workdirs intentionally run from a different directory, so those
 entrypoints can fail with `bad interpreter` or `Error running conda info`. The
 launcher writes two small shims under `.low-bm/runner/`: `conda-shell.sh` for
 Snakemake's bash probes and `conda-base-shim/` for rule-job activation. Both
-call the runner prefix through absolute paths. If `doctor runner` passes, rerun
-`batch prepare-envs`; rebuilding the runner env is only needed when
+call the runner prefix through absolute paths. The launcher also refreshes
+`.low-bm/runner/env/bin/activate` with absolute paths for Snakemake job-step
+activation paths that bypass `--conda-base-path`. If `doctor runner` passes,
+rerun `batch prepare-envs`; rebuilding the runner env is only needed when
 `doctor runner` reports missing executables or activation support.
 
 `--activate-command` remains available as an advanced submitted-SLURM fallback,

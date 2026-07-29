@@ -719,6 +719,14 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertIn("conda activate \"$@\"", activate_text)
             self.assertIn("unset PYTHONTZPATH", activate_text)
 
+            runner_activate_text = (runner.bin_dir / "activate").read_text()
+            self.assertIn(str(runner.prefix / "etc" / "profile.d" / "conda.sh"), runner_activate_text)
+            self.assertIn(f"export CONDA_EXE={shim_root / 'bin' / 'conda'}", runner_activate_text)
+            self.assertIn(f"export CONDA_PYTHON_EXE={runner.bin_dir / 'python'}", runner_activate_text)
+            self.assertIn("conda activate \"$@\"", runner_activate_text)
+            self.assertIn("unset PYTHONTZPATH", runner_activate_text)
+            self.assertNotIn(".low-bm/runner/env/etc/profile.d/conda.sh", runner_activate_text)
+
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
@@ -1267,6 +1275,7 @@ class RunnerSetupTests(unittest.TestCase):
                 self.assertEqual(cli.doctor_runner_command(args), 0)
 
             self.assertIn("[ok] conda via shell shim", stdout.getvalue())
+            self.assertIn("[ok] runner env activation shim", stdout.getvalue())
 
     def test_resolve_manager_uses_runner_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
