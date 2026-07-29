@@ -1629,9 +1629,6 @@ def doctor_runner_command(args: argparse.Namespace) -> int:
     snakemake = run_runner_command(runner, ["snakemake", "--version"])
     checks.append(("snakemake", snakemake.returncode == 0, runner_check_detail(snakemake)))
 
-    conda = run_runner_command(runner, ["conda", "info", "--json"])
-    checks.append(("runner conda", conda.returncode == 0, runner_check_detail(conda)))
-
     conda_base_errors = conda_base_activation_errors(runner.conda_base_prefix)
     checks.append(
         (
@@ -2781,7 +2778,7 @@ def runner_bin_dir(prefix: Path) -> Path:
 
 def required_runner_executables(runner: HostRunnerSpec) -> list[Path]:
     """Return runner executables needed for direct processing launches."""
-    return [runner.bin_dir / name for name in ("snakemake", "python", "conda")]
+    return [runner.bin_dir / name for name in ("snakemake", "python")]
 
 
 def validate_host_runner_executables(runner: HostRunnerSpec) -> None:
@@ -2803,12 +2800,26 @@ def runner_process_env(runner: HostRunnerSpec) -> dict[str, str]:
     return env
 
 
+def snakemake_process_env(runner: HostRunnerSpec) -> dict[str, str]:
+    """Return an environment for Snakemake without leaking runner conda."""
+    env = os.environ.copy()
+    for key in list(env):
+        if key.startswith("CONDA_"):
+            env.pop(key, None)
+    env.pop("PYTHONTZPATH", None)
+    path_parts = [part for part in env.get("PATH", "").split(os.pathsep) if part]
+    filtered_parts = [part for part in path_parts if part != str(runner.bin_dir)]
+    conda_paths = [runner.conda_base_prefix / "bin", runner.conda_base_prefix / "condabin"]
+    env["PATH"] = os.pathsep.join([str(path) for path in conda_paths] + filtered_parts)
+    return env
+
+
 def execution_environment(args: argparse.Namespace) -> dict[str, str] | None:
     """Return subprocess env overrides for default direct-runner execution."""
     if getattr(args, "activate_command", ""):
         return None
     runner = resolve_host_runner(args)
-    return runner_process_env(runner)
+    return snakemake_process_env(runner)
 
 
 def resolve_host_runner(args: argparse.Namespace) -> HostRunnerSpec:
@@ -2856,7 +2867,7 @@ def wrap_runner_command(runner: HostRunnerSpec, command: list[str]) -> list[str]
     if not command:
         return command
     executable = command[0]
-    if executable in {"snakemake", "python", "conda", "mamba"}:
+    if executable in {"snakemake", "python"}:
         return [str(runner.bin_dir / executable), *command[1:]]
     return command
 
@@ -2933,7 +2944,7 @@ def run_rule_env_smoke_test(runner: HostRunnerSpec) -> tuple[bool, str]:
         completed = subprocess.run(
             command,
             cwd=REPO_ROOT,
-            env=runner_process_env(runner),
+            env=snakemake_process_env(runner),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -3167,31 +3178,39 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
     else:
         prefix = repo_path(Path(args.runner_prefix)).resolve()
         bin_dir = runner_bin_dir(prefix)
+        metadata_path = runner_metadata_path(Path(args.runner_prefix))
+        manager = resolve_env_manager(getattr(args, "manager", "auto"), metadata_path=metadata_path)
+        conda_base = resolve_conda_base_prefix(getattr(args, "conda_base_prefix", None), metadata_path, manager)
         # A submitted master job starts later, possibly on another node. This
         # guard catches deleted or unmounted project-local runner envs before a
         # confusing Snakemake failure scrolls by.
         missing_message = f"Missing runner env: {prefix}. Run low-bm setup runner first."
+        conda_message = f"Missing conda base activation support: {conda_base}. Rerun low-bm setup runner --conda-base-prefix."
         lines.extend(
             [
                 f"if [[ ! -d {shlex.quote(str(prefix))} ]]; then",
                 f"  echo {shlex.quote(missing_message)} >&2",
                 "  exit 2",
                 "fi",
-                (
-                    f"if [[ ! -x {shlex.quote(str(bin_dir / 'snakemake'))} "
-                    f"|| ! -x {shlex.quote(str(bin_dir / 'conda'))} ]]; then"
-                ),
+                f"if [[ ! -x {shlex.quote(str(bin_dir / 'snakemake'))} ]]; then",
                 (
                     "  echo "
                     + shlex.quote(
-                        "Runner env is missing snakemake or conda executables. "
-                        "Run low-bm setup runner --force."
+                        "Runner env is missing snakemake. Run low-bm setup runner --force."
                     )
                     + " >&2"
                 ),
                 "  exit 2",
                 "fi",
-                f"export PATH={shlex.quote(str(bin_dir))}:$PATH",
+                (
+                    f"if [[ ! -f {shlex.quote(str(conda_base / 'bin' / 'activate'))} "
+                    f"|| ! -x {shlex.quote(str(conda_base / 'bin' / 'conda'))} ]]; then"
+                ),
+                f"  echo {shlex.quote(conda_message)} >&2",
+                "  exit 2",
+                "fi",
+                "for var_name in ${!CONDA_@}; do unset \"$var_name\"; done",
+                f"export PATH={shlex.quote(str(conda_base / 'bin'))}:{shlex.quote(str(conda_base / 'condabin'))}:$PATH",
                 "unset PYTHONTZPATH",
             ]
         )

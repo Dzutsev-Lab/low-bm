@@ -102,7 +102,8 @@ directly:
 .low-bm/runner/env/bin/snakemake ...
 ```
 
-The launcher prepends `.low-bm/runner/env/bin` to `PATH` and passes
+The launcher calls that Snakemake executable by absolute path, then gives
+Snakemake a conda-base-first environment and passes
 `--conda-base-path <real-conda-base>`. The conda base is detected during
 `low-bm setup runner` with `<manager> info --base` and recorded beside the
 runner metadata. If the HPC needs a specific base path, provide it explicitly:

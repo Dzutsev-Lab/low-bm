@@ -655,7 +655,7 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertIn(f"low_bm_repo_root={REPO_ROOT.resolve()}", command)
             self.assertEqual(command[-2:], ["--", "all"])
 
-    def test_runner_process_env_prepends_runner_bin_without_shims(self) -> None:
+    def test_snakemake_process_env_uses_conda_base_not_runner_bin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runner_prefix, _manager = write_fake_runner(Path(tmp))
             runner = cli.resolve_host_runner(
@@ -670,11 +670,15 @@ class CommandConstructionTests(unittest.TestCase):
                 },
                 clear=True,
             ):
-                env = cli.runner_process_env(runner)
+                env = cli.snakemake_process_env(runner)
 
-            self.assertEqual(env["PATH"].split(os.pathsep)[0], str(runner.bin_dir))
+            path_parts = env["PATH"].split(os.pathsep)
+            self.assertEqual(path_parts[0], str(runner.conda_base_prefix / "bin"))
+            self.assertEqual(path_parts[1], str(runner.conda_base_prefix / "condabin"))
+            self.assertNotIn(str(runner.bin_dir), path_parts)
             self.assertNotIn("PYTHONTZPATH", env)
             self.assertNotIn("BASH_ENV", env)
+            self.assertFalse(any(key.startswith("CONDA_") for key in env))
 
     def test_conda_base_prefix_override_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -756,7 +760,10 @@ class CommandConstructionTests(unittest.TestCase):
             text = script.read_text()
             self.assertNotIn(str(manager), text)
             self.assertIn(str(runner_prefix.resolve()), text)
-            self.assertIn(f"export PATH={runner_prefix.resolve() / 'bin'}:$PATH", text)
+            conda_base = (Path(tmp) / "conda-base").resolve()
+            self.assertIn(f"export PATH={conda_base / 'bin'}:{conda_base / 'condabin'}:$PATH", text)
+            self.assertIn("for var_name in ${!CONDA_@}; do unset \"$var_name\"; done", text)
+            self.assertNotIn(f"export PATH={runner_prefix.resolve() / 'bin'}:$PATH", text)
             self.assertNotIn("BASH_ENV", text)
             self.assertNotIn("conda-base-shim", text)
             self.assertIn("unset PYTHONTZPATH", text)
@@ -1236,7 +1243,6 @@ class RunnerSetupTests(unittest.TestCase):
             with redirect_stdout(stdout):
                 self.assertEqual(cli.doctor_runner_command(args), 0)
 
-            self.assertIn("[ok] runner conda", stdout.getvalue())
             self.assertIn("[ok] conda base activation", stdout.getvalue())
 
     def test_doctor_runner_optional_rule_env_smoke_test(self) -> None:

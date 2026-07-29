@@ -56,12 +56,10 @@ Snakemake-managed conda environments. See `docs/portability.md` for the
 portability rationale.
 
 The default processing runner calls `.low-bm/runner/env/bin/snakemake`
-directly and prepends `.low-bm/runner/env/bin` to `PATH` inside local runs and
-master jobs. This avoids concurrent `mamba run` lock contention while keeping
-Snakemake and its executor plugin pinned to the project-local runner prefix.
-Rule environments are still activated through the real conda base recorded by
-`low-bm setup runner`; use `--conda-base-prefix` when that base must be supplied
-explicitly on an HPC.
+directly, without `mamba run`. Snakemake then receives a conda-base-first
+`PATH`, so rule environments are activated through the real conda base recorded
+by `low-bm setup runner`; use `--conda-base-prefix` when that base must be
+supplied explicitly on an HPC.
 
 Shared BWA indexes are reference assets, not trial-processing outputs. Prepare
 or validate them once for the active processing config before launching batches:
