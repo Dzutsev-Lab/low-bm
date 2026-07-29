@@ -114,16 +114,16 @@ environment creation races. It also avoids the outer `mamba run` wrapper used
 by older launcher versions.
 
 If this step reports `bad interpreter: .low-bm/runner/env/bin/python`,
-`Error running conda info`, or a rule job cannot source
-`.low-bm/runner/env/bin/activate`, the runner env is leaking relative paths into
-an isolated workdir. Current `low-bm` launchers generate
-`.low-bm/runner/conda-shell.sh` for Snakemake's bash probes and
-`.low-bm/runner/conda-base-shim/` for rule-job activation. They also refresh
-`.low-bm/runner/env/bin/activate` with absolute paths for Snakemake job-step
-activation paths that still source that file directly. After updating, validate
-with `./low-bm doctor runner` and rerun `batch prepare-envs`; do not delete
-mamba or conda lock files unless you have confirmed no related processes are
-still running.
+`Error running conda info`, or a rule job appears to use
+`.low-bm/runner/env/bin/python` for a biological tool, the runner env is leaking
+into rule execution. Current `low-bm` launchers pass Snakemake a real conda base
+with `--conda-base-path`; they do not rewrite `.low-bm/runner/env/bin/activate`.
+Validate with `./low-bm doctor runner`. If the conda base check fails, rerun
+`./low-bm setup runner --conda-base-prefix /path/to/conda/base`, then rerun
+`batch prepare-envs`. Use `./low-bm doctor runner --rule-env-smoke-test` when
+you need to confirm that a Snakemake rule env, not the runner env, supplies
+`python`. Do not delete mamba or conda lock files unless you have confirmed no
+related processes are still running.
 
 If you need to call Snakemake directly after the row config has been generated,
 keep `--configfile` as one flag followed by all config layers, then end the

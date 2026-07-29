@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -141,6 +142,7 @@ class HostRunnerSpec:
     manager: EnvManagerSpec
     metadata_path: Path
     bin_dir: Path
+    conda_base_prefix: Path
 
 
 @dataclass(frozen=True)
@@ -891,6 +893,14 @@ def add_runner_arguments(parser: argparse.ArgumentParser) -> None:
         default="auto",
         help="Conda-compatible manager used to run the runner env.",
     )
+    parser.add_argument(
+        "--conda-base-prefix",
+        default=os.environ.get("LOW_BM_CONDA_BASE_PREFIX"),
+        help=(
+            "Real conda base prefix used by Snakemake to activate rule environments. "
+            "Defaults to the value detected during `low-bm setup runner`."
+        ),
+    )
 
 
 def add_setup_runner_arguments(parser: argparse.ArgumentParser) -> None:
@@ -910,6 +920,14 @@ def add_setup_runner_arguments(parser: argparse.ArgumentParser) -> None:
         "--force",
         action="store_true",
         help="Remove and recreate an existing runner environment prefix.",
+    )
+    parser.add_argument(
+        "--conda-base-prefix",
+        default=os.environ.get("LOW_BM_CONDA_BASE_PREFIX"),
+        help=(
+            "Real conda base prefix to store for Snakemake rule-env activation. "
+            "Defaults to `<manager> info --base`."
+        ),
     )
 
 
@@ -937,6 +955,22 @@ def add_doctor_runner_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("auto",) + ENV_MANAGERS,
         default="auto",
         help="Conda-compatible manager used to run the runner env.",
+    )
+    parser.add_argument(
+        "--conda-base-prefix",
+        default=os.environ.get("LOW_BM_CONDA_BASE_PREFIX"),
+        help=(
+            "Real conda base prefix used by Snakemake to activate rule environments. "
+            "Defaults to the value recorded by `low-bm setup runner`."
+        ),
+    )
+    parser.add_argument(
+        "--rule-env-smoke-test",
+        action="store_true",
+        help=(
+            "Run a tiny Snakemake conda-rule smoke test and confirm the rule Python "
+            "comes from the Snakemake rule-env cache, not the runner env."
+        ),
     )
 
 
@@ -1545,7 +1579,13 @@ def setup_runner_command(args: argparse.Namespace) -> int:
 
     metadata_path = runner_metadata_path(prefix_arg)
     manager = resolve_env_manager(args.manager, metadata_path=metadata_path)
+    conda_base_prefix = resolve_conda_base_prefix(
+        getattr(args, "conda_base_prefix", None),
+        metadata_path,
+        manager,
+    )
     if path_exists_for_repo_run(prefix):
+        write_runner_metadata(prefix_arg, env_file, manager, conda_base_prefix, preserve_created=True)
         if not args.force:
             resolved_prefix = prefix.resolve()
             runner = HostRunnerSpec(
@@ -1553,6 +1593,7 @@ def setup_runner_command(args: argparse.Namespace) -> int:
                 manager=manager,
                 metadata_path=metadata_path,
                 bin_dir=runner_bin_dir(resolved_prefix),
+                conda_base_prefix=conda_base_prefix,
             )
             print(f"Runner env already exists: {prefix}")
             return check_runner_command(runner, ["snakemake", "--version"], "snakemake")
@@ -1564,17 +1605,7 @@ def setup_runner_command(args: argparse.Namespace) -> int:
     if completed.returncode != 0:
         return completed.returncode
 
-    metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata = {
-        "created_utc": datetime.now(timezone.utc).isoformat(),
-        "runner_prefix": str(prefix_arg),
-        "env_file": DEFAULT_RUNNER_ENV_FILE,
-        "env_file_sha256": hash_file(env_file),
-        "manager": manager.name,
-        "manager_executable": manager.executable,
-        "low_bm_version": __version__,
-    }
-    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+    write_runner_metadata(prefix_arg, env_file, manager, conda_base_prefix, preserve_created=False)
     print(f"Wrote runner metadata: {metadata_path}")
     resolved_prefix = prefix.resolve()
     return check_runner_command(
@@ -1583,6 +1614,7 @@ def setup_runner_command(args: argparse.Namespace) -> int:
             manager=manager,
             metadata_path=metadata_path,
             bin_dir=runner_bin_dir(resolved_prefix),
+            conda_base_prefix=conda_base_prefix,
         ),
         ["snakemake", "--version"],
         "snakemake",
@@ -1597,38 +1629,20 @@ def doctor_runner_command(args: argparse.Namespace) -> int:
     snakemake = run_runner_command(runner, ["snakemake", "--version"])
     checks.append(("snakemake", snakemake.returncode == 0, runner_check_detail(snakemake)))
 
-    conda = run_runner_shell_command(
-        runner,
-        "type conda >/dev/null && conda info --json >/dev/null",
-    )
-    checks.append(("conda via shell shim", conda.returncode == 0, runner_check_detail(conda)))
+    conda = run_runner_command(runner, ["conda", "info", "--json"])
+    checks.append(("runner conda", conda.returncode == 0, runner_check_detail(conda)))
 
-    conda_base = ensure_runner_conda_base_shim(runner)
-    conda_base_activate = conda_base / "bin" / "activate"
-    conda_base_conda = conda_base / "bin" / "conda"
-    runner_activate = runner.bin_dir / "activate"
-    conda_activation_script = runner.prefix / "etc" / "profile.d" / "conda.sh"
-    conda_base_ready = (
-        conda_base_activate.is_file()
-        and conda_base_conda.is_file()
-        and os.access(conda_base_conda, os.X_OK)
-        and conda_activation_script.is_file()
-    )
+    conda_base_errors = conda_base_activation_errors(runner.conda_base_prefix)
     checks.append(
         (
-            "conda base activation shim",
-            conda_base_ready,
-            str(conda_base) if conda_base_ready else f"missing activation support under {conda_base}",
+            "conda base activation",
+            not conda_base_errors,
+            str(runner.conda_base_prefix) if not conda_base_errors else "; ".join(conda_base_errors),
         )
     )
-    runner_activate_ready = runner_activate.is_file() and os.access(runner_activate, os.X_OK)
-    checks.append(
-        (
-            "runner env activation shim",
-            runner_activate_ready,
-            str(runner_activate) if runner_activate_ready else f"missing activation shim {runner_activate}",
-        )
-    )
+    if getattr(args, "rule_env_smoke_test", False):
+        smoke_ok, smoke_detail = run_rule_env_smoke_test(runner)
+        checks.append(("rule env python smoke test", smoke_ok, smoke_detail))
 
     if args.mode == "slurm":
         plugin = run_runner_command(
@@ -2568,16 +2582,6 @@ def runner_metadata_path(prefix: Path) -> Path:
     return prefix.parent / "runner.json"
 
 
-def runner_shell_shim_path(prefix: Path) -> Path:
-    """Return the generated shell shim used by direct runner executions."""
-    return prefix.parent / "conda-shell.sh"
-
-
-def runner_conda_base_shim_path(prefix: Path) -> Path:
-    """Return the generated conda base shim used by Snakemake rule jobs."""
-    return prefix.parent / "conda-base-shim"
-
-
 def resolve_env_manager(manager_name: str = "auto", metadata_path: Path | None = None) -> EnvManagerSpec:
     """Find a conda-compatible manager.
 
@@ -2620,6 +2624,111 @@ def load_runner_metadata(metadata_path: Path | None) -> dict[str, object]:
         return json.loads(path.read_text())
     except json.JSONDecodeError:
         return {}
+
+
+def write_runner_metadata(
+    prefix_arg: Path,
+    env_file: Path,
+    manager: EnvManagerSpec,
+    conda_base_prefix: Path,
+    *,
+    preserve_created: bool,
+) -> None:
+    """Write runner provenance, preserving creation time for existing envs."""
+    metadata_path = runner_metadata_path(prefix_arg)
+    existing = load_runner_metadata(metadata_path) if preserve_created else {}
+    metadata = {
+        "created_utc": existing.get("created_utc") or datetime.now(timezone.utc).isoformat(),
+        "runner_prefix": str(prefix_arg),
+        "env_file": DEFAULT_RUNNER_ENV_FILE,
+        "env_file_sha256": hash_file(env_file),
+        "manager": manager.name,
+        "manager_executable": manager.executable,
+        "conda_base_prefix": str(conda_base_prefix),
+        "low_bm_version": __version__,
+    }
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+
+def resolve_path_prefix(value: str | Path) -> Path:
+    """Resolve user-supplied prefix paths without treating absolute paths as repo-relative."""
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = repo_path(path)
+    return path.resolve()
+
+
+def resolve_conda_base_prefix(
+    override: str | None,
+    metadata_path: Path | None,
+    manager: EnvManagerSpec,
+) -> Path:
+    """Resolve the real conda base Snakemake should use for rule env activation."""
+    if override:
+        return resolve_path_prefix(override)
+
+    metadata = load_runner_metadata(metadata_path)
+    recorded = metadata.get("conda_base_prefix")
+    if recorded:
+        return resolve_path_prefix(str(recorded))
+
+    return detect_conda_base_prefix(manager)
+
+
+def detect_conda_base_prefix(manager: EnvManagerSpec) -> Path:
+    """Ask the configured conda-compatible manager for its base prefix."""
+    completed = subprocess.run(
+        [manager.executable, "info", "--base"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode == 0 and completed.stdout.strip():
+        return resolve_path_prefix(completed.stdout.strip().splitlines()[-1])
+
+    json_completed = subprocess.run(
+        [manager.executable, "info", "--json"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if json_completed.returncode == 0 and json_completed.stdout.strip():
+        try:
+            payload = json.loads(json_completed.stdout)
+        except json.JSONDecodeError:
+            payload = {}
+        for key in ("root_prefix", "conda_prefix", "base_prefix"):
+            value = payload.get(key)
+            if value:
+                return resolve_path_prefix(str(value))
+
+    detail = completed.stderr.strip() or json_completed.stderr.strip() or "manager did not report a base prefix"
+    raise SystemExit(
+        f"Could not detect conda base prefix from {manager.executable}: {detail}. "
+        "Rerun with --conda-base-prefix /path/to/conda/base."
+    )
+
+
+def conda_base_activation_errors(prefix: Path) -> list[str]:
+    """Return missing pieces needed by Snakemake's conda activation path."""
+    errors = []
+    if not prefix.is_dir():
+        errors.append(f"missing conda base directory {prefix}")
+        return errors
+    activate = prefix / "bin" / "activate"
+    conda = prefix / "bin" / "conda"
+    if not activate.is_file():
+        errors.append(f"missing conda activation script {activate}")
+    if not conda.is_file():
+        errors.append(f"missing conda executable {conda}")
+    elif not os.access(conda, os.X_OK):
+        errors.append(f"conda executable is not executable {conda}")
+    return errors
 
 
 def build_runner_create_command(prefix: Path, env_file: Path, manager: EnvManagerSpec) -> list[str]:
@@ -2686,118 +2795,10 @@ def validate_host_runner_executables(runner: HostRunnerSpec) -> None:
         )
 
 
-def ensure_runner_shell_shim(runner: HostRunnerSpec) -> Path:
-    """Create the absolute-path conda shim sourced by Snakemake bash probes."""
-    shim = runner_shell_shim_path(runner.prefix)
-    shim.parent.mkdir(parents=True, exist_ok=True)
-    python = runner.bin_dir / "python"
-    conda = runner.bin_dir / "conda"
-    text = "\n".join(
-        [
-            "# Generated by low-bm; safe to delete and regenerate.",
-            "# Snakemake sources this through BASH_ENV for non-interactive bash probes.",
-            f"export PATH={shlex.quote(str(runner.bin_dir))}:$PATH",
-            "unset PYTHONTZPATH",
-            "conda() {",
-            f"  {shlex.quote(str(python))} {shlex.quote(str(conda))} \"$@\"",
-            "}",
-            "export -f conda",
-            "",
-        ]
-    )
-    if not shim.exists() or shim.read_text() != text:
-        shim.write_text(text)
-    shim.chmod(0o644)
-    return shim
-
-
-def ensure_runner_conda_base_shim(runner: HostRunnerSpec) -> Path:
-    """Create an absolute-path conda base shim for Snakemake rule activation."""
-    shim_root = runner_conda_base_shim_path(runner.prefix)
-    bin_dir = shim_root / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    python = runner.bin_dir / "python"
-    conda = runner.bin_dir / "conda"
-    conda_sh = runner.prefix / "etc" / "profile.d" / "conda.sh"
-
-    conda_wrapper = bin_dir / "conda"
-    conda_text = "\n".join(
-        [
-            "#!/usr/bin/env bash",
-            "# Generated by low-bm; safe to delete and regenerate.",
-            "set -euo pipefail",
-            f"export PATH={shlex.quote(str(runner.bin_dir))}:$PATH",
-            "unset PYTHONTZPATH",
-            f"exec {shlex.quote(str(python))} {shlex.quote(str(conda))} \"$@\"",
-            "",
-        ]
-    )
-    if not conda_wrapper.exists() or conda_wrapper.read_text() != conda_text:
-        conda_wrapper.write_text(conda_text)
-    conda_wrapper.chmod(0o755)
-
-    activate = bin_dir / "activate"
-    activate_text = "\n".join(
-        [
-            "#!/usr/bin/env bash",
-            "# Generated by low-bm; safe to delete and regenerate.",
-            f"export PATH={shlex.quote(str(runner.bin_dir))}:$PATH",
-            "unset PYTHONTZPATH",
-            f"if [[ ! -f {shlex.quote(str(conda_sh))} ]]; then",
-            f"  echo {shlex.quote(f'Missing runner conda activation script: {conda_sh}')} >&2",
-            "  return 1 2>/dev/null || exit 1",
-            "fi",
-            f"source {shlex.quote(str(conda_sh))} || {{ status=$?; return $status 2>/dev/null || exit $status; }}",
-            f"export CONDA_EXE={shlex.quote(str(conda_wrapper))}",
-            f"export _CONDA_EXE={shlex.quote(str(conda_wrapper))}",
-            f"export CONDA_PYTHON_EXE={shlex.quote(str(python))}",
-            "conda activate \"$@\" || { status=$?; return $status 2>/dev/null || exit $status; }",
-            "",
-        ]
-    )
-    if not activate.exists() or activate.read_text() != activate_text:
-        activate.write_text(activate_text)
-    activate.chmod(0o755)
-    ensure_runner_activate_shim(runner, conda_wrapper)
-    return shim_root
-
-
-def ensure_runner_activate_shim(runner: HostRunnerSpec, conda_wrapper: Path | None = None) -> Path:
-    """Repair runner bin/activate for Snakemake paths that bypass conda-base-path."""
-    activate = runner.bin_dir / "activate"
-    conda_sh = runner.prefix / "etc" / "profile.d" / "conda.sh"
-    conda_exe = conda_wrapper or runner.bin_dir / "conda"
-    text = "\n".join(
-        [
-            "#!/usr/bin/env bash",
-            "# Generated by low-bm; safe to delete and regenerate.",
-            "# Snakemake may source this file directly when activating rule envs.",
-            f"export PATH={shlex.quote(str(runner.bin_dir))}:$PATH",
-            "unset PYTHONTZPATH",
-            f"if [[ ! -f {shlex.quote(str(conda_sh))} ]]; then",
-            f"  echo {shlex.quote(f'Missing runner conda activation script: {conda_sh}')} >&2",
-            "  return 1 2>/dev/null || exit 1",
-            "fi",
-            f"source {shlex.quote(str(conda_sh))} || {{ status=$?; return $status 2>/dev/null || exit $status; }}",
-            f"export CONDA_EXE={shlex.quote(str(conda_exe))}",
-            f"export _CONDA_EXE={shlex.quote(str(conda_exe))}",
-            f"export CONDA_PYTHON_EXE={shlex.quote(str(runner.bin_dir / 'python'))}",
-            "conda activate \"$@\" || { status=$?; return $status 2>/dev/null || exit $status; }",
-            "",
-        ]
-    )
-    if not activate.exists() or activate.read_text() != text:
-        activate.write_text(text)
-    activate.chmod(0o755)
-    return activate
-
-
 def runner_process_env(runner: HostRunnerSpec) -> dict[str, str]:
     """Return an environment where runner-prefix tools win PATH lookup."""
     env = os.environ.copy()
-    ensure_runner_conda_base_shim(runner)
     env["PATH"] = str(runner.bin_dir) + os.pathsep + env.get("PATH", "")
-    env["BASH_ENV"] = str(ensure_runner_shell_shim(runner))
     env.pop("PYTHONTZPATH", None)
     return env
 
@@ -2835,6 +2836,11 @@ def resolve_host_runner(args: argparse.Namespace) -> HostRunnerSpec:
         manager=manager,
         metadata_path=metadata_path,
         bin_dir=runner_bin_dir(resolved_prefix),
+        conda_base_prefix=resolve_conda_base_prefix(
+            getattr(args, "conda_base_prefix", None),
+            metadata_path,
+            manager,
+        ),
     )
     validate_host_runner_executables(runner)
     return runner
@@ -2859,7 +2865,7 @@ def wrap_snakemake_command(runner: HostRunnerSpec, command: list[str]) -> list[s
     """Wrap a Snakemake argv list in the active runner implementation."""
     wrapped = wrap_runner_command(runner, command)
     if "--conda-base-path" not in wrapped:
-        wrapped = [wrapped[0], "--conda-base-path", str(ensure_runner_conda_base_shim(runner)), *wrapped[1:]]
+        wrapped = [wrapped[0], "--conda-base-path", str(runner.conda_base_prefix), *wrapped[1:]]
     return wrapped
 
 
@@ -2875,17 +2881,72 @@ def run_runner_command(runner: HostRunnerSpec, command: list[str]) -> subprocess
     )
 
 
-def run_runner_shell_command(runner: HostRunnerSpec, command: str) -> subprocess.CompletedProcess[str]:
-    """Run a shell probe with the same BASH_ENV Snakemake inherits."""
-    return subprocess.run(
-        ["bash", "-c", command],
-        cwd=REPO_ROOT,
-        env=runner_process_env(runner),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+def run_rule_env_smoke_test(runner: HostRunnerSpec) -> tuple[bool, str]:
+    """Run a tiny conda-backed rule and verify it does not use runner Python."""
+    with tempfile.TemporaryDirectory(prefix="low-bm-rule-env-smoke-") as tmp:
+        root = Path(tmp)
+        workdir = root / "workdir"
+        profile = root / "profile"
+        conda_prefix = root / "snakemake-conda"
+        profile.mkdir()
+        workdir.mkdir()
+        conda_prefix.mkdir()
+        (root / "env.yaml").write_text(
+            "channels:\n"
+            "  - conda-forge\n"
+            "dependencies:\n"
+            "  - python=3.11\n"
+        )
+        (profile / "config.yaml").write_text(
+            "executor: local\n"
+            "software-deployment-method:\n"
+            "  - conda\n"
+            "cores: 1\n"
+        )
+        snakefile = root / "Snakefile"
+        snakefile.write_text(
+            "rule all:\n"
+            "    input:\n"
+            "        'python_path.txt'\n\n"
+            "rule write_python:\n"
+            "    output:\n"
+            "        'python_path.txt'\n"
+            "    conda:\n"
+            "        'env.yaml'\n"
+            "    shell:\n"
+            "        \"python -c 'import sys; open(\\\"{output}\\\", \\\"w\\\").write(sys.executable)'\"\n"
+        )
+        command = wrap_snakemake_command(
+            runner,
+            [
+                "snakemake",
+                "--snakefile",
+                str(snakefile),
+                "--directory",
+                str(workdir),
+                "--profile",
+                str(profile),
+                "--conda-prefix",
+                str(conda_prefix),
+            ],
+        )
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            env=runner_process_env(runner),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return False, completed.stdout.strip()
+        python_path = (workdir / "python_path.txt").read_text().strip()
+        if str(runner.prefix) in python_path:
+            return False, f"rule used runner Python: {python_path}"
+        if str(conda_prefix) not in python_path:
+            return False, f"rule Python was outside smoke conda prefix: {python_path}"
+        return True, python_path
 
 
 def check_runner_command(runner: HostRunnerSpec, command: list[str], label: str) -> int:
@@ -3106,14 +3167,6 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
     else:
         prefix = repo_path(Path(args.runner_prefix)).resolve()
         bin_dir = runner_bin_dir(prefix)
-        runner = HostRunnerSpec(
-            prefix=prefix,
-            manager=EnvManagerSpec(name="direct", executable=""),
-            metadata_path=runner_metadata_path(Path(args.runner_prefix)),
-            bin_dir=bin_dir,
-        )
-        shim = ensure_runner_shell_shim(runner)
-        ensure_runner_conda_base_shim(runner)
         # A submitted master job starts later, possibly on another node. This
         # guard catches deleted or unmounted project-local runner envs before a
         # confusing Snakemake failure scrolls by.
@@ -3140,7 +3193,6 @@ def write_master_script(command: list[str], spec: RunSpec, args: argparse.Namesp
                 "fi",
                 f"export PATH={shlex.quote(str(bin_dir))}:$PATH",
                 "unset PYTHONTZPATH",
-                f"export BASH_ENV={shlex.quote(str(shim))}",
             ]
         )
     lines.extend(

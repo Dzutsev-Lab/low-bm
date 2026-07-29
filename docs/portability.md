@@ -87,6 +87,7 @@ Validate it with:
 ```bash
 ./low-bm doctor runner --mode local
 ./low-bm doctor runner --mode slurm
+./low-bm doctor runner --rule-env-smoke-test
 ```
 
 ## Why Direct Runner Entrypoints?
@@ -102,21 +103,23 @@ directly:
 ```
 
 The launcher prepends `.low-bm/runner/env/bin` to `PATH` and passes
-`--conda-base-path .low-bm/runner/conda-base-shim`. That generated shim points
-Snakemake back to the runner prefix through absolute paths while avoiding the
-outer mamba lock.
+`--conda-base-path <real-conda-base>`. The conda base is detected during
+`low-bm setup runner` with `<manager> info --base` and recorded beside the
+runner metadata. If the HPC needs a specific base path, provide it explicitly:
 
-Some conda installs write entrypoint scripts whose interpreter path is relative
-to the repo checkout, such as `.low-bm/runner/env/bin/python`. Isolated
-Snakemake workdirs intentionally run from a different directory, so those
-entrypoints can fail with `bad interpreter` or `Error running conda info`. The
-launcher writes two small shims under `.low-bm/runner/`: `conda-shell.sh` for
-Snakemake's bash probes and `conda-base-shim/` for rule-job activation. Both
-call the runner prefix through absolute paths. The launcher also refreshes
-`.low-bm/runner/env/bin/activate` with absolute paths for Snakemake job-step
-activation paths that bypass `--conda-base-path`. If `doctor runner` passes,
-rerun `batch prepare-envs`; rebuilding the runner env is only needed when
-`doctor runner` reports missing executables or activation support.
+```bash
+./low-bm setup runner --conda-base-prefix /path/to/conda/base
+```
+
+This keeps the boundary simple: the runner env starts Snakemake, and the real
+conda base activates Snakemake-managed rule environments under
+`.low-bm/snakemake-conda`. The launcher does not rewrite
+`.low-bm/runner/env/bin/activate`, and normal runs do not depend on generated
+activation shims. If `doctor runner` reports missing conda base activation
+support, rerun `setup runner` with `--conda-base-prefix`; rebuilding the runner
+env is only needed when `doctor runner` reports missing runner executables. Use
+`doctor runner --rule-env-smoke-test` when you need to confirm that Snakemake
+rule jobs use `.low-bm/snakemake-conda` instead of the runner Python.
 
 `--activate-command` remains available as an advanced submitted-SLURM fallback,
 but the direct runner path is the default lock-safe processing path.
@@ -127,7 +130,7 @@ The inner Snakemake command is still built independently from the runner. Today
 the host runner wraps it like this:
 
 ```bash
-.low-bm/runner/env/bin/snakemake --conda-base-path .low-bm/runner/conda-base-shim ...
+.low-bm/runner/env/bin/snakemake --conda-base-path /path/to/conda/base ...
 ```
 
 A later container runner can wrap the same inner command like this:

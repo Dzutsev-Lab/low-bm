@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import importlib.util
 import os
 import re
 import shutil
@@ -274,6 +275,14 @@ def ampumi_process_command(selected: str | Path, output: str | Path, umi_regex: 
     ]
 
 
+def ampumi_module_available() -> bool:
+    """Return true when the active Python environment can import AmpUMI."""
+    try:
+        return importlib.util.find_spec("AmpUMI.AmpUMI") is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def run_stage(
     rows: Iterable[dict[str, str]],
     threads: int,
@@ -382,6 +391,7 @@ def cmd_umi_dedup(args: argparse.Namespace) -> int:
     rows = read_manifest(args.manifest)
     log_dir = Path(args.sample_log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
+    ampumi_available = ampumi_module_available()
 
     def worker(row: dict[str, str]) -> StageResult:
         sample_id = row["SampleID"]
@@ -391,6 +401,15 @@ def cmd_umi_dedup(args: argparse.Namespace) -> int:
         log_path = log_dir / f"02_umi_dedup.{sample_id}.log"
         n_lines = count_lines(selected)
         with log_path.open("w") as log:
+            print(f"Python executable: {sys.executable}", file=log)
+            if not ampumi_available:
+                print(
+                    "AmpUMI is not importable from this Python environment. "
+                    "The Snakemake umi_dedup rule should be running inside workflow/envs/AmpUMI-env.yaml.",
+                    file=log,
+                )
+                return StageResult(sample_id, False, f"AmpUMI unavailable from {sys.executable}; see {log_path}")
+
             if n_lines == 0:
                 print(f"Input FASTQ ({selected}) is empty - skipping AmpUMI", file=log)
                 output.write_text("")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import tempfile
 import unittest
 import json
@@ -642,18 +643,19 @@ class CommandConstructionTests(unittest.TestCase):
             )
             spec = build_run_spec(args, run_config)
             command = build_execution_command(spec, args)
+            conda_base = Path(tmp) / "conda-base"
             self.assertEqual(command[0], str(runner_prefix.resolve() / "bin" / "snakemake"))
             self.assertNotIn("run", command[0:4])
             self.assertEqual(
                 command[1:3],
-                ["--conda-base-path", str(cli.runner_conda_base_shim_path(runner_prefix.resolve()))],
+                ["--conda-base-path", str(conda_base.resolve())],
             )
             self.assertEqual(command.count("--configfile"), 1)
             self.assertIn("--config", command)
             self.assertIn(f"low_bm_repo_root={REPO_ROOT.resolve()}", command)
             self.assertEqual(command[-2:], ["--", "all"])
 
-    def test_runner_process_env_uses_absolute_conda_shell_shim(self) -> None:
+    def test_runner_process_env_prepends_runner_bin_without_shims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runner_prefix, _manager = write_fake_runner(Path(tmp))
             runner = cli.resolve_host_runner(
@@ -670,62 +672,25 @@ class CommandConstructionTests(unittest.TestCase):
             ):
                 env = cli.runner_process_env(runner)
 
-            shim = cli.runner_shell_shim_path(runner.prefix)
-            self.assertEqual(env["BASH_ENV"], str(shim))
             self.assertEqual(env["PATH"].split(os.pathsep)[0], str(runner.bin_dir))
             self.assertNotIn("PYTHONTZPATH", env)
-            self.assertTrue(shim.exists())
+            self.assertNotIn("BASH_ENV", env)
 
-    def test_runner_shell_shim_calls_conda_through_absolute_python(self) -> None:
+    def test_conda_base_prefix_override_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runner_prefix, _manager = write_fake_runner(Path(tmp))
-            conda = runner_prefix / "bin" / "conda"
-            conda.write_text("#!.low-bm/runner/env/bin/python\n")
-            conda.chmod(0o755)
+            override = Path(tmp) / "override-conda"
+            make_fake_conda_base(override)
             runner = cli.resolve_host_runner(
-                Args(runner="host", runner_prefix=str(runner_prefix), manager="auto")
+                Args(
+                    runner="host",
+                    runner_prefix=str(runner_prefix),
+                    manager="auto",
+                    conda_base_prefix=str(override),
+                )
             )
 
-            shim = cli.ensure_runner_shell_shim(runner)
-            text = shim.read_text()
-
-            self.assertIn("conda() {", text)
-            self.assertIn(str(runner.bin_dir / "python"), text)
-            self.assertIn(str(runner.bin_dir / "conda"), text)
-            self.assertIn('"$@"', text)
-            self.assertIn("unset PYTHONTZPATH", text)
-
-    def test_runner_conda_base_shim_uses_absolute_activation_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            runner_prefix, _manager = write_fake_runner(Path(tmp))
-            conda = runner_prefix / "bin" / "conda"
-            conda.write_text("#!.low-bm/runner/env/bin/python\n")
-            conda.chmod(0o755)
-            runner = cli.resolve_host_runner(
-                Args(runner="host", runner_prefix=str(runner_prefix), manager="auto")
-            )
-
-            shim_root = cli.ensure_runner_conda_base_shim(runner)
-            conda_text = (shim_root / "bin" / "conda").read_text()
-            activate_text = (shim_root / "bin" / "activate").read_text()
-
-            self.assertEqual(shim_root, cli.runner_conda_base_shim_path(runner.prefix))
-            self.assertIn(str(runner.bin_dir / "python"), conda_text)
-            self.assertIn(str(runner.bin_dir / "conda"), conda_text)
-            self.assertIn("unset PYTHONTZPATH", conda_text)
-            self.assertIn(str(runner.prefix / "etc" / "profile.d" / "conda.sh"), activate_text)
-            self.assertIn(f"export CONDA_EXE={shim_root / 'bin' / 'conda'}", activate_text)
-            self.assertIn(f"export CONDA_PYTHON_EXE={runner.bin_dir / 'python'}", activate_text)
-            self.assertIn("conda activate \"$@\"", activate_text)
-            self.assertIn("unset PYTHONTZPATH", activate_text)
-
-            runner_activate_text = (runner.bin_dir / "activate").read_text()
-            self.assertIn(str(runner.prefix / "etc" / "profile.d" / "conda.sh"), runner_activate_text)
-            self.assertIn(f"export CONDA_EXE={shim_root / 'bin' / 'conda'}", runner_activate_text)
-            self.assertIn(f"export CONDA_PYTHON_EXE={runner.bin_dir / 'python'}", runner_activate_text)
-            self.assertIn("conda activate \"$@\"", runner_activate_text)
-            self.assertIn("unset PYTHONTZPATH", runner_activate_text)
-            self.assertNotIn(".low-bm/runner/env/etc/profile.d/conda.sh", runner_activate_text)
+            self.assertEqual(runner.conda_base_prefix, override.resolve())
 
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -771,11 +736,11 @@ class CommandConstructionTests(unittest.TestCase):
                 extra_snakemake_args=[],
             )
             runner_prefix, manager = write_fake_runner(Path(tmp))
-            conda_base_shim = cli.runner_conda_base_shim_path(runner_prefix.resolve())
+            conda_base = Path(tmp) / "conda-base"
             command = [
                 str(runner_prefix.resolve() / "bin" / "snakemake"),
                 "--conda-base-path",
-                str(conda_base_shim),
+                str(conda_base.resolve()),
                 "all",
             ]
             args = Args(
@@ -792,12 +757,12 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertNotIn(str(manager), text)
             self.assertIn(str(runner_prefix.resolve()), text)
             self.assertIn(f"export PATH={runner_prefix.resolve() / 'bin'}:$PATH", text)
-            self.assertIn(f"export BASH_ENV={cli.runner_shell_shim_path(runner_prefix.resolve())}", text)
+            self.assertNotIn("BASH_ENV", text)
+            self.assertNotIn("conda-base-shim", text)
             self.assertIn("unset PYTHONTZPATH", text)
             self.assertIn("Missing runner env", text)
             self.assertNotIn("activate low-bm-runner", text)
-            self.assertTrue(cli.runner_shell_shim_path(runner_prefix.resolve()).exists())
-            self.assertTrue((conda_base_shim / "bin" / "activate").exists())
+            self.assertFalse((runner_prefix / "bin" / "activate").exists())
 
     def test_batch_prepare_envs_dry_run_builds_serial_local_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1257,12 +1222,9 @@ class RunnerSetupTests(unittest.TestCase):
             ["/usr/bin/micromamba", "create"],
         )
 
-    def test_doctor_runner_checks_conda_through_shell_shim(self) -> None:
+    def test_doctor_runner_checks_real_conda_base(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runner_prefix, _manager = write_fake_runner(Path(tmp))
-            conda = runner_prefix / "bin" / "conda"
-            conda.write_text("#!.low-bm/runner/env/bin/python\n")
-            conda.chmod(0o755)
             args = Args(
                 mode="local",
                 runner="host",
@@ -1274,8 +1236,70 @@ class RunnerSetupTests(unittest.TestCase):
             with redirect_stdout(stdout):
                 self.assertEqual(cli.doctor_runner_command(args), 0)
 
-            self.assertIn("[ok] conda via shell shim", stdout.getvalue())
-            self.assertIn("[ok] runner env activation shim", stdout.getvalue())
+            self.assertIn("[ok] runner conda", stdout.getvalue())
+            self.assertIn("[ok] conda base activation", stdout.getvalue())
+
+    def test_doctor_runner_optional_rule_env_smoke_test(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            args = Args(
+                mode="local",
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+                rule_env_smoke_test=True,
+            )
+
+            stdout = io.StringIO()
+            with patch.object(cli, "run_rule_env_smoke_test", return_value=(True, "rule-env/bin/python")):
+                with redirect_stdout(stdout):
+                    self.assertEqual(cli.doctor_runner_command(args), 0)
+
+            self.assertIn("[ok] rule env python smoke test: rule-env/bin/python", stdout.getvalue())
+
+    def test_setup_runner_records_detected_conda_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_file = root / "runner-env.yaml"
+            env_file.write_text("name: runner\n")
+            conda_base = root / "conda-base"
+            make_fake_conda_base(conda_base)
+            manager = root / "bin" / "mamba"
+            manager.parent.mkdir(parents=True)
+            manager.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [[ \"$1\" == \"info\" && \"$2\" == \"--base\" ]]; then\n"
+                f"  printf '%s\\n' {shlex.quote(str(conda_base))}\n"
+                "  exit 0\n"
+                "fi\n"
+                "if [[ \"$1\" == \"env\" && \"$2\" == \"create\" ]]; then\n"
+                "  mkdir -p \"$5/bin\"\n"
+                "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$5/bin/snakemake\"\n"
+                "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$5/bin/python\"\n"
+                "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$5/bin/conda\"\n"
+                "  chmod +x \"$5/bin/snakemake\" \"$5/bin/python\" \"$5/bin/conda\"\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 0\n"
+            )
+            manager.chmod(0o755)
+
+            old_env_file = cli.DEFAULT_RUNNER_ENV_FILE
+            try:
+                cli.DEFAULT_RUNNER_ENV_FILE = str(env_file.relative_to(REPO_ROOT)) if env_file.is_relative_to(REPO_ROOT) else str(env_file)
+                args = Args(
+                    runner_prefix=str(root / "runner" / "env"),
+                    manager=str(manager),
+                    force=False,
+                    conda_base_prefix=None,
+                )
+                with patch.object(cli, "REPO_ROOT", root):
+                    self.assertEqual(cli.setup_runner_command(args), 0)
+            finally:
+                cli.DEFAULT_RUNNER_ENV_FILE = old_env_file
+
+            metadata = json.loads(cli.runner_metadata_path(root / "runner" / "env").read_text())
+            self.assertEqual(metadata["conda_base_prefix"], str(conda_base.resolve()))
 
     def test_resolve_manager_uses_runner_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1312,19 +1336,37 @@ def write_fake_runner(root: Path) -> tuple[Path, Path]:
         path = runner_bin / executable
         path.write_text("#!/usr/bin/env bash\nexit 0\n")
         path.chmod(0o755)
-    conda_profile = runner_prefix / "etc" / "profile.d"
-    conda_profile.mkdir(parents=True)
-    (conda_profile / "conda.sh").write_text("conda() { return 0; }\n")
+    conda_base = root / "conda-base"
+    make_fake_conda_base(conda_base)
     manager = root / "bin" / "mamba"
     manager.parent.mkdir(parents=True)
-    manager.write_text("#!/usr/bin/env bash\nexit 0\n")
+    manager.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"info\" && \"$2\" == \"--base\" ]]; then\n"
+        f"  printf '%s\\n' {shlex.quote(str(conda_base))}\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
     manager.chmod(0o755)
     metadata = {
         "manager": "mamba",
         "manager_executable": str(manager),
+        "conda_base_prefix": str(conda_base.resolve()),
     }
     cli.runner_metadata_path(runner_prefix).write_text(json.dumps(metadata) + "\n")
     return runner_prefix, manager
+
+
+def make_fake_conda_base(prefix: Path) -> None:
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+    activate = bin_dir / "activate"
+    activate.write_text("#!/usr/bin/env bash\nreturn 0 2>/dev/null || exit 0\n")
+    activate.chmod(0o755)
+    conda = bin_dir / "conda"
+    conda.write_text("#!/usr/bin/env bash\nexit 0\n")
+    conda.chmod(0o755)
 
 
 def write_minimal_processing_config(path: Path) -> None:
