@@ -1,5 +1,6 @@
 import json
-import os, re, glob
+import os
+import sys
 from pathlib import Path
 
 # Snakemake's --directory changes the process working directory, and SLURM
@@ -33,6 +34,9 @@ METADATA =  os.path.join(IN_ROOT, config["metadata"])
 SCRIPTS = repo_path(config["script_dir"])
 REF_DIR = repo_path(config.get("ref_dir", "Ref_Data"))
 CONDA_ENV_DIR = repo_path(config.get("conda_env_dir", "workflow/envs"))
+if SCRIPTS not in sys.path:
+    sys.path.insert(0, SCRIPTS)
+from SamplePrep import build_fastq_manifest
 
 
 def conda_env(name):
@@ -130,106 +134,22 @@ ADD_UNCLASSIFIED_PREFIX = config["add_unclassified_prefix"]
 # Helper Functions
 #------------------------------------
 
-# Raw FASTQ discovery
-RAW_FASTQ_RE = re.compile(r"^(?P<prefix>.+)_R(?P<read>[12])_001\.fastq(?:\.gz)?$")
-
-
-def parse_raw_fastq_name(path):
-    name = os.path.basename(path)
-    match = RAW_FASTQ_RE.match(name)
-    if not match:
-        return None
-
-    sample = match.group("prefix")
-    # Strip common Illumina fields from the end of the sample prefix.
-    # Examples:
-    #   sample_S1_R1_001.fastq.gz -> sample
-    #   sample_S1_L001_R1_001.fastq.gz -> sample
-    while True:
-        normalized = re.sub(r"_(?:S\d+|L\d{3})$", "", sample)
-        if normalized == sample:
-            break
-        sample = normalized
-
-    return sample, int(match.group("read"))
-
-
-def paired_raw_fastq_exists(r1_path):
-    name = os.path.basename(r1_path)
-    match = RAW_FASTQ_RE.match(name)
-    if not match or match.group("read") != "1":
-        return False
-
-    r2_prefix = match.group("prefix")
-    return any(
-        os.path.exists(os.path.join(RAW, f"{r2_prefix}_R2_001.{ext}"))
-        for ext in ("fastq", "fastq.gz")
-    )
-
-
-def raw_fastq_matches(sample, read):
-    candidates = []
-    for ext in ("fastq", "fastq.gz"):
-        pattern = os.path.join(RAW, f"{glob.escape(sample)}*_R{read}_001.{ext}")
-        candidates.extend(glob.glob(pattern))
-
-    matches = []
-    for candidate in candidates:
-        parsed = parse_raw_fastq_name(candidate)
-        if parsed == (sample, read):
-            matches.append(candidate)
-
-    return sorted(matches)
-
-
-def discover_samples():
-    pats = [
-        os.path.join(RAW, "*_R1_001.fastq"),
-        os.path.join(RAW, "*_R1_001.fastq.gz"),
-    ]
-    r1s = []
-    for p in pats:
-        r1s.extend(glob.glob(p))
-    samples = []
-    for r1 in sorted(r1s):
-        parsed = parse_raw_fastq_name(r1)
-        if parsed is None:
-            continue
-        sample, read = parsed
-        # skip Undetermined FASTQ
-        if "Undetermined" in sample:
-            continue
-        # require matching R2 (either gz or not)
-        if read == 1 and paired_raw_fastq_exists(r1):
-            samples.append(sample)
-    if not samples:
-        raise ValueError(f"No samples found in {RAW} matching *_R1_001.fastq(.gz) with paired R2.")
-    return sorted(set(samples))
-
-
-# Input FASTQ Compression check
-#   checks if the input raw fastq need to be unzipped for input to raw normalization
-def pick_raw_fastq(wc, read):
-    matches = raw_fastq_matches(wc.s, read)
-
-    if len(matches) == 1:
-        return matches[0]
-    elif len(matches) == 0:
-        raise ValueError(
-            f"Missing raw FASTQ for sample {wc.s} read R{read}: "
-            f"{wc.s}*_R{read}_001.fastq(.gz)"
-        )
-    else:
-        raise ValueError(
-            f"Multiple raw FASTQ's match for sample {wc.s} read R{read}: "
-            f"{matches}"
-        )
-
-
 def dada_input_reads():
     if PROCESS_UMIS:
-        return expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
-    return expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES)
+        return UMI_DEDUP_READS
+    return NORM_R1_READS
+
+
+def sample_prep_done():
+    if PROCESS_UMIS:
+        return UMI_DEDUP_DONE
+    return NO_UMI_COUNT_DONE
+
+
+def count_summary_done():
+    if PROCESS_UMIS:
+        return UMI_SELECTION_DONE
+    return NO_UMI_COUNT_DONE
 
 #----------------------------
 # All Rule
@@ -252,18 +172,46 @@ rule write_effective_config:
 
 
 #----------------------------
-# Record Sample Names
+# Validate FASTQ Manifest
 #----------------------------
-#Construct global variable of all samples based on available fastq's
-SAMPLES = discover_samples()
-#makes samples list into an format that works better with bash for-loop in read counts rule
-SAMPLES_STR = " ".join(SAMPLES)
-rule sample_names:
+FASTQ_MANIFEST_RESULT = build_fastq_manifest(RAW)
+SAMPLES = [row["SampleID"] for row in FASTQ_MANIFEST_RESULT.rows]
+SAMPLE_NAMES = f"{OUT_DIR}/sample.names"
+FASTQ_MANIFEST = f"{TRACK_DIR}/fastq_manifest.tsv"
+FASTQ_VALIDATION_OK = f"{TRACK_DIR}/fastq_validation.ok"
+FASTQ_VALIDATION_REPORT = f"{TRACK_DIR}/fastq_validation_report.txt"
+
+NORM_R1_READS = expand(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq", s=SAMPLES)
+NORM_R2_READS = expand(f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq", s=SAMPLES)
+NORM_FASTQ_DONE = f"{NORM_RAW_DIR}/.norm_fastq.done"
+
+UMI_SELECTED_R1S = expand(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq", s=SAMPLES)
+UMI_COUNT_SUMMARIES = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES)
+UMI_SELECTION_DONE = f"{UMI_SELECT_DIR}/.umi_selection.done"
+UMI_DEDUP_READS = expand(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq", s=SAMPLES)
+UMI_DEDUP_DONE = f"{UMI_DEDUP_DIR}/.umi_dedup.done"
+NO_UMI_COUNT_DONE = f"{UMI_SELECT_DIR}/.no_umi_count_summary.done"
+
+
+rule validate_fastqs:
     output:
-        f"{OUT_DIR}/sample.names"
-    run:
-        Path(output[0]).parent.mkdir(parents=True, exist_ok=True)
-        Path(output[0]).write_text("\n".join(SAMPLES) + "\n")
+        sample_names = SAMPLE_NAMES,
+        manifest = FASTQ_MANIFEST,
+        validation_ok = FASTQ_VALIDATION_OK
+    log:
+        report = FASTQ_VALIDATION_REPORT
+    conda: conda_env("bio-tools-env")
+    shell:
+        r"""
+        set -euo pipefail
+        mkdir -p "$(dirname "{output.sample_names}")" "$(dirname "{output.manifest}")" "$(dirname "{log.report}")"
+        python3 "{SCRIPTS}/SamplePrep.py" validate \
+            --raw-dir "{RAW}" \
+            --manifest "{output.manifest}" \
+            --sample-names "{output.sample_names}" \
+            --report "{log.report}" \
+            --ok "{output.validation_ok}"
+        """
 
 #----------------------------
 # Reference Indexing
@@ -290,36 +238,25 @@ rule index_ref_bwa:
 #-------------------------------------
 rule norm_fastq:
     input:
-        r1_raw = lambda wc: pick_raw_fastq(wc, 1),
-        r2_raw = lambda wc: pick_raw_fastq(wc, 2),
+        manifest = FASTQ_MANIFEST,
+        validation_ok = FASTQ_VALIDATION_OK,
     output:
-        r1_norm = temp(f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq"),
-        r2_norm = temp(f"{NORM_RAW_DIR}/{{s}}_R2_001.fastq")
-    threads: 2
-    log: f"{LOG_DIR}/00_norm/00_norm.{{s}}.log"
+        r1_norm = NORM_R1_READS,
+        r2_norm = NORM_R2_READS,
+        done = NORM_FASTQ_DONE
+    threads: 4
+    log: f"{LOG_DIR}/00_norm/00_norm.log"
     conda: conda_env("bio-tools-env")
     shell:
         r"""
         set -euo pipefail
-        mkdir -p "$(dirname "{log}")" "$(dirname "{output.r1_norm}")" "$(dirname "{output.r2_norm}")"
-        exec 2> "{log}"
-
-        # check if input is compressed or not
-        # decompress to norm raw directory if it is
-        # add link to original raw fastq in norm raw directory
-        #   if it is already decompress
-        norm_fastq() {{
-            local fastq_in="$1"
-            local fastq_out="$2"
-            if [[ "$fastq_in" == *.gz ]]; then
-                pigz -dc "$fastq_in" > "$fastq_out"
-            else
-                ln -sf "$(realpath "$fastq_in")" "$fastq_out"
-            fi
-        }}
-
-        norm_fastq "{input.r1_raw}" "{output.r1_norm}"
-        norm_fastq "{input.r2_raw}" "{output.r2_norm}"
+        mkdir -p "$(dirname "{log}")" "{NORM_RAW_DIR}"
+        exec > "{log}" 2>&1
+        python3 "{SCRIPTS}/SamplePrep.py" norm-fastq \
+            --manifest "{input.manifest}" \
+            --out-dir "{NORM_RAW_DIR}" \
+            --threads {threads} \
+            --done "{output.done}"
         """
 
 #-----------------------------------------------
@@ -328,35 +265,38 @@ rule norm_fastq:
 if PROCESS_UMIS:
     rule umi_selection:
         input:
-            r1 = f'{NORM_RAW_DIR}/{{s}}_R1_001.fastq',
-            r2 = f'{NORM_RAW_DIR}/{{s}}_R2_001.fastq',
+            manifest = FASTQ_MANIFEST,
+            norm_done = NORM_FASTQ_DONE,
         output:
-            sel_umi_r1 = temp(f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq"),
-            count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
+            sel_umi_r1 = UMI_SELECTED_R1S,
+            count_summaries = UMI_COUNT_SUMMARIES,
+            done = UMI_SELECTION_DONE
         params:
             r2_primer_motif = R2_PRIMER[:R2_PRIMER_MOTIF_LEN],
             r2_primer_skip_flag = "--r2-primer-skip" if R2_PRIMER_SKIP else "",
-            poly_G_threshold = POLY_G_THRESHOLD
-        threads: 1
-        log: f"{LOG_DIR}/01_umi_select/01_umi_select.{{s}}.log"
+            poly_G_threshold = POLY_G_THRESHOLD,
+            sample_log_dir = f"{LOG_DIR}/01_umi_select"
+        threads: 4
+        log: f"{LOG_DIR}/01_umi_select/01_umi_select.log"
         conda: conda_env("bio-tools-env")
         shell:
             r"""
             set -euo pipefail
-            mkdir -p "$(dirname "{log}")" "$(dirname "{output.sel_umi_r1}")" "$(dirname "{output.count_summary}")"
-            exec 2> "{log}"
-
-            python3 "{SCRIPTS}/UMISelection.py" \
-                --sample-name "{wildcards.s}" \
-                --r1 "{input.r1}" \
-                --r2 "{input.r2}" \
+            mkdir -p "$(dirname "{log}")" "{UMI_SELECT_DIR}" "{params.sample_log_dir}"
+            exec > "{log}" 2>&1
+            python3 "{SCRIPTS}/SamplePrep.py" umi-selection \
+                --manifest "{input.manifest}" \
+                --norm-dir "{NORM_RAW_DIR}" \
+                --out-dir "{UMI_SELECT_DIR}" \
+                --sample-log-dir "{params.sample_log_dir}" \
+                --umi-selection-script "{SCRIPTS}/UMISelection.py" \
                 --r2-primer-motif "{params.r2_primer_motif}" \
                 {params.r2_primer_skip_flag} \
                 --poly-G-threshold {params.poly_G_threshold} \
                 --umi-len "{UMI_LEN}" \
                 --max-offset "{MAX_OFFSET}" \
-                --out-count-summary "{output.count_summary}" \
-                --out-umi-r1 "{output.sel_umi_r1}"
+                --threads {threads} \
+                --done "{output.done}"
             """
 
 
@@ -365,58 +305,53 @@ if PROCESS_UMIS:
     #----------------------------
     rule umi_dedup:
         input:
-            selected_umi_r1 = f"{UMI_SELECT_DIR}/Selected.{{s}}.UMI_R1.fastq",
+            manifest = FASTQ_MANIFEST,
+            umi_selection_done = UMI_SELECTION_DONE,
         output:
-            umi_dedup_reads = temp(f"{UMI_DEDUP_DIR}/Deduped.{{s}}.fastq"),
+            umi_dedup_reads = UMI_DEDUP_READS,
+            done = UMI_DEDUP_DONE
         params:
-            AmpUMI_regex = "^" + ("I" * UMI_LEN)
+            AmpUMI_regex = "^" + ("I" * UMI_LEN),
+            sample_log_dir = f"{LOG_DIR}/02_umi_dedup"
         threads: 8
-        log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.{{s}}.log"
+        log:    f"{LOG_DIR}/02_umi_dedup/02_umi_dedup.log"
         conda: conda_env("AmpUMI-env")
         shell:
             r"""
             set -euo pipefail
-            mkdir -p "$(dirname "{log}")" "$(dirname "{output.umi_dedup_reads}")"
-            exec > {log} 2>&1
-
-            # ---- Check if Empty FASTQ ----
-            n_lines=$(wc -l < {input.selected_umi_r1})
-
-            if [[ "$n_lines" -eq 0 ]]; then
-                echo "Input FASTQ ({input.selected_umi_r1}) is empty - skipping AmpUMI"
-                : > {output.umi_dedup_reads}
-            else
-                echo "Running AmpUMI on $n_lines lines from {input.selected_umi_r1}"
-                AmpUMI Process\
-                    --fastq {input.selected_umi_r1} \
-                    --fastq_out {output.umi_dedup_reads} \
-                    --umi_regex "{params.AmpUMI_regex}"
-            fi
+            mkdir -p "$(dirname "{log}")" "{UMI_DEDUP_DIR}" "{params.sample_log_dir}"
+            exec > "{log}" 2>&1
+            python3 "{SCRIPTS}/SamplePrep.py" umi-dedup \
+                --manifest "{input.manifest}" \
+                --selected-dir "{UMI_SELECT_DIR}" \
+                --out-dir "{UMI_DEDUP_DIR}" \
+                --sample-log-dir "{params.sample_log_dir}" \
+                --umi-regex "{params.AmpUMI_regex}" \
+                --threads {threads} \
+                --done "{output.done}"
             """
 else:
     rule no_umi_count_summary:
         input:
-            r1 = f"{NORM_RAW_DIR}/{{s}}_R1_001.fastq",
+            manifest = FASTQ_MANIFEST,
+            norm_done = NORM_FASTQ_DONE,
         output:
-            count_summary = f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv"
-        threads: 1
-        log: f"{LOG_DIR}/01_no_umi_count_summary/01_no_umi_count_summary.{{s}}.log"
+            count_summaries = UMI_COUNT_SUMMARIES,
+            done = NO_UMI_COUNT_DONE
+        threads: 4
+        log: f"{LOG_DIR}/01_no_umi_count_summary/01_no_umi_count_summary.log"
         conda: conda_env("bio-tools-env")
         shell:
             r"""
             set -euo pipefail
-            mkdir -p "$(dirname "{log}")" "$(dirname "{output.count_summary}")"
+            mkdir -p "$(dirname "{log}")" "{UMI_SELECT_DIR}"
             exec > "{log}" 2>&1
-
-            n_lines=$(wc -l < "{input.r1}")
-            if [[ $((n_lines % 4)) -ne 0 ]]; then
-                echo "Input FASTQ ({input.r1}) has $n_lines lines, not a multiple of 4."
-                exit 1
-            fi
-
-            reads=$((n_lines / 4))
-            printf "SampleID\tRaw_reads\tSelected_reads\n%s\t%s\t%s\n" \
-                "{wildcards.s}" "$reads" "$reads" > "{output.count_summary}"
+            python3 "{SCRIPTS}/SamplePrep.py" no-umi-count-summary \
+                --manifest "{input.manifest}" \
+                --norm-dir "{NORM_RAW_DIR}" \
+                --out-dir "{UMI_SELECT_DIR}" \
+                --threads {threads} \
+                --done "{output.done}"
             """
 
 #----------------------------
@@ -424,8 +359,8 @@ else:
 #---------------------------- 
 rule dada_denoising:
     input: 
-        sample_names = f"{OUT_DIR}/sample.names",
-        dada_reads = dada_input_reads()
+        sample_names = SAMPLE_NAMES,
+        sample_prep_done = sample_prep_done()
     output:
         filtered_reads = temp(expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES)),
         seq_err_plot = f"{DADA_DENOISE_DIR}/dada_error_plot.png",
@@ -443,6 +378,7 @@ rule dada_denoising:
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
         filtered_reads_dir = f"{DADA_DENOISE_DIR}/filteredAndTrimmed",
+        dada_reads = dada_input_reads(),
     threads: 16
     log:    f"{LOG_DIR}/03_dada.log"
     conda: conda_env("R-tools-env")
@@ -454,7 +390,7 @@ rule dada_denoising:
 
         cd "{REPO_ROOT}"
         Rscript "{SCRIPTS}/DadaASVFilter.R" \
-            --fqs {input.dada_reads} \
+            --fqs {params.dada_reads} \
             --sample-names {input.sample_names} \
             --filtered-fqs {output.filtered_reads} \
             --err-plt {output.seq_err_plot} \
@@ -620,7 +556,7 @@ rule phyloseq_construction:
         kraken_class_file = f"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.kraken2",
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         raw_seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
-        sample_names = f"{OUT_DIR}/sample.names",
+        sample_names = SAMPLE_NAMES,
         metadata_sheet = METADATA,
         library_counts = f"{TRACK_DIR}/combined_read_counts.tsv"
     output:
@@ -657,10 +593,8 @@ rule phyloseq_construction:
 #-----------------------------
 rule read_counts:
     input:
-        sample_names = f"{OUT_DIR}/sample.names",
-        
-        umi_selection_count_summary_tsv = expand(f"{UMI_SELECT_DIR}/CountSummary.{{s}}.tsv", s=SAMPLES),
-
+        sample_names = SAMPLE_NAMES,
+        count_summary_done = count_summary_done(),
         dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         

@@ -12,10 +12,10 @@ show-failed-logs: true
 
 set-threads:
   index_ref_bwa: 8
-  norm_fastq: 2
-  umi_selection: 1
+  norm_fastq: 4
+  umi_selection: 4
   umi_dedup: 8
-  no_umi_count_summary: 1
+  no_umi_count_summary: 4
   dada_denoising: 16
   host_viral_alignment: 8
   nonhost_nonviral_filter: 8

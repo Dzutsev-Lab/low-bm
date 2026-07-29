@@ -7,11 +7,6 @@ software-deployment-method:
   - conda
 jobs: 100
 local-cores: 4
-# Submit these per-sample rules as SLURM arrays to reduce scheduler overhead
-# while preserving each rule's threads and resource requests. Cap each array
-# submission at 100 tasks so large experiments are split into manageable arrays.
-slurm-array-jobs: norm_fastq,umi_selection,umi_dedup,no_umi_count_summary
-slurm-array-limit: 100
 latency-wait: 120
 rerun-incomplete: true
 printshellcmds: true
@@ -27,10 +22,10 @@ default-resources:
 
 set-threads:
   index_ref_bwa: 8
-  norm_fastq: 2
-  umi_selection: 1
+  norm_fastq: 4
+  umi_selection: 4
   umi_dedup: 8
-  no_umi_count_summary: 1
+  no_umi_count_summary: 4
   dada_denoising: 16
   host_viral_alignment: 8
   nonhost_nonviral_filter: 8

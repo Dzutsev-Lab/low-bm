@@ -926,13 +926,20 @@ class MetaCommandTests(unittest.TestCase):
 
 
 class ProfileConfigurationTests(unittest.TestCase):
-    def test_slurm_profile_caps_sample_prep_arrays(self) -> None:
+    def test_slurm_profile_does_not_array_batch_level_sample_prep(self) -> None:
         profile_text = (REPO_ROOT / "profiles" / "slurm" / "config.yaml").read_text()
-        self.assertIn(
-            "slurm-array-jobs: norm_fastq,umi_selection,umi_dedup,no_umi_count_summary",
-            profile_text,
-        )
-        self.assertRegex(profile_text, r"(?m)^slurm-array-limit:\s*100$")
+        self.assertNotIn("slurm-array-jobs", profile_text)
+        self.assertNotIn("slurm-array-limit", profile_text)
+
+    def test_snakefile_uses_manifest_and_batch_level_sample_prep(self) -> None:
+        text = (REPO_ROOT / "Snakefile").read_text()
+        self.assertIn("rule validate_fastqs:", text)
+        self.assertIn("FASTQ_MANIFEST = ", text)
+        self.assertIn("NORM_FASTQ_DONE", text)
+        self.assertIn("UMI_SELECTION_DONE", text)
+        self.assertIn("UMI_DEDUP_DONE", text)
+        self.assertIn("count_summary_done = count_summary_done()", text)
+        self.assertIn("sample_prep_done = sample_prep_done()", text)
 
 
 class RunnerSetupTests(unittest.TestCase):

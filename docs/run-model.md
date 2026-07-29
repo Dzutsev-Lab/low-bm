@@ -96,11 +96,12 @@ workdirs prevent lock contention between batches, which also means they no
 longer coordinate first-time creation of shared reference index files.
 
 The SLURM profile still delegates rule execution from the master job to SLURM.
-To reduce scheduler overhead for repeated sample-level prep work, it submits
-`norm_fastq`, `umi_selection`, `umi_dedup`, and `no_umi_count_summary` through
-Snakemake's SLURM array-job support rather than many independent submissions.
-The profile caps each array submission at 100 tasks; if a rule has more ready
-sample jobs than that, Snakemake should split them across multiple arrays.
+Lightweight sample-prep stages now run as one batch-level job per stage rather
+than one job per sample. `validate_fastqs` writes a manifest and sample list,
+then `norm_fastq`, `umi_selection`, `umi_dedup`, and `no_umi_count_summary`
+process that manifest internally. This keeps filename/pairing failures in one
+readable validation report and avoids noisy array fallback behavior for short
+prep tasks.
 
 ## Baseline Files Worth Comparing
 
