@@ -18,7 +18,7 @@ slurm-no-account: true
 default-resources:
   slurm_partition: norm
   mem_mb: 8000
-  runtime: 240
+  runtime: 60
 
 set-threads:
   norm_fastq: 4
@@ -38,40 +38,40 @@ set-threads:
 set-resources:
   norm_fastq:
     mem_mb: 8000
-    runtime: 120
+    runtime: 60
   umi_selection:
     mem_mb: 4000
-    runtime: 120
+    runtime: 60
   umi_dedup:
     mem_mb: 16000
-    runtime: 240
+    runtime: 60
   no_umi_count_summary:
     mem_mb: 4000
-    runtime: 60
+    runtime: 20
   dada_denoising:
     mem_mb: 64000
-    runtime: 720
+    runtime: 150
   host_viral_alignment:
     mem_mb: 24000
-    runtime: 240
+    runtime: 60
   nonhost_nonviral_filter:
     mem_mb: 12000
-    runtime: 120
+    runtime: 60
   bacterial_alignment:
     mem_mb: 24000
-    runtime: 240
+    runtime: 60
   canonical_asv_fasta:
     mem_mb: 4000
-    runtime: 60
+    runtime: 20
   kraken_classification:
     mem_mb: 64000
-    runtime: 720
+    runtime: 60
   blast_db_construction:
     mem_mb: 64000
-    runtime: 720
+    runtime: 60
   phyloseq_construction:
     mem_mb: 64000
-    runtime: 360
+    runtime: 20
   read_counts:
     mem_mb: 32000
-    runtime: 240
+    runtime: 20
