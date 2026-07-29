@@ -15,6 +15,37 @@ import SamplePrep  # noqa: E402
 
 
 class SamplePrepManifestTests(unittest.TestCase):
+    def test_umi_selection_parser_normalizes_poly_g_threshold(self) -> None:
+        parser = SamplePrep.build_parser()
+        args = parser.parse_args(
+            [
+                "umi-selection",
+                "--manifest",
+                "manifest.tsv",
+                "--norm-dir",
+                "norm",
+                "--out-dir",
+                "umi",
+                "--sample-log-dir",
+                "logs",
+                "--umi-selection-script",
+                "UMISelection.py",
+                "--r2-primer-motif",
+                "ACGT",
+                "--poly-G-threshold",
+                "0.75",
+                "--umi-len",
+                "12",
+                "--max-offset",
+                "2",
+                "--done",
+                "umi.done",
+            ]
+        )
+
+        self.assertEqual(args.poly_g_threshold, 0.75)
+        self.assertNotIn("poly_G_threshold", vars(args))
+
     def test_validate_writes_manifest_and_sample_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

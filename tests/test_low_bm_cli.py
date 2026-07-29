@@ -373,6 +373,115 @@ class CommandConstructionTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "Duplicate batch output trial name"):
                 batch_submit_command(args)
 
+    def test_isolated_batch_submit_rejects_missing_shared_bwa_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                mode="slurm",
+                shared_workdir=False,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "Missing index sentinel"):
+                batch_submit_command(args)
+
+    def test_isolated_batch_submit_allows_existing_shared_bwa_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                (refs / f"{ref_name}.bwt").write_text("index\n")
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                shared_workdir=False,
+                workdir_root=str(Path(tmp) / "workdirs"),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                activate_command="",
+                master_cpus="4",
+                master_mem="8G",
+                master_time="1-00:00:00",
+                master_partition=None,
+                master_extra_sbatch=[],
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(batch_submit_command(args), 0)
+            self.assertIn("would submit master job script", stdout.getvalue())
+
+    def test_shared_workdir_batch_submit_skips_shared_bwa_index_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            write_processing_config_with_refs(base_config, Path(tmp) / "refs")
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                shared_workdir=True,
+                workdir_root=str(Path(tmp) / "workdirs"),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                activate_command="",
+                master_cpus="4",
+                master_mem="8G",
+                master_time="1-00:00:00",
+                master_partition=None,
+                master_extra_sbatch=[],
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(batch_submit_command(args), 0)
+            text = stdout.getvalue()
+            self.assertIn("would submit master job script", text)
+            self.assertNotIn("--directory", text)
+
     def test_execution_command_uses_direct_runner_snakemake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
@@ -402,7 +511,10 @@ class CommandConstructionTests(unittest.TestCase):
             command = build_execution_command(spec, args)
             self.assertEqual(command[0], str(runner_prefix.resolve() / "bin" / "snakemake"))
             self.assertNotIn("run", command[0:4])
-            self.assertEqual(command[1:3], ["--conda-base-path", str(runner_prefix.resolve())])
+            self.assertEqual(
+                command[1:3],
+                ["--conda-base-path", str(cli.runner_conda_base_shim_path(runner_prefix.resolve()))],
+            )
             self.assertEqual(command.count("--configfile"), 1)
             self.assertIn("--config", command)
             self.assertIn(f"low_bm_repo_root={REPO_ROOT.resolve()}", command)
@@ -450,6 +562,30 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertIn('"$@"', text)
             self.assertIn("unset PYTHONTZPATH", text)
 
+    def test_runner_conda_base_shim_uses_absolute_activation_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            conda = runner_prefix / "bin" / "conda"
+            conda.write_text("#!.low-bm/runner/env/bin/python\n")
+            conda.chmod(0o755)
+            runner = cli.resolve_host_runner(
+                Args(runner="host", runner_prefix=str(runner_prefix), manager="auto")
+            )
+
+            shim_root = cli.ensure_runner_conda_base_shim(runner)
+            conda_text = (shim_root / "bin" / "conda").read_text()
+            activate_text = (shim_root / "bin" / "activate").read_text()
+
+            self.assertEqual(shim_root, cli.runner_conda_base_shim_path(runner.prefix))
+            self.assertIn(str(runner.bin_dir / "python"), conda_text)
+            self.assertIn(str(runner.bin_dir / "conda"), conda_text)
+            self.assertIn("unset PYTHONTZPATH", conda_text)
+            self.assertIn(str(runner.prefix / "etc" / "profile.d" / "conda.sh"), activate_text)
+            self.assertIn(f"export CONDA_EXE={shim_root / 'bin' / 'conda'}", activate_text)
+            self.assertIn(f"export CONDA_PYTHON_EXE={runner.bin_dir / 'python'}", activate_text)
+            self.assertIn("conda activate \"$@\"", activate_text)
+            self.assertIn("unset PYTHONTZPATH", activate_text)
+
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
@@ -494,10 +630,11 @@ class CommandConstructionTests(unittest.TestCase):
                 extra_snakemake_args=[],
             )
             runner_prefix, manager = write_fake_runner(Path(tmp))
+            conda_base_shim = cli.runner_conda_base_shim_path(runner_prefix.resolve())
             command = [
                 str(runner_prefix.resolve() / "bin" / "snakemake"),
                 "--conda-base-path",
-                str(runner_prefix.resolve()),
+                str(conda_base_shim),
                 "all",
             ]
             args = Args(
@@ -519,6 +656,7 @@ class CommandConstructionTests(unittest.TestCase):
             self.assertIn("Missing runner env", text)
             self.assertNotIn("activate low-bm-runner", text)
             self.assertTrue(cli.runner_shell_shim_path(runner_prefix.resolve()).exists())
+            self.assertTrue((conda_base_shim / "bin" / "activate").exists())
 
     def test_batch_prepare_envs_dry_run_builds_serial_local_commands(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1020,6 +1158,9 @@ def write_fake_runner(root: Path) -> tuple[Path, Path]:
         path = runner_bin / executable
         path.write_text("#!/usr/bin/env bash\nexit 0\n")
         path.chmod(0o755)
+    conda_profile = runner_prefix / "etc" / "profile.d"
+    conda_profile.mkdir(parents=True)
+    (conda_profile / "conda.sh").write_text("conda() { return 0; }\n")
     manager = root / "bin" / "mamba"
     manager.parent.mkdir(parents=True)
     manager.write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -1038,6 +1179,25 @@ def write_minimal_processing_config(path: Path) -> None:
         "ip_root: IP_Data/\n"
         "out_root: Exp_Output/\n"
         "script_dir: scripts\n"
+    )
+
+
+def write_processing_config_with_refs(path: Path, refs: Path) -> None:
+    refs.mkdir(parents=True)
+    human = refs / "human.fa"
+    viral = refs / "viral.fa"
+    bacteria = refs / "bacteria.fa"
+    for fasta in (human, viral, bacteria):
+        fasta.write_text(">ref\nACGT\n")
+    path.write_text(
+        "in_root: Exp_Data/\n"
+        "ip_root: IP_Data/\n"
+        "out_root: Exp_Output/\n"
+        "script_dir: scripts\n"
+        "host: human\n"
+        f"human_ref: {human}\n"
+        f"viral_ref: {viral}\n"
+        f"bact16s_ref: {bacteria}\n"
     )
 
 

@@ -93,7 +93,9 @@ isolated when `--isolated-workdir` is supplied.
 Before launching many isolated SLURM rows concurrently, make sure shared BWA
 reference indexes such as `<reference>.bwt` already exist. Isolated Snakemake
 workdirs prevent lock contention between batches, which also means they no
-longer coordinate first-time creation of shared reference index files.
+longer coordinate first-time creation of shared reference index files. Isolated
+`batch submit --mode slurm` now fails before submission when these index
+sentinels are missing.
 
 The SLURM profile still delegates rule execution from the master job to SLURM.
 Lightweight sample-prep stages now run as one batch-level job per stage rather

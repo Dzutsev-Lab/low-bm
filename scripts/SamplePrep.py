@@ -448,7 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     umi_select.add_argument("--umi-selection-script", required=True)
     umi_select.add_argument("--r2-primer-motif", required=True)
     umi_select.add_argument("--r2-primer-skip", action="store_true")
-    umi_select.add_argument("--poly-G-threshold", type=float, required=True)
+    umi_select.add_argument("--poly-G-threshold", dest="poly_g_threshold", type=float, required=True)
     umi_select.add_argument("--umi-len", type=int, required=True)
     umi_select.add_argument("--max-offset", type=int, required=True)
     umi_select.add_argument("--threads", type=int, default=1)
