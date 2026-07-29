@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -183,6 +185,61 @@ class SamplePrepManifestTests(unittest.TestCase):
             self.assertTrue((out_dir / "Plain_R1_001.fastq").is_symlink())
             self.assertEqual((out_dir / "Plain_R2_001.fastq").read_text(), FASTQ_TEXT)
             self.assertTrue((out_dir / ".norm_fastq.done").exists())
+
+    def test_umi_dedup_invokes_ampumi_through_python_module(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.tsv"
+            selected_dir = root / "selected"
+            selected_dir.mkdir()
+            out_dir = root / "deduped"
+            log_dir = root / "logs"
+            SamplePrep.write_manifest(
+                [
+                    {
+                        "SampleID": "SampleA",
+                        "R1Path": str(root / "raw_R1.fastq"),
+                        "R2Path": str(root / "raw_R2.fastq"),
+                        "R1Compressed": "false",
+                        "R2Compressed": "false",
+                        "R1SourceName": "raw_R1.fastq",
+                        "R2SourceName": "raw_R2.fastq",
+                    }
+                ],
+                manifest,
+            )
+            write_fastq(selected_dir / "Selected.SampleA.UMI_R1.fastq")
+            commands: list[list[str]] = []
+
+            def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+                commands.append(command)
+                return SimpleNamespace(returncode=0)
+
+            with patch.object(SamplePrep.subprocess, "run", side_effect=fake_run):
+                code = SamplePrep.main(
+                    [
+                        "umi-dedup",
+                        "--manifest",
+                        str(manifest),
+                        "--selected-dir",
+                        str(selected_dir),
+                        "--out-dir",
+                        str(out_dir),
+                        "--sample-log-dir",
+                        str(log_dir),
+                        "--umi-regex",
+                        "^IIII",
+                        "--threads",
+                        "1",
+                        "--done",
+                        str(out_dir / ".umi_dedup.done"),
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertTrue((out_dir / ".umi_dedup.done").exists())
+            self.assertEqual(commands[0][:4], [SamplePrep.sys.executable, "-m", "AmpUMI.AmpUMI", "Process"])
+            self.assertNotEqual(commands[0][0], "AmpUMI")
 
 
 def write_fastq(path: Path) -> None:

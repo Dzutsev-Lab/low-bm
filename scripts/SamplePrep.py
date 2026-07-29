@@ -258,6 +258,22 @@ def deduped_fastq_path(dedup_dir: str | Path, sample_id: str) -> Path:
     return Path(dedup_dir) / f"Deduped.{sample_id}.fastq"
 
 
+def ampumi_process_command(selected: str | Path, output: str | Path, umi_regex: str) -> list[str]:
+    """Run AmpUMI through the active Python env instead of its console shim."""
+    return [
+        sys.executable,
+        "-m",
+        "AmpUMI.AmpUMI",
+        "Process",
+        "--fastq",
+        str(selected),
+        "--fastq_out",
+        str(output),
+        "--umi_regex",
+        umi_regex,
+    ]
+
+
 def run_stage(
     rows: Iterable[dict[str, str]],
     threads: int,
@@ -382,16 +398,7 @@ def cmd_umi_dedup(args: argparse.Namespace) -> int:
 
             print(f"Running AmpUMI on {n_lines} lines from {selected}", file=log)
             completed = subprocess.run(
-                [
-                    "AmpUMI",
-                    "Process",
-                    "--fastq",
-                    str(selected),
-                    "--fastq_out",
-                    str(output),
-                    "--umi_regex",
-                    args.umi_regex,
-                ],
+                ampumi_process_command(selected, output, args.umi_regex),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 check=False,
