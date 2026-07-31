@@ -91,7 +91,10 @@ UMI_LEN = config["umi_len"]
 MAX_OFFSET = config["max_offset"]
 
 # Reference Data
-HOST = config["host"]
+HOST = str(config.get("host", "")).strip().lower()
+if HOST not in {"human", "mouse"}:
+    raise ValueError("Config key 'host' must be either 'human' or 'mouse'. Set it in the per-batch row config.")
+config["host"] = HOST
 if HOST == "human":
     HOST_REF = repo_path(config["human_ref"])
 elif HOST == "mouse":

@@ -53,8 +53,9 @@ cp config/templates/batch.tsv config/local/batch.tsv
 
 Edit `config/local/processing.yaml` for the HPC paths and reference data. Edit
 `config/local/processing-overrides.yaml` when you want isolated validation
-outputs, and edit `config/local/batch.tsv` down to a one-row small batch. Use a
-distinct `trialID` so the outputs do not collide with trusted runs.
+outputs, and edit `config/local/batch.tsv` down to a one-row small batch with
+`host` set to `human` or `mouse`. Use a distinct `trialID` so the outputs do
+not collide with trusted runs.
 
 The launcher will layer configs in this order:
 
@@ -78,11 +79,13 @@ Use `low-bm` for the normal validation path:
 ```bash
 ./low-bm references prepare-bwa-indexes \
   --configfile config/local/processing.yaml \
-  --extra-configfile config/local/processing-overrides.yaml
+  --extra-configfile config/local/processing-overrides.yaml \
+  --all-configured-hosts
 
 ./low-bm references check \
   --configfile config/local/processing.yaml \
-  --extra-configfile config/local/processing-overrides.yaml
+  --extra-configfile config/local/processing-overrides.yaml \
+  --all-configured-hosts
 
 ./low-bm batch submit \
   --batch-table config/local/batch.tsv \
@@ -155,6 +158,7 @@ For a single direct run, provide the batch row fields and the same config stack:
   --trial-descript <trial_descript> \
   --exp-dir <exp_dir> \
   --metadata <metadata> \
+  --host <human-or-mouse> \
   --configfile config/local/processing.yaml \
   --extra-configfile config/local/processing-overrides.yaml \
   --mode slurm

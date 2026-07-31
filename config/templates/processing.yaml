@@ -6,7 +6,7 @@
 #
 # Batch-specific values are supplied by config/local/batch.tsv, direct low-bm
 # run arguments, or a generated row config:
-#   trialID, trial_descript, exp_dir, metadata, and optional process_umis.
+#   trialID, trial_descript, exp_dir, metadata, host, and optional process_umis.
 
 in_root: "Exp_Data/"
 ip_root: "IP_Data/"
@@ -19,7 +19,7 @@ conda_env_dir: "workflow/envs"
 # -------------------------
 # BWA sidecars (.amb, .ann, .bwt, .pac, .sa) are prepared once with
 # `low-bm references prepare-bwa-indexes` and are not built by processing runs.
-host: "human"
+# The host choice is batch-specific; set host to human or mouse in batch.tsv.
 human_ref: "Ref_Data/clean.human.fa"
 mouse_ref: "Ref_Data/Mus_musculus.GRCm38.cdna.all.fa"
 viral_ref: "Ref_Data/all.viral.fna"

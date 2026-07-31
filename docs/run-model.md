@@ -23,7 +23,9 @@ then submits rule-specific jobs through the Snakemake 9 SLURM executor plugin.
 `low-bm batch submit` keeps the batch-table convenience by submitting one
 independent master job per row in the table. By default it reads the ignored
 local batch table at `config/local/batch.tsv`, which should be initialized from
-the tracked template at `config/templates/batch.tsv`.
+the tracked template at `config/templates/batch.tsv`. Each row must set
+`host` to `human` or `mouse`; the shared reference FASTA paths remain in the
+processing config.
 
 For `low-bm batch submit --mode slurm`, each row now uses an isolated
 Snakemake working directory under `.low-bm/snakemake-workdirs/`. The directory
@@ -48,6 +50,8 @@ directive in the Snakefile. The processing config stack is:
 2. Any `--extra-configfile` overrides, such as an ignored
    `config/local/processing-overrides.yaml`.
 3. The generated per-row run config under `experiment_batch_configs/`.
+   This layer includes batch-specific fields such as `trialID`, input paths,
+   `host`, and optional `process_umis`.
 
 Snakemake itself is launched through a project-local runner environment created
 by `low-bm setup runner`. This runner layer contains Snakemake and the SLURM
@@ -62,11 +66,12 @@ by `low-bm setup runner`; use `--conda-base-prefix` when that base must be
 supplied explicitly on an HPC.
 
 Shared BWA indexes are reference assets, not trial-processing outputs. Prepare
-or validate them once for the active processing config before launching batches:
+or validate them once before launching batches. When preparing indexes for a
+batch table that may contain both host values, include both host references:
 
 ```bash
-./low-bm references prepare-bwa-indexes
-./low-bm references check
+./low-bm references prepare-bwa-indexes --all-configured-hosts
+./low-bm references check --all-configured-hosts
 ```
 
 The check requires the full BWA sidecar set: `.amb`, `.ann`, `.bwt`, `.pac`,
@@ -107,7 +112,8 @@ reference indexes already exist. Isolated Snakemake workdirs prevent lock
 contention between batches, which also means they no longer coordinate
 first-time creation of shared reference index files. Isolated
 `batch submit --mode slurm` now fails before submission when these sidecars are
-missing.
+missing for each row's selected host plus the shared viral and bacterial
+references.
 
 The SLURM profile still delegates rule execution from the master job to SLURM.
 Lightweight sample-prep stages now run as one batch-level job per stage rather

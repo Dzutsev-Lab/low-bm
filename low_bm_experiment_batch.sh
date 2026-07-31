@@ -29,6 +29,9 @@ canonical_cols = [
     "trial_descript",
     "exp_dir",
     "metadata",
+    "host",
+]
+legacy_config_cols = [
     "batch_label",
     "include_processing",
     "include_analysis",
@@ -36,6 +39,7 @@ canonical_cols = [
 optional_config_cols = [
     "process_umis",
 ]
+valid_hosts = {"human", "mouse"}
 
 def truthy(value):
     return str(value).strip().lower() not in {"", "0", "false", "f", "no", "n"}
@@ -64,11 +68,11 @@ if has_header:
         )
     missing_cols = [key for key in canonical_cols if key not in fieldnames]
     if missing_cols:
+        known_cols = canonical_cols + legacy_config_cols + optional_config_cols
         suspicious = [
             field for field in fieldnames
-            if any(key in field for key in canonical_cols + optional_config_cols)
-            and field not in canonical_cols
-            and field not in optional_config_cols
+            if any(key in field for key in known_cols)
+            and field not in known_cols
         ]
         hint = ""
         if suspicious:
@@ -82,6 +86,9 @@ if has_header:
             + hint
         )
     row = {key: (records[row_index].get(key, "") or "").strip() for key in canonical_cols}
+    row["batch_label"] = (records[row_index].get("batch_label", "") or "").strip() or row["trial_descript"]
+    row["include_processing"] = (records[row_index].get("include_processing", "") or "").strip() or "true"
+    row["include_analysis"] = (records[row_index].get("include_analysis", "") or "").strip() or "true"
     for key in optional_config_cols:
         if key in fieldnames:
             row[key] = (records[row_index].get(key, "") or "").strip()
@@ -89,16 +96,19 @@ else:
     if row_index < 0 or row_index >= len(rows):
         raise SystemExit(f"SLURM_ARRAY_TASK_ID {slurm_task_id} is outside 1-{len(rows)} batch rows.")
     values = [field.strip() for field in rows[row_index]]
-    if len(values) < 4:
-        raise SystemExit("Legacy batch rows must contain trialID, trial_descript, exp_dir, metadata.")
-    row = dict(zip(canonical_cols[:4], values[:4]))
+    if len(values) < 5:
+        raise SystemExit("Legacy batch rows must contain trialID, trial_descript, exp_dir, metadata, host.")
+    row = dict(zip(canonical_cols[:5], values[:5]))
     row["batch_label"] = row["trial_descript"]
     row["include_processing"] = "true"
     row["include_analysis"] = "true"
 
-for required in canonical_cols[:4]:
+for required in canonical_cols:
     if not row.get(required):
         raise SystemExit(f"Missing required batch table value: {required}")
+row["host"] = row["host"].lower()
+if row["host"] not in valid_hosts:
+    raise SystemExit("Batch table host must be either human or mouse.")
 
 if not truthy(row.get("include_processing", "true")):
     print("__SKIP__")
@@ -113,10 +123,14 @@ def yaml_quote(value):
     return f'"{value}"'
 
 with open(run_config_file, "w", newline="\n") as out:
-    config_cols = canonical_cols + [
-        key for key in optional_config_cols
-        if row.get(key, "") != ""
-    ]
+    config_cols = (
+        canonical_cols
+        + legacy_config_cols
+        + [
+            key for key in optional_config_cols
+            if row.get(key, "") != ""
+        ]
+    )
     for key in config_cols:
         default = "true" if key in {"include_processing", "include_analysis"} else ""
         out.write(f"{key}: {yaml_quote(row.get(key, default))}\n")

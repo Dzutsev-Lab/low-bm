@@ -25,7 +25,9 @@ from pathlib import Path
 from . import __version__
 from .batch import (
     BatchRow,
+    VALID_HOSTS,
     load_simple_run_config,
+    normalize_host,
     read_batch_table,
     write_run_config,
 )
@@ -446,6 +448,11 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exp-dir", help="Experiment directory for direct one-batch runs.")
     parser.add_argument("--metadata", help="Metadata path for direct one-batch runs.")
     parser.add_argument(
+        "--host",
+        choices=VALID_HOSTS,
+        help="Host reference selection for direct one-batch runs.",
+    )
+    parser.add_argument(
         "--process-umis",
         choices=["true", "false"],
         help="Optional process_umis override for direct one-batch runs.",
@@ -642,7 +649,10 @@ def add_reference_scope_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--all-configured-hosts",
         action="store_true",
-        help="Include both human_ref and mouse_ref instead of only the configured host reference.",
+        help=(
+            "Include both human_ref and mouse_ref instead of only a config-selected "
+            "host reference. Use this when preparing indexes for mixed-host batch tables."
+        ),
     )
 
 
@@ -990,14 +1000,15 @@ def batch_submit_command(args: argparse.Namespace) -> int:
         print(f"No rows found in {args.batch_table}.")
         return 0
     validate_unique_batch_rows(rows)
-    if should_use_batch_isolated_workdirs(args):
-        require_shared_reference_indexes(
-            resolve_configfiles(args.configfile, args.extra_configfile)
-        )
 
     exit_code = 0
     for row in rows:
         row_config = write_run_config(row, args.run_config_dir)
+        if should_use_batch_isolated_workdirs(args):
+            require_shared_reference_indexes(
+                resolve_configfiles(args.configfile, args.extra_configfile),
+                row_config,
+            )
         # Reuse the same run-building path as `low-bm run` so batch-table and
         # direct one-batch launches cannot drift into different behaviors.
         row_args = argparse.Namespace(**vars(args))
@@ -1006,6 +1017,7 @@ def batch_submit_command(args: argparse.Namespace) -> int:
         row_args.trial_descript = None
         row_args.exp_dir = None
         row_args.metadata = None
+        row_args.host = None
         row_args.process_umis = None
         row_args.unlock = False
         row_args.isolated_workdir = should_use_batch_isolated_workdirs(args)
@@ -1051,6 +1063,7 @@ def batch_unlock_command(args: argparse.Namespace) -> int:
         row_args.trial_descript = None
         row_args.exp_dir = None
         row_args.metadata = None
+        row_args.host = None
         row_args.process_umis = None
         row_args.job_name = None
         row_args.unlock = True
@@ -1091,6 +1104,7 @@ def batch_prepare_envs_command(args: argparse.Namespace) -> int:
         row_args.trial_descript = None
         row_args.exp_dir = None
         row_args.metadata = None
+        row_args.host = None
         row_args.process_umis = None
         row_args.job_name = f"low-bm-prepare-envs-{row.trialID}"
         row_args.mode = "local"
@@ -1248,7 +1262,10 @@ def selected_bwa_reference_keys(values: dict[str, str], all_configured_hosts: bo
         elif host == "mouse":
             host_keys = ["mouse_ref"]
         else:
-            raise SystemExit("Processing config key 'host' must be either 'human' or 'mouse' for BWA reference resolution.")
+            raise SystemExit(
+                "Config key 'host' must be either 'human' or 'mouse' for BWA reference resolution. "
+                "Use --all-configured-hosts when validating or preparing both host references."
+            )
     return [*host_keys, "viral_ref", "bact16s_ref"]
 
 
@@ -1276,7 +1293,8 @@ def render_bwa_reference_failure(failures: list[str]) -> str:
     return (
         "Missing BWA reference index files:\n"
         f"{rendered}\n"
-        "Run `low-bm references prepare-bwa-indexes` before processing batches that use these references."
+        "Run `low-bm references prepare-bwa-indexes` before processing batches that use these references. "
+        "Add `--all-configured-hosts` when preparing indexes for mixed-host batch tables."
     )
 
 
@@ -1677,6 +1695,7 @@ def resolve_row_config(args: argparse.Namespace) -> Path:
         "trial_descript": args.trial_descript,
         "exp_dir": args.exp_dir,
         "metadata": args.metadata,
+        "host": getattr(args, "host", None),
     }
     missing = [name.replace("_", "-") for name, value in required.items() if not value]
     if missing:
@@ -1684,12 +1703,17 @@ def resolve_row_config(args: argparse.Namespace) -> Path:
             "Provide --row-config or direct batch fields: "
             + ", ".join(f"--{name}" for name in missing)
         )
+    try:
+        host = normalize_host(args.host, context="direct run --host")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     row = BatchRow(
         row_number=1,
         trialID=args.trial_id,
         trial_descript=args.trial_descript,
         exp_dir=args.exp_dir,
         metadata=args.metadata,
+        host=host,
         process_umis=args.process_umis,
     )
     return write_run_config(row, args.run_config_dir)
@@ -1700,6 +1724,7 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
     if not row_config.exists():
         raise SystemExit(f"Missing row config: {row_config}")
     row_values = load_simple_run_config(row_config)
+    require_row_config_host(row_values, row_config)
     trial_id = row_values.get("trialID") or args.trial_id or "run"
     trial_description = row_values.get("trial_descript") or getattr(args, "trial_descript", None) or ""
     trial_name = build_trial_name(trial_id, trial_description)
@@ -1735,6 +1760,20 @@ def build_run_spec(args: argparse.Namespace, row_config: Path) -> RunSpec:
         snakefile=snakefile,
         snakemake_conda_prefix=conda_prefix,
     )
+
+
+def require_row_config_host(row_values: dict[str, str], row_config: Path) -> None:
+    """Fail fast when a per-batch row config does not choose a valid host."""
+    host = row_values.get("host", "")
+    if not host:
+        raise SystemExit(
+            f"Row config is missing required key 'host': {row_config}. "
+            "Add a host column to the batch table or pass --host for direct runs."
+        )
+    try:
+        normalize_host(host, context=f"row config {row_config} key 'host'")
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def build_trial_name(trial_id: str, trial_description: str) -> str:
@@ -1838,10 +1877,13 @@ def select_batch_rows_by_trial_ids(rows: list[BatchRow], trial_ids: list[str]) -
     return selected
 
 
-def require_shared_reference_indexes(configfiles: list[Path]) -> None:
+def require_shared_reference_indexes(configfiles: list[Path], row_config: Path | None = None) -> None:
     """Fail when isolated batch runs are missing shared BWA indexes."""
+    effective_configfiles = [*configfiles]
+    if row_config is not None:
+        effective_configfiles.append(row_config)
     refs = resolve_bwa_references(
-        merge_top_level_yaml_scalar_values(configfiles),
+        merge_top_level_yaml_scalar_values(effective_configfiles),
         all_configured_hosts=False,
     )
     failures = missing_bwa_reference_inputs(refs)

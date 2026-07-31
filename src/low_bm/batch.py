@@ -12,11 +12,14 @@ CANONICAL_COLUMNS = [
     "trial_descript",
     "exp_dir",
     "metadata",
+    "host",
 ]
 
 OPTIONAL_CONFIG_COLUMNS = [
     "process_umis",
 ]
+
+VALID_HOSTS = ("human", "mouse")
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,7 @@ class BatchRow:
     trial_descript: str
     exp_dir: str
     metadata: str
+    host: str
     process_umis: str | None = None
 
     @property
@@ -45,6 +49,7 @@ class BatchRow:
             ("trial_descript", self.trial_descript),
             ("exp_dir", self.exp_dir),
             ("metadata", self.metadata),
+            ("host", self.host),
         ]
         if self.process_umis not in (None, ""):
             items.append(("process_umis", self.process_umis or ""))
@@ -121,9 +126,10 @@ def _read_headered_table(table_path: Path, raw_rows: list[list[str]]) -> list[Ba
                 f"but the header has {len(fieldnames)} column(s)."
             )
         row = {key: (record.get(key, "") or "").strip() for key in CANONICAL_COLUMNS}
-        for required in CANONICAL_COLUMNS[:4]:
+        for required in CANONICAL_COLUMNS:
             if not row.get(required):
                 raise ValueError(f"Missing required batch table value: {required} in row {index}")
+        row["host"] = normalize_host(row["host"], context=f"batch row {index}")
         optional = {
             key: (record.get(key, "") or "").strip()
             for key in OPTIONAL_CONFIG_COLUMNS
@@ -131,6 +137,17 @@ def _read_headered_table(table_path: Path, raw_rows: list[list[str]]) -> list[Ba
         }
         parsed.append(BatchRow(row_number=index, **row, **optional))
     return parsed
+
+
+def normalize_host(value: str, context: str = "host") -> str:
+    """Return a normalized host value or raise a clear batch-config error."""
+    host = str(value).strip().lower()
+    if host not in VALID_HOSTS:
+        raise ValueError(
+            f"Invalid host value for {context}: {value!r}. "
+            f"Expected one of: {', '.join(VALID_HOSTS)}."
+        )
+    return host
 
 
 def _yaml_quote(value: object) -> str:

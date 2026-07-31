@@ -47,6 +47,7 @@ class BatchParsingTests(unittest.TestCase):
                         "trial_descript",
                         "exp_dir",
                         "metadata",
+                        "host",
                         "process_umis",
                     ]
                 )
@@ -57,6 +58,7 @@ class BatchParsingTests(unittest.TestCase):
                         "batch1",
                         "Batch1",
                         "metadata/batch1.xlsx",
+                        "Human",
                         "false",
                     ]
                 )
@@ -67,6 +69,7 @@ class BatchParsingTests(unittest.TestCase):
                         "batch2",
                         "Batch2",
                         "metadata/batch2.xlsx",
+                        "mouse",
                         "",
                     ]
                 )
@@ -76,6 +79,7 @@ class BatchParsingTests(unittest.TestCase):
             rows = read_batch_table(table)
             self.assertEqual([row.trialID for row in rows], ["010126.1", "010126.2"])
             self.assertEqual(rows[0].trial_name, "010126.1_batch1")
+            self.assertEqual([row.host for row in rows], ["human", "mouse"])
             self.assertEqual(rows[0].process_umis, "false")
 
     def test_unheadered_table_is_rejected(self) -> None:
@@ -89,25 +93,46 @@ class BatchParsingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\tprocess_umis\n"
-                "010126.1\tbatch with spaces\tBatch1\tmetadata/batch 1.xlsx\tfalse\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\tprocess_umis\n"
+                "010126.1\tbatch with spaces\tBatch1\tmetadata/batch 1.xlsx\thuman\tfalse\n"
             )
             row = read_batch_table(table)[0]
             run_config = write_run_config(row, Path(tmp) / "configs")
             text = run_config.read_text()
             self.assertIn('trialID: "010126.1"', text)
             self.assertIn('trial_descript: "batch with spaces"', text)
+            self.assertIn('host: "human"', text)
             self.assertIn('process_umis: "false"', text)
             self.assertNotIn("batch_label", text)
             self.assertNotIn("include_processing", text)
             self.assertNotIn("include_analysis", text)
+
+    def test_batch_table_requires_host_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\tprocess_umis\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\tfalse\n"
+            )
+            with self.assertRaisesRegex(ValueError, "Missing required batch table column.*host"):
+                read_batch_table(table)
+
+    def test_batch_table_rejects_invalid_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\trat\n"
+            )
+            with self.assertRaisesRegex(ValueError, "Invalid host value"):
+                read_batch_table(table)
 
 
 class CommandConstructionTests(unittest.TestCase):
     def test_snakemake_command_preserves_config_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\n')
+            run_config.write_text('trialID: "010126.1"\nhost: "human"\n')
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
             override_config = Path(tmp) / "override.yaml"
@@ -141,7 +166,7 @@ class CommandConstructionTests(unittest.TestCase):
     def test_processing_config_stack_requires_base_layer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\n')
+            run_config.write_text('trialID: "010126.1"\nhost: "human"\n')
             override_only = Path(tmp) / "processing-overrides.yaml"
             override_only.write_text("out_root: Exp_Output_validation/\n")
             args = Args(
@@ -161,12 +186,83 @@ class CommandConstructionTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "config/local/processing.yaml"):
                 build_run_spec(args, run_config)
 
+    def test_row_config_requires_host_even_when_processing_config_has_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_config = Path(tmp) / "010126.1_runconfig.yaml"
+            run_config.write_text('trialID: "010126.1"\n')
+            base_config = Path(tmp) / "processing.yaml"
+            write_processing_config_with_refs(base_config, Path(tmp) / "refs")
+            args = Args(
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                row_config=str(run_config),
+                trial_id=None,
+                mode="local",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                job_name=None,
+                dry_run=True,
+                unlock=False,
+                snakemake_arg=[],
+            )
+            with self.assertRaisesRegex(SystemExit, "missing required key 'host'"):
+                build_run_spec(args, run_config)
+
+    def test_direct_run_writes_required_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Args(
+                row_config=None,
+                trial_id="010126.1",
+                trial_descript="batch1",
+                exp_dir="Batch1",
+                metadata="metadata/batch1.xlsx",
+                host="mouse",
+                process_umis=None,
+                run_config_dir=str(Path(tmp) / "configs"),
+            )
+            run_config = cli.resolve_row_config(args)
+            self.assertIn('host: "mouse"', run_config.read_text())
+
+    def test_direct_run_requires_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = Args(
+                row_config=None,
+                trial_id="010126.1",
+                trial_descript="batch1",
+                exp_dir="Batch1",
+                metadata="metadata/batch1.xlsx",
+                host=None,
+                process_umis=None,
+                run_config_dir=str(Path(tmp) / "configs"),
+            )
+            with self.assertRaisesRegex(SystemExit, "--host"):
+                cli.resolve_row_config(args)
+
+    def test_direct_run_host_choices_are_limited(self) -> None:
+        with self.assertRaises(SystemExit):
+            cli.build_parser().parse_args(
+                [
+                    "run",
+                    "--trial-id",
+                    "010126.1",
+                    "--trial-descript",
+                    "batch1",
+                    "--exp-dir",
+                    "Batch1",
+                    "--metadata",
+                    "metadata/batch1.xlsx",
+                    "--host",
+                    "rat",
+                ]
+            )
+
     def test_batch_submit_dry_run_reuses_run_builder(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             refs = Path(tmp) / "refs"
@@ -202,9 +298,9 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\n"
-                "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\thuman\n"
+                "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             refs = Path(tmp) / "refs"
@@ -251,7 +347,7 @@ class CommandConstructionTests(unittest.TestCase):
     def test_isolated_snakemake_command_uses_absolute_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\ntrial_descript: "batch with spaces"\n')
+            run_config.write_text('trialID: "010126.1"\ntrial_descript: "batch with spaces"\nhost: "human"\n')
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
             override_config = Path(tmp) / "override.yaml"
@@ -293,7 +389,7 @@ class CommandConstructionTests(unittest.TestCase):
     def test_shared_workdir_preserves_legacy_command_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\ntrial_descript: "batch1"\n')
+            run_config.write_text('trialID: "010126.1"\ntrial_descript: "batch1"\nhost: "human"\n')
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
             args = Args(
@@ -325,8 +421,8 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
@@ -367,9 +463,9 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
-                "010126.1\tbatch1\tBatch2\tmetadata/batch2.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\thuman\n"
+                "010126.1\tbatch1\tBatch2\tmetadata/batch2.xlsx\thuman\n"
             )
             args = Args(
                 batch_table=str(table),
@@ -386,8 +482,8 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             refs = Path(tmp) / "refs"
@@ -408,8 +504,8 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             refs = Path(tmp) / "refs"
@@ -448,12 +544,82 @@ class CommandConstructionTests(unittest.TestCase):
                 self.assertEqual(batch_submit_command(args), 0)
             self.assertIn("would submit master job script", stdout.getvalue())
 
+    def test_isolated_batch_submit_uses_row_host_for_bwa_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tmouse_batch\tBatch1\tmetadata/batch1.xlsx\tmouse\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "viral.fa", "bacteria.fa"):
+                write_bwa_sidecars(refs / ref_name)
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                mode="slurm",
+                shared_workdir=False,
+            )
+
+            with self.assertRaisesRegex(SystemExit, "mouse_ref: missing BWA sidecar"):
+                batch_submit_command(args)
+
+    def test_isolated_batch_submit_mixed_hosts_requires_both_host_indexes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            table = Path(tmp) / "batch.tsv"
+            table.write_text(
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\thuman_batch\tBatch1\tmetadata/batch1.xlsx\thuman\n"
+                "010126.2\tmouse_batch\tBatch2\tmetadata/batch2.xlsx\tmouse\n"
+            )
+            base_config = Path(tmp) / "processing.yaml"
+            refs = Path(tmp) / "refs"
+            write_processing_config_with_refs(base_config, refs)
+            for ref_name in ("human.fa", "mouse.fa", "viral.fa", "bacteria.fa"):
+                write_bwa_sidecars(refs / ref_name)
+            runner_prefix, _manager = write_fake_runner(Path(tmp))
+            args = Args(
+                batch_table=str(table),
+                run_config_dir=str(Path(tmp) / "configs"),
+                configfile=[str(base_config)],
+                extra_configfile=[],
+                mode="slurm",
+                profile=None,
+                target="all",
+                log_root=str(Path(tmp) / "logs"),
+                shared_workdir=False,
+                workdir_root=str(Path(tmp) / "workdirs"),
+                snakemake_conda_prefix=str(Path(tmp) / "snakemake-conda"),
+                dry_run=True,
+                print_command=False,
+                snakemake_arg=[],
+                activate_command="",
+                master_cpus="4",
+                master_mem="8G",
+                master_time="1-00:00:00",
+                master_partition=None,
+                master_extra_sbatch=[],
+                runner="host",
+                runner_prefix=str(runner_prefix),
+                manager="auto",
+            )
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(batch_submit_command(args), 0)
+            self.assertIn("[010126.1] would submit master job script", stdout.getvalue())
+            self.assertIn("[010126.2] would submit master job script", stdout.getvalue())
+
     def test_shared_workdir_batch_submit_skips_shared_bwa_index_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch1\tBatch1\tmetadata/batch1.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             write_processing_config_with_refs(base_config, Path(tmp) / "refs")
@@ -619,7 +785,7 @@ class CommandConstructionTests(unittest.TestCase):
     def test_execution_command_uses_direct_runner_snakemake(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\n')
+            run_config.write_text('trialID: "010126.1"\nhost: "human"\n')
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
             runner_prefix, _manager = write_fake_runner(Path(tmp))
@@ -699,7 +865,7 @@ class CommandConstructionTests(unittest.TestCase):
     def test_missing_runner_prefix_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\n')
+            run_config.write_text('trialID: "010126.1"\nhost: "human"\n')
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
             args = Args(
@@ -775,9 +941,9 @@ class CommandConstructionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             table = Path(tmp) / "batch.tsv"
             table.write_text(
-                "trialID\ttrial_descript\texp_dir\tmetadata\n"
-                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\n"
-                "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\n"
+                "trialID\ttrial_descript\texp_dir\tmetadata\thost\n"
+                "010126.1\tbatch one\tBatch1\tmetadata/batch1.xlsx\thuman\n"
+                "010126.2\tbatch two\tBatch2\tmetadata/batch2.xlsx\thuman\n"
             )
             base_config = Path(tmp) / "processing.yaml"
             write_minimal_processing_config(base_config)
@@ -820,7 +986,7 @@ class CommandConstructionTests(unittest.TestCase):
     def test_missing_default_processing_config_has_setup_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run_config = Path(tmp) / "010126.1_runconfig.yaml"
-            run_config.write_text('trialID: "010126.1"\n')
+            run_config.write_text('trialID: "010126.1"\nhost: "human"\n')
             missing_default = Path(tmp) / "config" / "local" / "processing.yaml"
             args = Args(
                 configfile=[],
@@ -1387,9 +1553,10 @@ def write_minimal_processing_config(path: Path) -> None:
 def write_processing_config_with_refs(path: Path, refs: Path) -> None:
     refs.mkdir(parents=True)
     human = refs / "human.fa"
+    mouse = refs / "mouse.fa"
     viral = refs / "viral.fa"
     bacteria = refs / "bacteria.fa"
-    for fasta in (human, viral, bacteria):
+    for fasta in (human, mouse, viral, bacteria):
         fasta.write_text(">ref\nACGT\n")
     path.write_text(
         "in_root: Exp_Data/\n"
@@ -1398,6 +1565,7 @@ def write_processing_config_with_refs(path: Path, refs: Path) -> None:
         "script_dir: scripts\n"
         "host: human\n"
         f"human_ref: {human}\n"
+        f"mouse_ref: {mouse}\n"
         f"viral_ref: {viral}\n"
         f"bact16s_ref: {bacteria}\n"
     )
