@@ -16,6 +16,7 @@ dependencies:
   - r-glmnet
   - r-readxl
   - r-remotes
+  # micRoclean's post-deploy install patches its namespace to import stringr.
   - r-stringr
   - r-tibble
   - r-tidyr

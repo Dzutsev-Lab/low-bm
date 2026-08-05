@@ -67,32 +67,50 @@ if [[ ! "${MICROCLEAN_GIT_REF}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
     exit 2
 fi
 
-export R_REMOTES_NO_ERRORS_FROM_WARNINGS=false
+microclean_dir="${tmpdir}/micRoclean"
+echo "Cloning micRoclean..."
+git clone "${MICROCLEAN_GIT_URL}" "${microclean_dir}"
+git -C "${microclean_dir}" checkout --detach "${MICROCLEAN_GIT_REF}"
 
-Rscript --no-environ -e '
-repo <- Sys.getenv("MICROCLEAN_GIT_URL")
-ref <- Sys.getenv("MICROCLEAN_GIT_REF")
-subdir <- Sys.getenv("MICROCLEAN_GIT_SUBDIR", unset = NA)
+package_dir="${microclean_dir}"
+if [[ -n "${MICROCLEAN_GIT_SUBDIR:-}" ]]; then
+    package_dir="${microclean_dir}/${MICROCLEAN_GIT_SUBDIR}"
+fi
+if [[ ! -f "${package_dir}/DESCRIPTION" || ! -f "${package_dir}/NAMESPACE" ]]; then
+    echo "micRoclean package source is missing DESCRIPTION or NAMESPACE: ${package_dir}" >&2
+    exit 2
+fi
 
-Sys.setenv(
-  TORCH_LOAD = "0",
-  TORCH_VERIFY_LOAD = "FALSE",
-  R_REMOTES_NO_ERRORS_FROM_WARNINGS = "true"
-)
+echo "Patching micRoclean namespace imports..."
+Rscript --no-environ - "${package_dir}" <<'RSCRIPT'
+args <- commandArgs(trailingOnly = TRUE)
+package_dir <- args[[1]]
 
-args <- list(
-  url = repo,
-  ref = ref,
-  upgrade = "never",
-  dependencies = FALSE,
-  INSTALL_opts = "--no-test-load"
-)
-if (!is.na(subdir) && nzchar(subdir)) {
-  args$subdir <- subdir
+namespace_path <- file.path(package_dir, "NAMESPACE")
+namespace_lines <- readLines(namespace_path, warn = FALSE)
+if (!any(namespace_lines == "import(stringr)")) {
+  import_idx <- grep("^import\\(", namespace_lines)
+  insert_after <- if (length(import_idx) > 0) max(import_idx) else length(namespace_lines)
+  namespace_lines <- append(namespace_lines, "import(stringr)", after = insert_after)
+  writeLines(namespace_lines, namespace_path)
 }
 
-do.call(remotes::install_git, args)
-'
+description_path <- file.path(package_dir, "DESCRIPTION")
+description <- read.dcf(description_path)
+imports <- if ("Imports" %in% colnames(description)) description[1, "Imports"] else ""
+has_stringr <- grepl("(^|[,\n[:space:]])stringr([,[:space:]\n]|$)", imports)
+if (!has_stringr) {
+  new_imports <- if (nzchar(trimws(imports))) paste0(imports, ",\n    stringr") else "stringr"
+  if ("Imports" %in% colnames(description)) {
+    description[1, "Imports"] <- new_imports
+  } else {
+    description <- cbind(description, Imports = new_imports)
+  }
+  write.dcf(description, description_path)
+}
+RSCRIPT
 
-Rscript --no-environ -e 'stopifnot(length(find.package("micRoclean", quiet = TRUE)) == 1)'
+echo "Installing patched micRoclean without test-loading torch..."
+R CMD INSTALL --no-test-load "${package_dir}"
 
+Rscript --no-environ -e 'stopifnot(length(find.package("micRoclean", quiet = TRUE)) == 1); stopifnot(is.function(get("str_extract", envir = asNamespace("micRoclean"), inherits = TRUE)))'
