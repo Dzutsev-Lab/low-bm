@@ -1,7 +1,0 @@
-Running AmpUMI on 2250736 lines from IP_Data/SpikeIns/SpikeInExp1_Data/01_UMISelection/Selected.plate1_N703-S510_CELLSONLY1.UMI_R1.fastq
-Read 562684 reads from IP_Data/SpikeIns/SpikeInExp1_Data/01_UMISelection/Selected.plate1_N703-S510_CELLSONLY1.UMI_R1.fastq
-Of those, 562663 had the regex
-Processed 173418 barcodes
-Observed 380918 UMI collisions (381428 reads). Not printing these.
-Observed 0 UMIs (0 reads) with too few reads. Not printing these.
-Printed 173418 deduplicated sequences (181235 reads) to IP_Data/SpikeIns/SpikeInExp1_Data/02_UMIDeduplication/Deduped.plate1_N703-S510_CELLSONLY1.fastq
