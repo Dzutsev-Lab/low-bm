@@ -38,19 +38,19 @@ set-threads:
 set-resources:
   norm_fastq:
     mem_mb: 8000
-    runtime: 60
+    runtime: 120
   umi_selection:
     mem_mb: 4000
     runtime: 60
   umi_dedup:
-    mem_mb: 16000
-    runtime: 60
+    mem_mb: 64000
+    runtime: 120
   no_umi_count_summary:
     mem_mb: 4000
     runtime: 20
   dada_denoising:
     mem_mb: 64000
-    runtime: 150
+    runtime: 720
   host_viral_alignment:
     mem_mb: 24000
     runtime: 60
