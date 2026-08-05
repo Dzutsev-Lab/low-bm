@@ -15,10 +15,14 @@ patient_consistency_excluded_columns <- c(
   "TumorType",
   "cCluster",
   "Microbiome",
+  "Expression (Microarray)",
   "Expression..Microarray.",
   "TumorMetabolomics",
+  "Panel WES deep-seq (mutation - 500 genes)",
   "Panel.WES.deep.seq..mutation...500.genes.",
-  "CNV.SNP"
+  "CNV SNP",
+  "CNV.SNP",
+  "Reason to exclude"
 )
 
 fail_missing_columns <- function(columns, required, context = "data") {

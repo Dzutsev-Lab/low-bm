@@ -152,6 +152,14 @@ sample_level_diff$SampleType[[2]] <- "Nontumor"
 sample_level_diff$TumorType <- c("HCC", "HCC-NT", "iCC-NT", "iCC-NT", "NegativeControl")
 invisible(validate_metadata_df(sample_level_diff))
 
+workbook_sample_level_diff <- as(sample_data(physeq), "data.frame")
+workbook_sample_level_diff[["Expression (Microarray)"]] <- c("1", "0", "1", "1", "0")
+workbook_sample_level_diff[["Panel WES deep-seq (mutation - 500 genes)"]] <- c("0", "1", "1", "0", "0")
+workbook_sample_level_diff[["CNV SNP"]] <- c("1", "0", "1", "1", "0")
+workbook_sample_level_diff[["Reason to exclude"]] <- c("note A", "note B", NA, NA, NA)
+workbook_validated <- validate_metadata_df(workbook_sample_level_diff)
+stopifnot(nrow(workbook_validated) == nrow(workbook_sample_level_diff))
+
 control_diff <- as(sample_data(physeq), "data.frame")
 control_extra <- control_diff["NegCtl", , drop = FALSE]
 rownames(control_extra) <- "NegCtl_rep2"
