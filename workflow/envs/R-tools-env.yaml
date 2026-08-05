@@ -37,6 +37,7 @@ dependencies:
   - bioconductor-edger
   - bioconductor-lefser
   - bioconductor-limma
+  - bioconductor-microbiome
   - bioconductor-phyloseq
   - bioconductor-s4vectors
   - bioconductor-shortread
