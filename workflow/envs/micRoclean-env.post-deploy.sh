@@ -85,22 +85,30 @@ echo "Patching micRoclean namespace imports..."
 Rscript --no-environ - "${package_dir}" <<'RSCRIPT'
 args <- commandArgs(trailingOnly = TRUE)
 package_dir <- args[[1]]
+required_imports <- c("stringr", "tibble")
 
 namespace_path <- file.path(package_dir, "NAMESPACE")
 namespace_lines <- readLines(namespace_path, warn = FALSE)
-if (!any(namespace_lines == "import(stringr)")) {
-  import_idx <- grep("^import\\(", namespace_lines)
-  insert_after <- if (length(import_idx) > 0) max(import_idx) else length(namespace_lines)
-  namespace_lines <- append(namespace_lines, "import(stringr)", after = insert_after)
-  writeLines(namespace_lines, namespace_path)
+for (pkg in required_imports) {
+  import_line <- paste0("import(", pkg, ")")
+  if (!any(namespace_lines == import_line)) {
+    import_idx <- grep("^import\\(", namespace_lines)
+    insert_after <- if (length(import_idx) > 0) max(import_idx) else length(namespace_lines)
+    namespace_lines <- append(namespace_lines, import_line, after = insert_after)
+  }
 }
+writeLines(namespace_lines, namespace_path)
 
 description_path <- file.path(package_dir, "DESCRIPTION")
 description <- read.dcf(description_path)
 imports <- if ("Imports" %in% colnames(description)) description[1, "Imports"] else ""
-has_stringr <- grepl("(^|[,\n[:space:]])stringr([,[:space:]\n]|$)", imports)
-if (!has_stringr) {
-  new_imports <- if (nzchar(trimws(imports))) paste0(imports, ",\n    stringr") else "stringr"
+has_import <- function(pkg) {
+  grepl(paste0("(^|[,\\n[:space:]])", pkg, "([,[:space:]\\n]|$)"), imports)
+}
+missing_imports <- required_imports[!vapply(required_imports, has_import, logical(1))]
+if (length(missing_imports) > 0) {
+  import_suffix <- paste(missing_imports, collapse = ",\n    ")
+  new_imports <- if (nzchar(trimws(imports))) paste0(imports, ",\n    ", import_suffix) else import_suffix
   if ("Imports" %in% colnames(description)) {
     description[1, "Imports"] <- new_imports
   } else {
@@ -113,4 +121,4 @@ RSCRIPT
 echo "Installing patched micRoclean without test-loading torch..."
 R CMD INSTALL --no-test-load "${package_dir}"
 
-Rscript --no-environ -e 'stopifnot(length(find.package("micRoclean", quiet = TRUE)) == 1); stopifnot(is.function(get("str_extract", envir = asNamespace("micRoclean"), inherits = TRUE)))'
+Rscript --no-environ -e 'ns <- asNamespace("micRoclean"); stopifnot(length(find.package("micRoclean", quiet = TRUE)) == 1); stopifnot(is.function(get("str_extract", envir = ns, inherits = TRUE))); stopifnot(is.function(get("add_column", envir = ns, inherits = TRUE)))'

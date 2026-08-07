@@ -1480,6 +1480,33 @@ class RunnerSetupTests(unittest.TestCase):
             self.assertEqual(resolved.name, "mamba")
             self.assertEqual(resolved.executable, str(manager))
 
+    def test_managed_microclean_prefix_includes_post_deploy_and_source_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_dir = root / "workflow" / "envs"
+            env_dir.mkdir(parents=True)
+            (env_dir / "micRoclean-env.yaml").write_text("name: low-bm-microclean\n")
+            post_deploy = env_dir / "micRoclean-env.post-deploy.sh"
+            post_deploy.write_text("#!/usr/bin/env bash\necho v1\n")
+            source = env_dir / "micRoclean-source.env"
+            source.write_text("MICROCLEAN_GIT_REF=aaaaaaaa\nSCRUB_GIT_REF=bbbbbbbb\n")
+            env_root = root / ".low-bm" / "analysis" / "envs"
+
+            with patch.object(cli, "REPO_ROOT", root):
+                first_prefix = cli.managed_analysis_env_prefix(cli.MICROCLEAN_ENV, env_root)
+                post_deploy.write_text("#!/usr/bin/env bash\necho v2\n")
+                post_deploy_prefix = cli.managed_analysis_env_prefix(cli.MICROCLEAN_ENV, env_root)
+                source.write_text("MICROCLEAN_GIT_REF=cccccccc\nSCRUB_GIT_REF=bbbbbbbb\n")
+                source_prefix = cli.managed_analysis_env_prefix(cli.MICROCLEAN_ENV, env_root)
+
+            self.assertNotEqual(first_prefix, post_deploy_prefix)
+            self.assertNotEqual(post_deploy_prefix, source_prefix)
+
+    def test_microclean_post_deploy_patches_tibble_namespace_import(self) -> None:
+        script = (REPO_ROOT / "workflow/envs/micRoclean-env.post-deploy.sh").read_text()
+        self.assertIn('required_imports <- c("stringr", "tibble")', script)
+        self.assertIn('get("add_column", envir = ns, inherits = TRUE)', script)
+
     def test_microclean_source_requires_fixed_shas(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "micRoclean-source.env"

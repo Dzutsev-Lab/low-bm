@@ -158,6 +158,7 @@ class BwaReferenceSpec:
 R_TOOLS_ENV = Path("workflow/envs/R-tools-env.yaml")
 BIO_TOOLS_ENV = Path("workflow/envs/bio-tools-env.yaml")
 MICROCLEAN_ENV = Path("workflow/envs/micRoclean-env.yaml")
+MICROCLEAN_SOURCE_ENV = Path("workflow/envs/micRoclean-source.env")
 R_TOOLS_ENV_PREFIX_ENVVAR = "LOW_BM_R_TOOLS_PREFIX"
 BIO_TOOLS_ENV_PREFIX_ENVVAR = "LOW_BM_BIO_TOOLS_PREFIX"
 MICROCLEAN_ENV_PREFIX_ENVVAR = "LOW_BM_MICROCLEAN_PREFIX"
@@ -1675,7 +1676,7 @@ def doctor_runner_command(args: argparse.Namespace) -> int:
         )
         checks.append(("sbatch visible from runner", sbatch.returncode == 0, runner_check_detail(sbatch)))
 
-    source_errors = validate_microclean_source(REPO_ROOT / "workflow/envs/micRoclean-source.env")
+    source_errors = validate_microclean_source(repo_path(MICROCLEAN_SOURCE_ENV))
     checks.append(("micRoclean source pins", not source_errors, "; ".join(source_errors)))
 
     ok = True
@@ -2359,8 +2360,36 @@ def resolve_managed_analysis_env_prefixes(
 def managed_analysis_env_prefix(env_file: Path, env_root: Path) -> Path:
     """Return a deterministic prefix for one analysis environment YAML."""
     env_name = re.sub(r"[^A-Za-z0-9._-]+", "-", analysis_env_name(env_file)).strip("-")
-    env_hash = hash_file(repo_path(env_file))[:12]
+    env_hash = analysis_env_fingerprint(env_file)[:12]
     return env_root / f"{env_name}-{env_hash}"
+
+
+def analysis_env_fingerprint(env_file: Path) -> str:
+    """Hash every file that defines a managed analysis environment recipe."""
+    digest = hashlib.sha256()
+    for path in analysis_env_recipe_files(env_file):
+        try:
+            path_label = path.relative_to(REPO_ROOT)
+        except ValueError:
+            path_label = path
+        digest.update(str(path_label).encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def analysis_env_recipe_files(env_file: Path) -> list[Path]:
+    """Return env recipe files that should force a fresh managed prefix."""
+    paths = [repo_path(env_file)]
+    post_deploy_script = analysis_env_post_deploy_script(env_file)
+    if post_deploy_script is not None:
+        paths.append(post_deploy_script)
+    if env_file == MICROCLEAN_ENV:
+        microclean_source = repo_path(MICROCLEAN_SOURCE_ENV)
+        if microclean_source.exists():
+            paths.append(microclean_source)
+    return paths
 
 
 def selected_analysis_env_files(
@@ -2494,6 +2523,7 @@ def write_analysis_env_metadata(prefix: Path, env_file: Path, manager: EnvManage
         "env_prefix": str(prefix),
         "env_file": str(env_file),
         "env_file_sha256": hash_file(repo_path(env_file)),
+        "env_recipe_sha256": analysis_env_fingerprint(env_file),
         "manager": manager.name,
         "manager_executable": manager.executable,
         "low_bm_version": __version__,
