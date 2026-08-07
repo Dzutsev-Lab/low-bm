@@ -141,6 +141,16 @@ stopifnot(identical(annotated_filter_report$ASV, c("ASV2", "ASV3")))
 stopifnot(identical(annotated_filter_report$contaminant, c(TRUE, FALSE)))
 stopifnot(annotated_filter_report$Genus[[1]] == "g__GenusA")
 stopifnot(annotated_filter_report$Species[[2]] == "s__three")
+feature_report <- data.frame(
+  feature = c("ASV2", "ASV3"),
+  step1 = c(FALSE, TRUE),
+  stringsAsFactors = FALSE
+)
+feature_annotated_report <- annotate_microclean_filter_report(feature_report, physeq)
+stopifnot(identical(feature_annotated_report$ASV, c("ASV2", "ASV3")))
+stopifnot(identical(feature_annotated_report$feature, c("ASV2", "ASV3")))
+stopifnot(feature_annotated_report$Genus[[1]] == "g__GenusA")
+stopifnot(feature_annotated_report$Species[[2]] == "s__three")
 
 validated <- validate_metadata_df(as(sample_data(physeq), "data.frame"))
 stopifnot("ControlStatus" %in% names(validated))

@@ -90,9 +90,8 @@ cleaned_physeq <- apply_decontaminated_taxa(
   decontaminated_count = biomarkerID_results$decontaminated_count
 )
 
-physeq <- cleaned_physeq
 out_file <- file.path(out_dir, output_physeq)
-save_physeq(physeq, out_file)
+save_physeq(cleaned_physeq, out_file)
 
 decontaminated_names <- phyloseq::taxa_names(cleaned_physeq)
 contaminant_names <- setdiff(original_taxa, decontaminated_names)

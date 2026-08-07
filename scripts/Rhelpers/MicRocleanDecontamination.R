@@ -76,9 +76,23 @@ apply_decontaminated_taxa <- function(physeq, decontaminated_count) {
 
 annotate_microclean_filter_report <- function(contaminant_id, physeq) {
   report_df <- as.data.frame(contaminant_id, stringsAsFactors = FALSE)
-  asv_ids <- rownames(report_df)
-  if (is.null(asv_ids)) {
-    asv_ids <- rep(NA_character_, nrow(report_df))
+  taxa_ids <- phyloseq::taxa_names(physeq)
+  row_ids <- rownames(report_df)
+  if (is.null(row_ids)) {
+    row_ids <- rep(NA_character_, nrow(report_df))
+  }
+
+  feature_ids <- NULL
+  if ("feature" %in% names(report_df)) {
+    feature_ids <- as.character(report_df$feature)
+  }
+
+  row_matches <- sum(row_ids %in% taxa_ids, na.rm = TRUE)
+  feature_matches <- if (is.null(feature_ids)) -1 else sum(feature_ids %in% taxa_ids, na.rm = TRUE)
+  asv_ids <- if (feature_matches > row_matches) {
+    feature_ids
+  } else {
+    row_ids
   }
 
   report_df <- data.frame(
