@@ -73,3 +73,31 @@ apply_decontaminated_taxa <- function(physeq, decontaminated_count) {
   cleaned_counts <- decontaminated_count[sample_ids, retained_taxa, drop = FALSE]
   set_otu_samples_by_taxa(cleaned_physeq, cleaned_counts)
 }
+
+annotate_microclean_filter_report <- function(contaminant_id, physeq) {
+  report_df <- as.data.frame(contaminant_id, stringsAsFactors = FALSE)
+  asv_ids <- rownames(report_df)
+  if (is.null(asv_ids)) {
+    asv_ids <- rep(NA_character_, nrow(report_df))
+  }
+
+  report_df <- data.frame(
+    ASV = asv_ids,
+    report_df,
+    row.names = NULL,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+
+  tax_table <- phyloseq::tax_table(physeq, errorIfNULL = FALSE)
+  if (is.null(tax_table)) {
+    return(report_df)
+  }
+
+  tax_df <- as.data.frame(as(tax_table, "matrix"), stringsAsFactors = FALSE)
+  tax_df$ASV <- rownames(tax_df)
+  tax_df <- tax_df[match(report_df$ASV, tax_df$ASV), , drop = FALSE]
+  rownames(tax_df) <- NULL
+
+  cbind(report_df, tax_df[, setdiff(names(tax_df), "ASV"), drop = FALSE])
+}

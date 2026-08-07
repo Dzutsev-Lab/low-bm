@@ -130,6 +130,17 @@ stopifnot(identical(taxa_names(cleaned_physeq), c("ASV1", "ASV3")))
 stopifnot(identical(sample_names(cleaned_physeq), sample_names(physeq)))
 stopifnot(otu_samples_by_taxa(cleaned_physeq)["SampleA_rep1", "ASV1"] == 11)
 stopifnot(identical(rownames(as(tax_table(cleaned_physeq), "matrix")), c("ASV1", "ASV3")))
+contaminant_id <- data.frame(
+  contaminant = c(TRUE, FALSE),
+  score = c(0.9, 0.1),
+  row.names = c("ASV2", "ASV3"),
+  stringsAsFactors = FALSE
+)
+annotated_filter_report <- annotate_microclean_filter_report(contaminant_id, physeq)
+stopifnot(identical(annotated_filter_report$ASV, c("ASV2", "ASV3")))
+stopifnot(identical(annotated_filter_report$contaminant, c(TRUE, FALSE)))
+stopifnot(annotated_filter_report$Genus[[1]] == "g__GenusA")
+stopifnot(annotated_filter_report$Species[[2]] == "s__three")
 
 validated <- validate_metadata_df(as(sample_data(physeq), "data.frame"))
 stopifnot("ControlStatus" %in% names(validated))

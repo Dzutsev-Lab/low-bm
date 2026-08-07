@@ -99,12 +99,16 @@ contaminant_names <- setdiff(original_taxa, decontaminated_names)
 
 writeLines(decontaminated_names, con = file.path(out_dir, output_decontaminated_names))
 writeLines(contaminant_names, con = file.path(out_dir, output_contaminant_names))
+annotated_filter_report <- annotate_microclean_filter_report(
+  contaminant_id = biomarkerID_results$contaminant_id,
+  physeq = physeq
+)
 write.table(
-  biomarkerID_results$contaminant_id,
+  annotated_filter_report,
   file = file.path(out_dir, output_filter_report),
   sep = "\t",
   quote = FALSE,
-  col.names = NA
+  row.names = FALSE
 )
 
 message("Decontaminated phyloseq object saved to: ", out_file)
