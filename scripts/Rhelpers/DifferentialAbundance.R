@@ -56,8 +56,8 @@ legacy_comparison_spec <- function(name,
   }
 
   if (name == "PatientSample") {
-    common$sample_filter <- list(SampleType = c("Tumor", "Nontumor", "NormalTissue"))
-    common$factor_levels <- list(SampleType = c("Nontumor", "NormalTissue", "Tumor"))
+    common$sample_filter <- list(SampleType = c("Tumor", "Nontumor"))
+    common$factor_levels <- list(SampleType = c("Nontumor", "Tumor"))
     common$formula <- "SampleType + PatientID"
     common$group <- "SampleType"
     common$coefficient <- "SampleTypeTumor"
@@ -140,6 +140,13 @@ normalize_da_config <- function(config) {
   config
 }
 
+is_missing_da_value <- function(x) {
+  is.null(x) ||
+    length(x) == 0 ||
+    all(is.na(x)) ||
+    all(!nzchar(trimws(as.character(x))))
+}
+
 apply_sample_filter <- function(physeq, sample_filter) {
   if (is.null(sample_filter) || length(sample_filter) == 0) {
     return(physeq)
@@ -191,9 +198,124 @@ apply_factor_levels <- function(physeq, factor_levels) {
   physeq
 }
 
-validate_comparison_spec <- function(physeq, spec) {
-  required <- c("name", "formula", "group", "coefficient", "structural_zero_groups")
-  missing <- required[!vapply(required, function(x) x %in% names(spec) && !is.null(spec[[x]]), logical(1))]
+inferred_structural_zero_groups <- function(group, levels) {
+  paste0("structural_zero (", group, " = ", levels, ")")
+}
+
+stop_da_inferred_field_conflict <- function(spec_name,
+                                            field,
+                                            inferred_label,
+                                            configured_label) {
+  stop(
+    "DA comparison '",
+    spec_name,
+    "' has configured ",
+    field,
+    " that does not match the inferred value after sample filtering. ",
+    "Inferred ",
+    field,
+    ": ",
+    inferred_label,
+    "; configured ",
+    field,
+    ": ",
+    configured_label,
+    ". Remove ",
+    field,
+    " from the config or correct it.",
+    call. = FALSE
+  )
+}
+
+validate_legacy_factor_levels <- function(spec, inferred_levels) {
+  if (is.null(spec$factor_levels) || length(spec$factor_levels) == 0) {
+    return(invisible(TRUE))
+  }
+
+  spec_name <- as.character(spec$name)[[1]]
+  group <- as.character(spec$group)[[1]]
+  factor_level_names <- names(spec$factor_levels)
+  if (is.null(factor_level_names) || !group %in% factor_level_names) {
+    configured_label <- if (is.null(factor_level_names)) {
+      "<unnamed>"
+    } else {
+      paste(factor_level_names, collapse = ", ")
+    }
+    stop_da_inferred_field_conflict(
+      spec_name,
+      "factor_levels",
+      paste0(group, " = [", paste(inferred_levels, collapse = ", "), "]"),
+      configured_label
+    )
+  }
+
+  extra_columns <- setdiff(factor_level_names, group)
+  if (length(extra_columns) > 0) {
+    stop_da_inferred_field_conflict(
+      spec_name,
+      "factor_levels",
+      paste0(group, " = [", paste(inferred_levels, collapse = ", "), "]"),
+      paste0(
+        paste(factor_level_names, collapse = ", "),
+        " (unsupported extra column(s): ",
+        paste(extra_columns, collapse = ", "),
+        ")"
+      )
+    )
+  }
+
+  configured_levels <- as.character(unlist(spec$factor_levels[[group]], use.names = FALSE))
+  if (!identical(configured_levels, inferred_levels)) {
+    stop_da_inferred_field_conflict(
+      spec_name,
+      "factor_levels",
+      paste0(group, " = [", paste(inferred_levels, collapse = ", "), "]"),
+      paste0(group, " = [", paste(configured_levels, collapse = ", "), "]")
+    )
+  }
+
+  invisible(TRUE)
+}
+
+validate_legacy_coefficient <- function(spec, inferred_coefficient) {
+  if (is.null(spec$coefficient) || length(spec$coefficient) == 0) {
+    return(invisible(TRUE))
+  }
+
+  configured_coefficient <- as.character(spec$coefficient)
+  if (!identical(configured_coefficient, inferred_coefficient)) {
+    stop_da_inferred_field_conflict(
+      as.character(spec$name)[[1]],
+      "coefficient",
+      inferred_coefficient,
+      paste(configured_coefficient, collapse = ", ")
+    )
+  }
+
+  invisible(TRUE)
+}
+
+validate_legacy_structural_zero_groups <- function(spec, inferred_groups) {
+  if (is.null(spec$structural_zero_groups) || length(spec$structural_zero_groups) == 0) {
+    return(invisible(TRUE))
+  }
+
+  configured_groups <- as.character(unlist(spec$structural_zero_groups, use.names = FALSE))
+  if (!identical(configured_groups, inferred_groups)) {
+    stop_da_inferred_field_conflict(
+      as.character(spec$name)[[1]],
+      "structural_zero_groups",
+      paste(inferred_groups, collapse = "; "),
+      paste(configured_groups, collapse = "; ")
+    )
+  }
+
+  invisible(TRUE)
+}
+
+resolve_ancombc_comparison_spec <- function(physeq, spec) {
+  required <- c("name", "formula", "group")
+  missing <- required[!vapply(required, function(x) x %in% names(spec) && !is_missing_da_value(spec[[x]]), logical(1))]
   if (length(missing) > 0) {
     stop(
       "DA comparison spec is missing required field(s): ",
@@ -202,30 +324,57 @@ validate_comparison_spec <- function(physeq, spec) {
     )
   }
 
+  spec$name <- as.character(spec$name)[[1]]
+  spec$formula <- as.character(spec$formula)[[1]]
+  spec$group <- as.character(spec$group)[[1]]
+
   metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
   formula_terms <- all.vars(stats::as.formula(paste0("~ ", spec$formula)))
   fail_missing_columns(names(metadata_df), unique(c(spec$group, formula_terms)), "phyloseq sample_data")
 
-  grouping_values <- unique(metadata_df[[spec$group]])
-  grouping_values <- grouping_values[!is.na(grouping_values)]
-  if (length(grouping_values) < 2) {
+  grouping_values <- as.character(metadata_df[[spec$group]])
+  grouping_values <- grouping_values[!is.na(grouping_values) & nzchar(trimws(grouping_values))]
+  inferred_levels <- sort(unique(grouping_values))
+  if (length(inferred_levels) != 2) {
     stop(
-      "Comparison '",
+      "DA comparison '",
       spec$name,
-      "' has fewer than two non-empty group levels in ",
+      "' must have exactly two observed non-empty group levels in ",
       spec$group,
-      ".",
+      " after sample filtering; found ",
+      length(inferred_levels),
+      if (length(inferred_levels) > 0) paste0(": ", paste(inferred_levels, collapse = ", ")) else "",
+      ". Update sample_filter or split multi-level contrasts into separate DA comparisons.",
       call. = FALSE
     )
   }
 
+  inferred_coefficient <- paste0(spec$group, inferred_levels[[2]])
+  inferred_struc0_groups <- inferred_structural_zero_groups(spec$group, inferred_levels)
+
+  validate_legacy_factor_levels(spec, inferred_levels)
+  validate_legacy_coefficient(spec, inferred_coefficient)
+  validate_legacy_structural_zero_groups(spec, inferred_struc0_groups)
+
+  spec$factor_levels <- stats::setNames(list(inferred_levels), spec$group)
+  spec$coefficient <- inferred_coefficient
+  spec$structural_zero_groups <- inferred_struc0_groups
+
+  metadata_df[[spec$group]] <- factor(as.character(metadata_df[[spec$group]]), levels = inferred_levels)
+  phyloseq::sample_data(physeq) <- phyloseq::sample_data(metadata_df)
+
+  list(physeq = physeq, spec = spec)
+}
+
+validate_comparison_spec <- function(physeq, spec) {
+  resolve_ancombc_comparison_spec(physeq, spec)
   invisible(TRUE)
 }
 
 prepare_da_physeq <- function(physeq, spec, global_config, select_taxa = NULL) {
   physeq <- apply_sample_filter(physeq, spec$sample_filter)
-  physeq <- apply_factor_levels(physeq, spec$factor_levels)
-  validate_comparison_spec(physeq, spec)
+  resolved <- resolve_ancombc_comparison_spec(physeq, spec)
+  physeq <- resolved$physeq
 
   tax_agg_level <- if (!is.null(spec$tax_agg_level)) spec$tax_agg_level else global_config$tax_agg_level
   physeq <- tax_glom_rename(physeq, tax_agg_level)
@@ -270,6 +419,18 @@ format_structural_zero <- function(ancombc_output, structural_zero_groups) {
   struc0_df[, c("taxon", "struc0"), drop = FALSE]
 }
 
+assign_da_direction <- function(log2_fold_change, struc0) {
+  direction <- rep("none", length(log2_fold_change))
+  struc0 <- as.character(struc0)
+  pos <- (!is.na(log2_fold_change) & log2_fold_change > 0) |
+    (!is.na(struc0) & struc0 == "group1")
+  neg <- (!is.na(log2_fold_change) & log2_fold_change < 0) |
+    (!is.na(struc0) & struc0 == "group2")
+  direction[pos] <- "pos"
+  direction[neg] <- "neg"
+  direction
+}
+
 standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff) {
   lfc_df <- extract_ancombc_table(ancombc_output, "lfc", spec$coefficient)
   p_df <- extract_ancombc_table(ancombc_output, "p_val", spec$coefficient)
@@ -304,11 +465,7 @@ standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff)
     "Sig",
     "NotSig"
   )
-  results$direction <- ifelse(
-    results$log2FoldChange > 0 | results$struc0 == "group1",
-    "pos",
-    ifelse(results$log2FoldChange < 0 | results$struc0 == "group2", "neg", "none")
-  )
+  results$direction <- assign_da_direction(results$log2FoldChange, results$struc0)
 
   results[, c("taxon", "log2FoldChange", "p", "padj", "struc0", "se", "significance", "direction")]
 }
@@ -321,6 +478,9 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
   tax_agg_level <- if (!is.null(spec$tax_agg_level)) spec$tax_agg_level else global_config$tax_agg_level
   alpha <- if (!is.null(spec$alpha)) spec$alpha else global_config$alpha
   lfc_cutoff <- if (!is.null(spec$lfc_cutoff)) spec$lfc_cutoff else global_config$lfc_cutoff
+  resolved <- resolve_ancombc_comparison_spec(physeq, spec)
+  physeq <- resolved$physeq
+  spec <- resolved$spec
 
   ancombc_output <- ANCOMBC::ancombc(
     data = physeq,
@@ -351,4 +511,3 @@ write_da_results <- function(results_df, out_dir, trial_id, method, comparison_n
   )
   out_file
 }
-

@@ -47,17 +47,13 @@ differential_abundance:
   alpha: 0.05
   lfc_cutoff: 0.3
   comparisons:
+    # ANCOM-BC factor levels, coefficient names, and structural-zero column names
+    # are inferred after sample filtering; each comparison must have two group levels.
     - name: "ExampleComparison"
       sample_filter:
         SampleType: ["Control", "Treatment"]
-      factor_levels:
-        SampleType: ["Control", "Treatment"]
       formula: "SampleType"
       group: "SampleType"
-      coefficient: "SampleTypeTreatment"
-      structural_zero_groups:
-        - "structural_zero (SampleType = Control)"
-        - "structural_zero (SampleType = Treatment)"
       plot_title: "Control vs Treatment"
 
 lefse_analysis:

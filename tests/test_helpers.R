@@ -384,10 +384,110 @@ prepared <- prepare_da_physeq(physeq, spec, build_legacy_da_config(
   out_dir = tempdir()
 ))
 stopifnot(inherits(prepared, "phyloseq"))
+prepared_meta <- as(sample_data(prepared), "data.frame")
+stopifnot(identical(levels(prepared_meta$SampleType), c("Nontumor", "Tumor")))
+
+inferred_spec <- list(
+  name = "InferTumorNontumor",
+  sample_filter = list(SampleType = c("Tumor", "Nontumor")),
+  formula = "SampleType + PatientID",
+  group = "SampleType"
+)
+filtered_for_inference <- apply_sample_filter(physeq, inferred_spec$sample_filter)
+resolved <- resolve_ancombc_comparison_spec(filtered_for_inference, inferred_spec)
+stopifnot(identical(resolved$spec$factor_levels$SampleType, c("Nontumor", "Tumor")))
+stopifnot(identical(resolved$spec$coefficient, "SampleTypeTumor"))
+stopifnot(identical(
+  resolved$spec$structural_zero_groups,
+  c(
+    "structural_zero (SampleType = Nontumor)",
+    "structural_zero (SampleType = Tumor)"
+  )
+))
+resolved_meta <- as(sample_data(resolved$physeq), "data.frame")
+stopifnot(identical(levels(resolved_meta$SampleType), c("Nontumor", "Tumor")))
+
+matching_legacy_spec <- inferred_spec
+matching_legacy_spec$factor_levels <- list(SampleType = c("Nontumor", "Tumor"))
+matching_legacy_spec$coefficient <- "SampleTypeTumor"
+matching_legacy_spec$structural_zero_groups <- c(
+  "structural_zero (SampleType = Nontumor)",
+  "structural_zero (SampleType = Tumor)"
+)
+resolved_matching <- resolve_ancombc_comparison_spec(filtered_for_inference, matching_legacy_spec)
+stopifnot(identical(resolved_matching$spec$coefficient, "SampleTypeTumor"))
 
 bad_spec <- spec
 bad_spec$factor_levels <- list(SampleType = c("Tumor"))
-expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")), "absent")
+expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")), "Inferred factor_levels")
+
+conflicting_coef_spec <- matching_legacy_spec
+conflicting_coef_spec$coefficient <- "SampleTypeNontumor"
+expect_error(
+  resolve_ancombc_comparison_spec(filtered_for_inference, conflicting_coef_spec),
+  "Inferred coefficient: SampleTypeTumor"
+)
+
+conflicting_struc0_spec <- matching_legacy_spec
+conflicting_struc0_spec$structural_zero_groups <- rev(conflicting_struc0_spec$structural_zero_groups)
+expect_error(
+  resolve_ancombc_comparison_spec(filtered_for_inference, conflicting_struc0_spec),
+  "Inferred structural_zero_groups"
+)
+
+one_level_spec <- inferred_spec
+one_level_spec$sample_filter <- list(SampleType = "Tumor")
+expect_error(prepare_da_physeq(physeq, one_level_spec, list(tax_agg_level = "Genus")), "exactly two observed")
+
+three_level_da_spec <- inferred_spec
+three_level_da_spec$sample_filter <- list(SampleType = "*")
+expect_error(prepare_da_physeq(physeq, three_level_da_spec, list(tax_agg_level = "Genus")), "found 3")
+
+missing_group_spec <- inferred_spec
+missing_group_spec$group <- "MissingGroup"
+missing_group_spec$formula <- "MissingGroup"
+expect_error(prepare_da_physeq(physeq, missing_group_spec, list(tax_agg_level = "Genus")), "missing required")
+
+direction_spec <- list(
+  coefficient = "SampleTypeTumor",
+  structural_zero_groups = c(
+    "structural_zero (SampleType = Nontumor)",
+    "structural_zero (SampleType = Tumor)"
+  )
+)
+direction_taxa <- c("neg", "none", "pos", "struc_neg", "struc_pos")
+make_direction_table <- function(values) {
+  table <- data.frame(taxon = direction_taxa, value = values, check.names = FALSE)
+  names(table)[[2]] <- "SampleTypeTumor"
+  table
+}
+direction_zero_ind <- data.frame(
+  taxon = direction_taxa,
+  struc0_group1 = c(FALSE, FALSE, FALSE, FALSE, TRUE),
+  struc0_group2 = c(FALSE, FALSE, FALSE, TRUE, FALSE),
+  check.names = FALSE
+)
+names(direction_zero_ind) <- c("taxon", direction_spec$structural_zero_groups)
+direction_results <- standardize_ancombc_results(
+  list(
+    res = list(
+      lfc = make_direction_table(c(-0.4, 0, 0.5, 0, 0)),
+      p_val = make_direction_table(rep(0.001, length(direction_taxa))),
+      q_val = make_direction_table(rep(0.01, length(direction_taxa))),
+      se = make_direction_table(rep(0.1, length(direction_taxa)))
+    ),
+    zero_ind = direction_zero_ind
+  ),
+  direction_spec,
+  alpha = 0.05,
+  lfc_cutoff = 0.3
+)
+stopifnot(direction_results$direction[match("neg", direction_results$taxon)] == "neg")
+stopifnot(direction_results$direction[match("pos", direction_results$taxon)] == "pos")
+stopifnot(direction_results$direction[match("none", direction_results$taxon)] == "none")
+stopifnot(direction_results$direction[match("struc_neg", direction_results$taxon)] == "neg")
+stopifnot(direction_results$direction[match("struc_pos", direction_results$taxon)] == "pos")
+stopifnot(direction_results$significance[match("neg", direction_results$taxon)] == "Sig")
 
 surv_meta <- prepare_survival_metadata(
   as(sample_data(physeq), "data.frame"),
