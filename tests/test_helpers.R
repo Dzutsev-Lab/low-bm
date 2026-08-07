@@ -386,6 +386,8 @@ prepared <- prepare_da_physeq(physeq, spec, build_legacy_da_config(
 stopifnot(inherits(prepared, "phyloseq"))
 prepared_meta <- as(sample_data(prepared), "data.frame")
 stopifnot(identical(levels(prepared_meta$SampleType), c("Nontumor", "Tumor")))
+prepared_spec <- attr(prepared, "da_comparison_spec")
+stopifnot(identical(prepared_spec$coefficient, "SampleTypeTumor"))
 
 inferred_spec <- list(
   name = "InferTumorNontumor",
@@ -406,6 +408,12 @@ stopifnot(identical(
 ))
 resolved_meta <- as(sample_data(resolved$physeq), "data.frame")
 stopifnot(identical(levels(resolved_meta$SampleType), c("Nontumor", "Tumor")))
+direction_labels <- ancombc_direction_labels(resolved$spec)
+stopifnot(identical(direction_labels$x, "Effect size: log2(Tumor / Nontumor)"))
+stopifnot(identical(direction_labels$caption, "Negative/left = SampleType Nontumor; positive/right = SampleType Tumor."))
+stopifnot(identical(direction_labels$legend_title, "SampleType"))
+stopifnot(identical(direction_labels$legend_labels[["neg"]], "Negative: Nontumor"))
+stopifnot(identical(direction_labels$legend_labels[["pos"]], "Positive: Tumor"))
 
 matching_legacy_spec <- inferred_spec
 matching_legacy_spec$factor_levels <- list(SampleType = c("Nontumor", "Tumor"))

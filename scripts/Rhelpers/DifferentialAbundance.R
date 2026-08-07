@@ -202,6 +202,49 @@ inferred_structural_zero_groups <- function(group, levels) {
   paste0("structural_zero (", group, " = ", levels, ")")
 }
 
+ancombc_direction_labels <- function(spec) {
+  default_labels <- list(
+    x = "Effect size: log2(Fold Change)",
+    caption = NULL,
+    legend_title = "Direction",
+    legend_labels = c(neg = "Negative", pos = "Positive", none = "No direction")
+  )
+
+  if (is.null(spec$group) ||
+      is.null(spec$factor_levels) ||
+      is.null(names(spec$factor_levels)) ||
+      !spec$group %in% names(spec$factor_levels)) {
+    return(default_labels)
+  }
+
+  group <- as.character(spec$group)[[1]]
+  levels <- as.character(unlist(spec$factor_levels[[group]], use.names = FALSE))
+  if (length(levels) != 2) {
+    return(default_labels)
+  }
+
+  list(
+    x = paste0("Effect size: log2(", levels[[2]], " / ", levels[[1]], ")"),
+    caption = paste0(
+      "Negative/left = ",
+      group,
+      " ",
+      levels[[1]],
+      "; positive/right = ",
+      group,
+      " ",
+      levels[[2]],
+      "."
+    ),
+    legend_title = group,
+    legend_labels = c(
+      neg = paste0("Negative: ", levels[[1]]),
+      pos = paste0("Positive: ", levels[[2]]),
+      none = "No direction"
+    )
+  )
+}
+
 stop_da_inferred_field_conflict <- function(spec_name,
                                             field,
                                             inferred_label,
@@ -388,6 +431,7 @@ prepare_da_physeq <- function(physeq, spec, global_config, select_taxa = NULL) {
     physeq <- phyloseq::prune_taxa(keep_taxa, physeq)
   }
 
+  attr(physeq, "da_comparison_spec") <- resolved$spec
   physeq
 }
 

@@ -195,6 +195,7 @@ plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_
   sig_df <- plot_df |> filter(significance == "Sig", !is.na(padj), abs(log2FoldChange) > lfc_cutoff)
 
   plot_title <- spec$plot_title %||% spec$name
+  direction_labels <- ancombc_direction_labels(spec)
   volcano <- ggplot(plot_df, aes(x = log2FoldChange, y = -log10(padj))) +
     geom_point(alpha = 0.6, size = 4, color = "grey40") +
     geom_vline(xintercept = 0) +
@@ -202,15 +203,23 @@ plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_
     geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "darkred") +
     labs(
       title = paste("Volcano Plot:", plot_title),
-      x = "Effect size: log2(Fold Change)",
-      y = "-log10(adjusted p-value)"
+      x = direction_labels$x,
+      y = "-log10(adjusted p-value)",
+      caption = direction_labels$caption
     ) +
-    theme_bw()
+    theme_bw() +
+    theme(plot.caption = element_text(hjust = 0.5, size = 12))
 
   if (nrow(sig_df) > 0) {
     volcano <- volcano +
       geom_point(data = sig_df, aes(color = direction), size = 5) +
-      scale_color_manual(values = c(pos = "firebrick1", neg = "dodgerblue1", none = "grey40")) +
+      scale_color_manual(
+        name = direction_labels$legend_title,
+        values = c(pos = "firebrick1", neg = "dodgerblue1", none = "grey40"),
+        breaks = c("neg", "pos", "none"),
+        labels = direction_labels$legend_labels,
+        na.translate = FALSE
+      ) +
       geom_text_repel(
         data = sig_df,
         aes(label = label, color = direction),
@@ -302,15 +311,19 @@ for (spec in da_config$comparisons) {
     global_config = da_config,
     select_taxa = select_taxa
   )
+  resolved_spec <- attr(comparison_physeq, "da_comparison_spec")
+  if (is.null(resolved_spec)) {
+    resolved_spec <- spec
+  }
 
-  alpha <- spec$alpha %||% da_config$alpha
-  lfc_cutoff <- spec$lfc_cutoff %||% da_config$lfc_cutoff
-  results_df <- run_ancombc_comparison(comparison_physeq, spec, da_config)
+  alpha <- resolved_spec$alpha %||% da_config$alpha
+  lfc_cutoff <- resolved_spec$lfc_cutoff %||% da_config$lfc_cutoff
+  results_df <- run_ancombc_comparison(comparison_physeq, resolved_spec, da_config)
   results_for_plots <- add_result_labels(
     results_df,
     comparison_physeq,
-    spec$tax_label_level %||% da_config$tax_label_level,
-    spec$tax_agg_level %||% da_config$tax_agg_level
+    resolved_spec$tax_label_level %||% da_config$tax_label_level,
+    resolved_spec$tax_agg_level %||% da_config$tax_agg_level
   )
 
   result_file <- write_da_results(
@@ -318,10 +331,10 @@ for (spec in da_config$comparisons) {
     out_dir = out_dir,
     trial_id = trial_id,
     method = "ANCOMBC",
-    comparison_name = spec$name
+    comparison_name = resolved_spec$name
   )
   message("Wrote DA results: ", result_file)
 
-  plot_da_volcano(results_for_plots, spec, alpha, lfc_cutoff, out_dir, trial_id)
-  plot_da_heatmap(comparison_physeq, results_for_plots, spec, da_config, out_dir, trial_id)
+  plot_da_volcano(results_for_plots, resolved_spec, alpha, lfc_cutoff, out_dir, trial_id)
+  plot_da_heatmap(comparison_physeq, results_for_plots, resolved_spec, da_config, out_dir, trial_id)
 }
