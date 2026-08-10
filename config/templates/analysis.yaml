@@ -117,4 +117,5 @@ survival_analysis:
   min_events: 10
   norm_method: "log2HostMapped"
   pseudocount: 1
+  sample_strata_col: "SampleType"
   analyses: []

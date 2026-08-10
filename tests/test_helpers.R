@@ -569,18 +569,89 @@ survival_config <- normalize_survival_config(
   project_config = list(norm_method = "RelAbund", pseudocount = 1)
 )
 survival_spec <- survival_config$analyses[[1]]
-feature_bundle <- build_patient_feature_matrix(patient_physeq, survival_spec, survival_config)
+feature_bundle <- build_patient_feature_matrix(physeq, survival_spec, survival_config)
 stopifnot(identical(survival_spec$norm_method, "RelAbund"))
+stopifnot(identical(survival_spec$sample_strata_col, "SampleType"))
 stopifnot(!any(grepl("^alpha_", names(feature_bundle$patient_features))))
 stopifnot(!any(grepl("^pcoa_", names(feature_bundle$patient_features))))
 stopifnot(all(feature_bundle$feature_map$feature_family == "taxa"))
-stopifnot(nrow(feature_bundle$taxa_filter_stats) == 2)
-retained_taxa <- feature_bundle$taxa_filter_stats$taxon[feature_bundle$taxa_filter_stats$retained]
-stopifnot(identical(retained_taxa, "g__GenusA"))
-genus_a_feature <- feature_bundle$feature_map$feature[feature_bundle$feature_map$label == "g__GenusA"]
+stopifnot("n_samples_collapsed" %in% names(feature_bundle$patient_features))
+stopifnot("collapsed_SampleType" %in% names(feature_bundle$patient_features))
+stopifnot("n_samples_SampleType_Tumor" %in% names(feature_bundle$patient_features))
 p1_feature_row <- feature_bundle$patient_features$PatientID == "P1"
+stopifnot(feature_bundle$patient_features$n_samples_collapsed[p1_feature_row] == 2)
+stopifnot(identical(feature_bundle$patient_features$collapsed_SampleType[p1_feature_row], "Tumor"))
+stopifnot(feature_bundle$patient_features$n_samples_SampleType_Tumor[p1_feature_row] == 2)
+stopifnot(nrow(feature_bundle$taxa_filter_stats) == 6)
+stopifnot(all(c("sample_strata_col", "sample_stratum") %in% names(feature_bundle$taxa_filter_stats)))
+retained_taxa <- feature_bundle$taxa_filter_stats$taxon[feature_bundle$taxa_filter_stats$retained]
+stopifnot(all(retained_taxa == "g__GenusA"))
+tumor_genus_a_feature <- feature_bundle$feature_map$feature[
+  feature_bundle$feature_map$label == "SampleType=Tumor | g__GenusA"
+]
 stopifnot(isTRUE(all.equal(
-  feature_bundle$patient_features[p1_feature_row, genus_a_feature],
+  feature_bundle$patient_features[p1_feature_row, tumor_genus_a_feature],
+  15 / (15 + 5.5)
+)))
+
+mixed_type_physeq <- physeq
+mixed_type_meta <- as(sample_data(mixed_type_physeq), "data.frame")
+mixed_type_meta$SampleType[[2]] <- "Nontumor"
+sample_data(mixed_type_physeq) <- sample_data(validate_metadata_df(mixed_type_meta))
+mixed_feature_bundle <- build_patient_feature_matrix(mixed_type_physeq, survival_spec, survival_config)
+mixed_p1_row <- mixed_feature_bundle$patient_features$PatientID == "P1"
+mixed_tumor_feature <- mixed_feature_bundle$feature_map$feature[
+  mixed_feature_bundle$feature_map$label == "SampleType=Tumor | g__GenusA"
+]
+mixed_nontumor_feature <- mixed_feature_bundle$feature_map$feature[
+  mixed_feature_bundle$feature_map$label == "SampleType=Nontumor | g__GenusA"
+]
+stopifnot(identical(mixed_feature_bundle$patient_features$collapsed_SampleType[mixed_p1_row], "Nontumor;Tumor"))
+stopifnot(mixed_feature_bundle$patient_features$n_samples_SampleType_Tumor[mixed_p1_row] == 1)
+stopifnot(mixed_feature_bundle$patient_features$n_samples_SampleType_Nontumor[mixed_p1_row] == 1)
+stopifnot(isTRUE(all.equal(
+  mixed_feature_bundle$patient_features[mixed_p1_row, mixed_tumor_feature],
+  10 / (10 + 5)
+)))
+stopifnot(isTRUE(all.equal(
+  mixed_feature_bundle$patient_features[mixed_p1_row, mixed_nontumor_feature],
+  20 / (20 + 6)
+)))
+missing_stratum_fit <- fit_cox_feature(
+  mixed_feature_bundle$patient_features,
+  feature = mixed_tumor_feature,
+  feature_family = "taxa",
+  feature_label = "SampleType=Tumor | g__GenusA",
+  sample_strata_col = "SampleType",
+  sample_stratum = "Tumor",
+  covariates = character(0),
+  min_n = 4,
+  min_events = 1
+)
+stopifnot(is.null(missing_stratum_fit$result))
+stopifnot(missing_stratum_fit$skip$dropped_missing == 3)
+stopifnot(identical(missing_stratum_fit$skip$sample_stratum, "Tumor"))
+
+unstratified_config <- normalize_survival_config(
+  list(
+    sample_strata_col = NULL,
+    analyses = list(list(
+      name = "UnstratifiedSurvival",
+      taxa_min_prevalence = 0,
+      taxa_min_mean_relative_abundance = 0.5
+    ))
+  ),
+  project_config = list(norm_method = "RelAbund", pseudocount = 1)
+)
+unstratified_spec <- unstratified_config$analyses[[1]]
+stopifnot(is.null(unstratified_spec$sample_strata_col))
+unstratified_bundle <- build_patient_feature_matrix(physeq, unstratified_spec, unstratified_config)
+stopifnot(!"collapsed_SampleType" %in% names(unstratified_bundle$patient_features))
+unstratified_feature <- unstratified_bundle$feature_map$feature[
+  unstratified_bundle$feature_map$label == "g__GenusA"
+]
+stopifnot(isTRUE(all.equal(
+  unstratified_bundle$patient_features[p1_feature_row, unstratified_feature],
   15 / (15 + 5.5)
 )))
 

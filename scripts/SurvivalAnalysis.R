@@ -115,13 +115,8 @@ run_survival_analysis <- function(comp_physeq, spec) {
     covariates = covariates
   )
 
-  patient_physeq <- collapse_physeq_by_patient(
-    analysis_physeq,
-    patient_id_col = survival_config$patient_id_col
-  )
-
   feature_bundle <- build_patient_feature_matrix(
-    patient_physeq = patient_physeq,
+    sample_physeq = analysis_physeq,
     spec = spec,
     survival_config = survival_config,
     project_config = project_config
@@ -139,17 +134,17 @@ run_survival_analysis <- function(comp_physeq, spec) {
   missingness <- model_missingness_table(cox$results, cox$skipped)
 
   result_cols <- c(
-    "feature", "feature_family", "label", "hazard_ratio", "conf_low", "conf_high",
-    "coef", "se", "p", "fdr", "n_total", "n_used", "events_used",
-    "dropped_missing", "ph_p", "global_ph_p"
+    "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
+    "hazard_ratio", "conf_low", "conf_high", "coef", "se", "p", "fdr",
+    "n_total", "n_used", "events_used", "dropped_missing", "ph_p", "global_ph_p"
   )
   skipped_cols <- c(
-    "feature", "feature_family", "label", "reason", "n_total", "n_used",
-    "events_used", "dropped_missing"
+    "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
+    "reason", "n_total", "n_used", "events_used", "dropped_missing"
   )
   missingness_cols <- c(
-    "feature", "feature_family", "label", "n_total", "n_used",
-    "events_used", "dropped_missing"
+    "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
+    "n_total", "n_used", "events_used", "dropped_missing"
   )
 
   result_file <- write_tsv(
