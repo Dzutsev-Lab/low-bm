@@ -115,5 +115,6 @@ survival_analysis:
   censor_code: 0
   min_n: 30
   min_events: 10
-  taxa_pseudocount: 1e-6
+  norm_method: "log2HostMapped"
+  pseudocount: 1
   analyses: []

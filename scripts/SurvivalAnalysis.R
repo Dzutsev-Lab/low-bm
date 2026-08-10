@@ -1,6 +1,5 @@
 library(argparse)
 library(phyloseq)
-library(ggplot2)
 
 if (!requireNamespace("survival", quietly = TRUE)) {
   stop("The R package 'survival' is required for survival analysis.", call. = FALSE)
@@ -100,8 +99,7 @@ run_survival_analysis <- function(comp_physeq, spec) {
   analysis_name <- as.character(spec$name)
   safe_name <- sanitize_survival_path_component(analysis_name)
   analysis_dir <- file.path(out_dir, "Survival", safe_name)
-  km_dir <- file.path(analysis_dir, "KM")
-  dir.create(km_dir, recursive = TRUE, showWarnings = FALSE)
+  dir.create(analysis_dir, recursive = TRUE, showWarnings = FALSE)
 
   message("Running survival analysis: ", analysis_name)
   analysis_physeq <- apply_sample_filter(comp_physeq, spec$sample_filter)
@@ -183,56 +181,6 @@ run_survival_analysis <- function(comp_physeq, spec) {
   message("Wrote patient feature matrix: ", feature_file)
   message("Wrote model missingness report: ", missingness_file)
   message("Wrote taxa filter stats: ", taxa_filter_file)
-
-  if (nrow(cox$results) == 0) {
-    message("No successful Cox models for Kaplan-Meier plotting.")
-    return(invisible(list(results = cox$results, skipped = cox$skipped)))
-  }
-
-  top_results <- cox$results[order(cox$results$fdr, cox$results$p), , drop = FALSE]
-  top_results <- head(top_results, as.integer(spec$km_top_n))
-  for (i in seq_len(nrow(top_results))) {
-    row <- top_results[i, , drop = FALSE]
-    plot <- tryCatch(
-      plot_km_feature(
-        patient_features = patient_features,
-        feature = row$feature[[1]],
-        feature_label = row$label[[1]],
-        covariates = covariates,
-        cutpoint = spec$km_cutpoint,
-        cox_result = row
-      ),
-      error = function(e) {
-        warning("Skipping KM plot for ", row$label[[1]], ": ", conditionMessage(e), call. = FALSE)
-        NULL
-      }
-    )
-    if (is.null(plot)) {
-      next
-    }
-    km_file <- file.path(
-      km_dir,
-      paste0(
-        trial_id,
-        "_",
-        safe_name,
-        "_KM_",
-        sprintf("%02d", i),
-        "_",
-        sanitize_survival_path_component(row$label[[1]]),
-        ".png"
-      )
-    )
-    ggplot2::ggsave(
-      filename = km_file,
-      plot = plot,
-      width = 8,
-      height = 6,
-      units = "in",
-      dpi = 300
-    )
-    message("Wrote KM plot: ", km_file)
-  }
 
   invisible(list(results = cox$results, skipped = cox$skipped))
 }

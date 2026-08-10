@@ -560,29 +560,42 @@ survival_config <- normalize_survival_config(
       sample_filter = list(SampleType = "*"),
       covariates = c("Age"),
       tax_agg_level = "Genus",
-      pcoa_distance = "bray",
-      pcoa_axes = 2,
       taxa_min_prevalence = 0,
       taxa_min_mean_relative_abundance = 0.5,
       min_n = 2,
       min_events = 1
     ))
   ),
-  project_config = list()
+  project_config = list(norm_method = "RelAbund", pseudocount = 1)
 )
 survival_spec <- survival_config$analyses[[1]]
 feature_bundle <- build_patient_feature_matrix(patient_physeq, survival_spec, survival_config)
-stopifnot("alpha_Shannon" %in% names(feature_bundle$patient_features))
-stopifnot(any(grepl("^pcoa_bray_axis", names(feature_bundle$patient_features))))
+stopifnot(identical(survival_spec$norm_method, "RelAbund"))
+stopifnot(!any(grepl("^alpha_", names(feature_bundle$patient_features))))
+stopifnot(!any(grepl("^pcoa_", names(feature_bundle$patient_features))))
+stopifnot(all(feature_bundle$feature_map$feature_family == "taxa"))
 stopifnot(nrow(feature_bundle$taxa_filter_stats) == 2)
 retained_taxa <- feature_bundle$taxa_filter_stats$taxon[feature_bundle$taxa_filter_stats$retained]
 stopifnot(identical(retained_taxa, "g__GenusA"))
+genus_a_feature <- feature_bundle$feature_map$feature[feature_bundle$feature_map$label == "g__GenusA"]
+p1_feature_row <- feature_bundle$patient_features$PatientID == "P1"
+stopifnot(isTRUE(all.equal(
+  feature_bundle$patient_features[p1_feature_row, genus_a_feature],
+  15 / (15 + 5.5)
+)))
 
-if (requireNamespace("vegan", quietly = TRUE)) {
-  bray_pcoa <- build_pcoa_features(patient_physeq, tax_agg_level = "Genus", pcoa_distance = "bray", pcoa_axes = 1)
-  euclidean_pcoa <- build_pcoa_features(patient_physeq, tax_agg_level = "Genus", pcoa_distance = "euclidean", pcoa_axes = 1)
-  stopifnot(!isTRUE(all.equal(bray_pcoa$matrix[[1]], euclidean_pcoa$matrix[[1]])))
-}
+survival_override_config <- normalize_survival_config(
+  list(
+    norm_method = "noNorm",
+    analyses = list(list(
+      name = "OverrideSurvival",
+      norm_method = "RelAbund"
+    ))
+  ),
+  project_config = list(norm_method = "log2HostMapped", pseudocount = 1)
+)
+stopifnot(identical(survival_override_config$norm_method, "noNorm"))
+stopifnot(identical(survival_override_config$analyses[[1]]$norm_method, "RelAbund"))
 
 cox_test_df <- data.frame(
   PatientID = paste0("P", 1:6),
@@ -613,10 +626,6 @@ cox_with_age <- fit_cox_feature(
 stopifnot(is.null(cox_with_age$result))
 stopifnot(cox_with_age$skip$n_used == 5)
 stopifnot(cox_with_age$skip$dropped_missing == 1)
-
-km_df <- km_group_data(cox_test_df, "FeatureA", cutpoint = "median")
-stopifnot(identical(levels(km_df$.km_group), c("Low", "High")))
-expect_error(km_group_data(transform(cox_test_df, FeatureA = 1), "FeatureA"), "cannot be split")
 
 lefse_prepared <- prepare_lefse_physeq(
   physeq,

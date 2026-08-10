@@ -32,7 +32,9 @@ normalize_survival_config <- function(config = list(), project_config = list()) 
   if (is.null(config$censor_code)) config$censor_code <- 0
   if (is.null(config$min_n)) config$min_n <- 30
   if (is.null(config$min_events)) config$min_events <- 10
-  if (is.null(config$taxa_pseudocount)) config$taxa_pseudocount <- 1e-6
+  if (is.null(config$norm_method)) config$norm_method <- project_config$norm_method %||% "noNorm"
+  if (is.null(config$pseudocount)) config$pseudocount <- project_config$pseudocount %||% 1
+  if (is.null(config$tax_agg_level)) config$tax_agg_level <- project_config$tax_agg_level %||% "Genus"
 
   if (is.null(config$analyses) || length(config$analyses) == 0) {
     stop("survival_analysis must define at least one analysis.", call. = FALSE)
@@ -44,19 +46,13 @@ normalize_survival_config <- function(config = list(), project_config = list()) 
       stop("Each survival analysis spec must define a non-empty name.", call. = FALSE)
     }
     if (is.null(spec$covariates)) spec$covariates <- character(0)
-    if (is.null(spec$tax_agg_level)) spec$tax_agg_level <- project_config$tax_agg_level %||% "Genus"
-    if (is.null(spec$abundance_norm_method)) spec$abundance_norm_method <- "RelAbund"
-    if (is.null(spec$cox_feature_transform)) spec$cox_feature_transform <- "log2_pseudocount"
-    if (is.null(spec$pcoa_distance)) spec$pcoa_distance <- "bray"
-    if (is.null(spec$pcoa_axes)) spec$pcoa_axes <- 3
-    if (is.null(spec$alpha_measures)) spec$alpha_measures <- c("Shannon", "Simpson")
+    if (is.null(spec$tax_agg_level)) spec$tax_agg_level <- config$tax_agg_level
+    if (is.null(spec$norm_method)) spec$norm_method <- config$norm_method
+    if (is.null(spec$pseudocount)) spec$pseudocount <- config$pseudocount
     if (is.null(spec$taxa_min_prevalence)) spec$taxa_min_prevalence <- 0.10
     if (is.null(spec$taxa_min_mean_relative_abundance)) spec$taxa_min_mean_relative_abundance <- 1e-5
-    if (is.null(spec$km_cutpoint)) spec$km_cutpoint <- "median"
-    if (is.null(spec$km_top_n)) spec$km_top_n <- 20
     if (is.null(spec$min_n)) spec$min_n <- config$min_n
     if (is.null(spec$min_events)) spec$min_events <- config$min_events
-    if (is.null(spec$taxa_pseudocount)) spec$taxa_pseudocount <- config$taxa_pseudocount
     spec
   })
 
@@ -190,53 +186,6 @@ make_survival_base_df <- function(patient_physeq,
   base_df
 }
 
-build_alpha_features <- function(patient_physeq, measures = c("Shannon", "Simpson")) {
-  if (is.null(measures) || length(measures) == 0) {
-    return(list(matrix = data.frame(row.names = phyloseq::sample_names(patient_physeq)), map = data.frame()))
-  }
-  alpha_df <- phyloseq::estimate_richness(patient_physeq, measures = measures)
-  alpha_df <- as.data.frame(alpha_df, stringsAsFactors = FALSE)
-  keep <- intersect(measures, names(alpha_df))
-  alpha_df <- alpha_df[, keep, drop = FALSE]
-  colnames(alpha_df) <- paste0("alpha_", colnames(alpha_df))
-  feature_map <- data.frame(
-    feature = colnames(alpha_df),
-    feature_family = "alpha",
-    label = sub("^alpha_", "", colnames(alpha_df)),
-    stringsAsFactors = FALSE
-  )
-  list(matrix = alpha_df, map = feature_map)
-}
-
-build_pcoa_features <- function(patient_physeq,
-                                tax_agg_level = "Genus",
-                                abundance_norm_method = "RelAbund",
-                                pcoa_distance = "bray",
-                                pcoa_axes = 3,
-                                pseudocount = 1) {
-  if (is.null(pcoa_axes) || as.integer(pcoa_axes) <= 0 || phyloseq::nsamples(patient_physeq) < 3) {
-    return(list(matrix = data.frame(row.names = phyloseq::sample_names(patient_physeq)), map = data.frame()))
-  }
-  norm_physeq <- patient_physeq |>
-    tax_glom_rename(tax_agg_level) |>
-    counts_normalization(norm_method = abundance_norm_method, pseudocount = pseudocount) |>
-    prune_empty_physeq()
-
-  dist_obj <- phyloseq::distance(norm_physeq, method = as.character(pcoa_distance))
-  axes <- min(as.integer(pcoa_axes), phyloseq::nsamples(norm_physeq) - 1)
-  pcoa <- stats::cmdscale(as.dist(dist_obj), eig = TRUE, k = axes)
-  pcoa_df <- as.data.frame(pcoa$points, stringsAsFactors = FALSE)
-  colnames(pcoa_df) <- paste0("pcoa_", sanitize_survival_path_component(pcoa_distance), "_axis", seq_len(ncol(pcoa_df)))
-  rownames(pcoa_df) <- rownames(as.matrix(dist_obj))
-  feature_map <- data.frame(
-    feature = colnames(pcoa_df),
-    feature_family = "pcoa",
-    label = paste0("PCoA ", seq_len(ncol(pcoa_df)), " (", pcoa_distance, ")"),
-    stringsAsFactors = FALSE
-  )
-  list(matrix = pcoa_df, map = feature_map)
-}
-
 relative_abundance_physeq <- function(patient_physeq, tax_agg_level = "Genus") {
   patient_physeq |>
     tax_glom_rename(tax_agg_level) |>
@@ -264,25 +213,12 @@ filter_taxa_by_relative_abundance <- function(rel_physeq,
   )
 }
 
-transform_taxa_features <- function(rel_mat,
-                                    transform = "log2_pseudocount",
-                                    pseudocount = 1e-6) {
-  transform <- as.character(transform %||% "log2_pseudocount")
-  if (identical(transform, "none")) {
-    return(rel_mat)
-  }
-  if (identical(transform, "log2_pseudocount")) {
-    return(log2(rel_mat + as.numeric(pseudocount)))
-  }
-  stop("Unknown Cox feature transform: ", transform, call. = FALSE)
-}
-
 build_taxa_features <- function(patient_physeq,
                                 tax_agg_level = "Genus",
+                                norm_method = "noNorm",
+                                pseudocount = 1,
                                 min_prevalence = 0.10,
-                                min_mean_relative_abundance = 1e-5,
-                                cox_feature_transform = "log2_pseudocount",
-                                taxa_pseudocount = 1e-6) {
+                                min_mean_relative_abundance = 1e-5) {
   rel_physeq <- relative_abundance_physeq(patient_physeq, tax_agg_level)
   filter_info <- filter_taxa_by_relative_abundance(
     rel_physeq,
@@ -294,12 +230,12 @@ build_taxa_features <- function(patient_physeq,
     return(list(matrix = empty, map = data.frame(), filter_stats = filter_info$stats))
   }
 
-  rel_mat <- otu_samples_by_taxa(rel_physeq)[, filter_info$taxa, drop = FALSE]
-  taxa_mat <- transform_taxa_features(
-    rel_mat,
-    transform = cox_feature_transform,
-    pseudocount = taxa_pseudocount
-  )
+  model_physeq <- patient_physeq |>
+    tax_glom_rename(tax_agg_level) |>
+    prune_empty_physeq() |>
+    counts_normalization(norm_method = norm_method, pseudocount = pseudocount)
+  model_mat <- otu_samples_by_taxa(model_physeq)
+  taxa_mat <- model_mat[, filter_info$taxa, drop = FALSE]
   taxa_df <- as.data.frame(taxa_mat, stringsAsFactors = FALSE)
   feature_names <- paste0("taxa_", make.unique(sanitize_survival_path_component(colnames(taxa_df))))
   feature_map <- data.frame(
@@ -328,30 +264,18 @@ build_patient_feature_matrix <- function(patient_physeq,
   )
   rownames(base_df) <- base_df$PatientID
 
-  alpha <- build_alpha_features(patient_physeq, measures = spec$alpha_measures)
-  pcoa <- build_pcoa_features(
-    patient_physeq,
-    tax_agg_level = spec$tax_agg_level,
-    abundance_norm_method = spec$abundance_norm_method,
-    pcoa_distance = spec$pcoa_distance,
-    pcoa_axes = spec$pcoa_axes,
-    pseudocount = project_config$pseudocount %||% 1
-  )
   taxa <- build_taxa_features(
     patient_physeq,
     tax_agg_level = spec$tax_agg_level,
+    norm_method = spec$norm_method,
+    pseudocount = spec$pseudocount,
     min_prevalence = spec$taxa_min_prevalence,
-    min_mean_relative_abundance = spec$taxa_min_mean_relative_abundance,
-    cox_feature_transform = spec$cox_feature_transform,
-    taxa_pseudocount = spec$taxa_pseudocount
+    min_mean_relative_abundance = spec$taxa_min_mean_relative_abundance
   )
 
-  feature_parts <- list(alpha$matrix, pcoa$matrix, taxa$matrix)
-  aligned_parts <- lapply(feature_parts, function(part) {
-    part[rownames(base_df), , drop = FALSE]
-  })
-  feature_df <- cbind(base_df, do.call(cbind, aligned_parts))
-  feature_map <- rbind(alpha$map, pcoa$map, taxa$map)
+  taxa_df <- taxa$matrix[rownames(base_df), , drop = FALSE]
+  feature_df <- cbind(base_df, taxa_df)
+  feature_map <- taxa$map
   rownames(feature_df) <- NULL
 
   list(
@@ -573,104 +497,4 @@ model_missingness_table <- function(results, skipped) {
   }
   out <- do.call(rbind, parts)
   out[order(out$feature_family, out$feature), , drop = FALSE]
-}
-
-km_group_data <- function(patient_features,
-                          feature,
-                          covariates = character(0),
-                          cutpoint = "median") {
-  required <- unique(c(".survival_time", ".survival_status", feature, covariates))
-  model_df <- patient_features[, required, drop = FALSE]
-  names(model_df)[names(model_df) == feature] <- ".feature"
-  model_df <- standardize_metadata_missing_df(model_df)
-  model_df <- model_df[stats::complete.cases(model_df), , drop = FALSE]
-  if (nrow(model_df) < 2 || stats::sd(as.numeric(model_df$.feature), na.rm = TRUE) == 0) {
-    stop("feature cannot be split into Kaplan-Meier groups", call. = FALSE)
-  }
-
-  if (!identical(as.character(cutpoint), "median")) {
-    stop("Only median Kaplan-Meier cutpoints are supported in v1.", call. = FALSE)
-  }
-  median_value <- stats::median(as.numeric(model_df$.feature), na.rm = TRUE)
-  model_df$.km_group <- ifelse(as.numeric(model_df$.feature) >= median_value, "High", "Low")
-  model_df$.km_group <- factor(model_df$.km_group, levels = c("Low", "High"))
-  if (length(unique(model_df$.km_group)) < 2) {
-    stop("median split produced fewer than two Kaplan-Meier groups", call. = FALSE)
-  }
-  model_df$.survival_time <- as.numeric(model_df$.survival_time)
-  model_df$.survival_status <- as.numeric(model_df$.survival_status)
-  attr(model_df, "cutpoint") <- median_value
-  model_df
-}
-
-survfit_to_plot_df <- function(fit) {
-  fit_summary <- summary(fit)
-  plot_df <- data.frame(
-    time = fit_summary$time,
-    survival = fit_summary$surv,
-    lower = fit_summary$lower,
-    upper = fit_summary$upper,
-    strata = fit_summary$strata,
-    stringsAsFactors = FALSE
-  )
-  if (nrow(plot_df) == 0) {
-    return(plot_df)
-  }
-  starts <- do.call(rbind, lapply(unique(plot_df$strata), function(stratum) {
-    data.frame(time = 0, survival = 1, lower = 1, upper = 1, strata = stratum, stringsAsFactors = FALSE)
-  }))
-  rbind(starts, plot_df)
-}
-
-km_logrank_p <- function(km_df) {
-  sd <- survival::survdiff(survival::Surv(.survival_time, .survival_status) ~ .km_group, data = km_df)
-  stats::pchisq(sd$chisq, df = length(sd$n) - 1, lower.tail = FALSE)
-}
-
-plot_km_feature <- function(patient_features,
-                            feature,
-                            feature_label,
-                            covariates = character(0),
-                            cutpoint = "median",
-                            cox_result = NULL) {
-  km_df <- km_group_data(patient_features, feature, covariates = covariates, cutpoint = cutpoint)
-  fit <- survival::survfit(survival::Surv(.survival_time, .survival_status) ~ .km_group, data = km_df)
-  plot_df <- survfit_to_plot_df(fit)
-  logrank_p <- km_logrank_p(km_df)
-  group_counts <- aggregate(
-    km_df$.survival_status,
-    by = list(group = km_df$.km_group),
-    FUN = function(x) paste0(length(x), " n / ", sum(x == 1), " events")
-  )
-  group_label <- paste(paste(group_counts$group, group_counts$x, sep = ": "), collapse = "\n")
-  hr_label <- ""
-  if (!is.null(cox_result) && nrow(cox_result) > 0) {
-    hr_label <- sprintf(
-      "\nCox HR per 1 SD: %.2f (95%% CI %.2f-%.2f)",
-      cox_result$hazard_ratio[[1]],
-      cox_result$conf_low[[1]],
-      cox_result$conf_high[[1]]
-    )
-  }
-  subtitle <- paste0(
-    "Median split at ",
-    signif(attr(km_df, "cutpoint"), 4),
-    " | log-rank p = ",
-    signif(logrank_p, 3),
-    hr_label,
-    "\n",
-    group_label
-  )
-
-  ggplot2::ggplot(plot_df, ggplot2::aes(x = time, y = survival, color = strata)) +
-    ggplot2::geom_step(linewidth = 1) +
-    ggplot2::coord_cartesian(ylim = c(0, 1)) +
-    ggplot2::labs(
-      title = paste0("Kaplan-Meier: ", feature_label),
-      subtitle = subtitle,
-      x = "Survival days",
-      y = "Survival probability",
-      color = "Group"
-    ) +
-    ggplot2::theme_bw()
 }
