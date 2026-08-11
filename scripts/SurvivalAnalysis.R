@@ -213,6 +213,11 @@ run_survival_analysis <- function(comp_physeq, spec) {
       "analysis", "sample_strata_col", "sample_stratum",
       "plot_type", "path", "status", "reason"
     )
+    coda_assumption_cols <- c(
+      "analysis", "sample_strata_col", "sample_stratum", "diagnostic_model",
+      "check", "term", "statistic", "df", "p", "status", "reason",
+      "n_used", "events_used"
+    )
 
     coda_signature_file <- write_tsv(
       coda$signature,
@@ -243,6 +248,27 @@ run_survival_analysis <- function(comp_physeq, spec) {
         columns = coda_plot_manifest_cols
       )
       message("Wrote coda4microbiome plot manifest: ", coda_plot_manifest_file)
+    }
+    if (isTRUE(spec$coda4microbiome$assumption_checks)) {
+      coda_assumption_file <- write_tsv(
+        coda$assumption_checks,
+        file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaAssumptionChecks.tsv")),
+        columns = coda_assumption_cols
+      )
+      coda_assumption_plot_manifest <- write_coda_plot_outputs(
+        coda$assumption_plots,
+        analysis_dir = analysis_dir,
+        trial_id = trial_id,
+        safe_name = safe_name,
+        options = spec$coda4microbiome
+      )
+      coda_assumption_plot_manifest_file <- write_tsv(
+        coda_assumption_plot_manifest,
+        file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaAssumptionPlotManifest.tsv")),
+        columns = coda_plot_manifest_cols
+      )
+      message("Wrote coda4microbiome assumption checks: ", coda_assumption_file)
+      message("Wrote coda4microbiome assumption plot manifest: ", coda_assumption_plot_manifest_file)
     }
     legacy_coda_filter_file <- file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaTaxaFilterStats.tsv"))
     if (file.exists(legacy_coda_filter_file)) {

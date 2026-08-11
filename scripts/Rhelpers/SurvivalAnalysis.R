@@ -60,6 +60,13 @@ survival_method_enabled <- function(spec, method) {
   any(normalize_survival_methods(spec$methods) %in% method)
 }
 
+coda_bool_option <- function(value) {
+  if (is.logical(value)) {
+    return(isTRUE(value))
+  }
+  !tolower(trimws(as.character(value))) %in% c("0", "false", "f", "no", "n", "")
+}
+
 normalize_coda_options <- function(options = list()) {
   defaults <- list(
     lambda = "lambda.1se",
@@ -69,6 +76,7 @@ normalize_coda_options <- function(options = list()) {
     coef_threshold = 0,
     seed = 12345,
     show_plots = FALSE,
+    assumption_checks = TRUE,
     plot_width = 8,
     plot_height = 6
   )
@@ -80,11 +88,8 @@ normalize_coda_options <- function(options = list()) {
   options$plot_width <- as.numeric(options$plot_width)
   options$plot_height <- as.numeric(options$plot_height)
   if (!is.null(options$nvar)) options$nvar <- as.integer(options$nvar)
-  options$show_plots <- if (is.logical(options$show_plots)) {
-    isTRUE(options$show_plots)
-  } else {
-    !tolower(trimws(as.character(options$show_plots))) %in% c("0", "false", "f", "no", "n", "")
-  }
+  options$show_plots <- coda_bool_option(options$show_plots)
+  options$assumption_checks <- coda_bool_option(options$assumption_checks)
   if (!is.finite(options$alpha) || options$alpha < 0 || options$alpha > 1) {
     stop("survival_analysis.coda4microbiome.alpha must be between 0 and 1.", call. = FALSE)
   }
@@ -672,6 +677,25 @@ empty_coda_metrics <- function() {
   )
 }
 
+empty_coda_assumption_checks <- function() {
+  data.frame(
+    analysis = character(0),
+    sample_strata_col = character(0),
+    sample_stratum = character(0),
+    diagnostic_model = character(0),
+    check = character(0),
+    term = character(0),
+    statistic = numeric(0),
+    df = numeric(0),
+    p = numeric(0),
+    status = character(0),
+    reason = character(0),
+    n_used = integer(0),
+    events_used = integer(0),
+    stringsAsFactors = FALSE
+  )
+}
+
 empty_coda_plot_manifest <- function() {
   data.frame(
     analysis = character(0),
@@ -1003,7 +1027,9 @@ save_coda_plot_object <- function(plot_object, path, width = 8, height = 6) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
   grDevices::pdf(path, width = width, height = height, onefile = TRUE)
   on.exit(grDevices::dev.off(), add = TRUE)
-  if (inherits(plot_object, c("Heatmap", "HeatmapList")) &&
+  if (is.function(plot_object)) {
+    plot_object()
+  } else if (inherits(plot_object, c("Heatmap", "HeatmapList")) &&
       requireNamespace("ComplexHeatmap", quietly = TRUE)) {
     ComplexHeatmap::draw(plot_object)
   } else {
@@ -1056,6 +1082,366 @@ write_coda_plot_outputs <- function(plot_records,
   if (is.null(out)) empty_coda_plot_manifest() else out
 }
 
+coda_assumption_row <- function(input,
+                                check,
+                                term = NA_character_,
+                                statistic = NA_real_,
+                                df = NA_real_,
+                                p = NA_real_,
+                                status = "fit",
+                                reason = NA_character_,
+                                n_used = NA_integer_,
+                                events_used = NA_integer_,
+                                diagnostic_model = "cox_risk_score") {
+  data.frame(
+    analysis = input$analysis,
+    sample_strata_col = input$sample_strata_col,
+    sample_stratum = input$sample_stratum,
+    diagnostic_model = diagnostic_model,
+    check = check,
+    term = term,
+    statistic = as.numeric(statistic),
+    df = as.numeric(df),
+    p = as.numeric(p),
+    status = status,
+    reason = reason,
+    n_used = as.integer(n_used),
+    events_used = as.integer(events_used),
+    stringsAsFactors = FALSE
+  )
+}
+
+coda_diagnostic_term_label <- function(term, alias_map) {
+  if (is.na(term) || identical(term, "GLOBAL")) {
+    return(term)
+  }
+  exact <- match(term, alias_map$alias)
+  if (!is.na(exact)) {
+    return(alias_map$term[[exact]])
+  }
+  hits <- which(vapply(alias_map$alias, function(alias) startsWith(term, alias), logical(1)))
+  if (length(hits) > 0) {
+    hits <- hits[order(nchar(alias_map$alias[hits]), decreasing = TRUE)]
+    return(alias_map$term[[hits[[1]]]])
+  }
+  term
+}
+
+coda_zph_table_rows <- function(zph, input, alias_map, n_used, events_used) {
+  zph_table <- as.data.frame(zph$table, stringsAsFactors = FALSE)
+  stat_col <- intersect(c("chisq", "Chisq", "score", "Score"), names(zph_table))
+  p_col <- intersect(c("p", "Pr(>|Chi|)", "Pr(>|chisq|)"), names(zph_table))
+  df_col <- intersect(c("df", "Df"), names(zph_table))
+  rows <- lapply(seq_len(nrow(zph_table)), function(i) {
+    term <- rownames(zph_table)[[i]]
+    coda_assumption_row(
+      input,
+      check = "proportional_hazards",
+      term = coda_diagnostic_term_label(term, alias_map),
+      statistic = if (length(stat_col) > 0) zph_table[[stat_col[[1]]]][[i]] else NA_real_,
+      df = if (length(df_col) > 0) zph_table[[df_col[[1]]]][[i]] else NA_real_,
+      p = if (length(p_col) > 0) zph_table[[p_col[[1]]]][[i]] else NA_real_,
+      status = "fit",
+      n_used = n_used,
+      events_used = events_used
+    )
+  })
+  out <- do.call(rbind, rows)
+  if (is.null(out)) empty_coda_assumption_checks() else out
+}
+
+coda_plot_grid <- function(n) {
+  if (n <= 1) {
+    return(c(1, 1))
+  }
+  cols <- ceiling(sqrt(n))
+  rows <- ceiling(n / cols)
+  c(rows, cols)
+}
+
+plot_coda_schoenfeld_ph <- function(zph, alias_map) {
+  term_names <- setdiff(rownames(zph$table), "GLOBAL")
+  if (length(term_names) == 0) {
+    graphics::plot.new()
+    graphics::text(0.5, 0.5, "No proportional hazards terms available")
+    return(invisible(NULL))
+  }
+  grid <- coda_plot_grid(length(term_names))
+  old_par <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old_par), add = TRUE)
+  graphics::par(mfrow = grid, mar = c(4, 4, 3, 1))
+  for (term_name in term_names) {
+    term_index <- match(term_name, rownames(zph$table))
+    label <- coda_diagnostic_term_label(term_name, alias_map)
+    tryCatch(
+      {
+        plot(zph, var = term_index, main = paste("PH:", label))
+        graphics::abline(h = 0, lty = 3, col = "gray40")
+      },
+      error = function(e) {
+        graphics::plot.new()
+        graphics::title(main = paste("PH:", label))
+        graphics::text(0.5, 0.5, conditionMessage(e))
+      }
+    )
+  }
+  invisible(NULL)
+}
+
+plot_coda_deviance_residuals <- function(model_data, deviance_residuals, alias_map) {
+  numeric_terms <- alias_map[alias_map$is_numeric, , drop = FALSE]
+  if (nrow(numeric_terms) == 0) {
+    graphics::plot.new()
+    graphics::text(0.5, 0.5, "No numeric predictors available")
+    return(invisible(NULL))
+  }
+  grid <- coda_plot_grid(nrow(numeric_terms))
+  old_par <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old_par), add = TRUE)
+  graphics::par(mfrow = grid, mar = c(4, 4, 3, 1))
+  for (i in seq_len(nrow(numeric_terms))) {
+    alias <- numeric_terms$alias[[i]]
+    label <- numeric_terms$term[[i]]
+    x <- as.numeric(model_data[[alias]])
+    graphics::plot(
+      x,
+      deviance_residuals,
+      xlab = label,
+      ylab = "Deviance residual",
+      main = paste("Linearity:", label),
+      pch = 19,
+      col = "#2C7FB8"
+    )
+    graphics::abline(h = 0, lty = 3, col = "gray40")
+    if (length(unique(x)) > 2) {
+      smooth <- stats::lowess(x, deviance_residuals)
+      graphics::lines(smooth, col = "#D95F02", lwd = 2)
+    }
+  }
+  invisible(NULL)
+}
+
+run_coda_assumption_checks <- function(input,
+                                       risk_scores,
+                                       covariates = character(0),
+                                       options = list(),
+                                       n_used = NA_integer_,
+                                       events_used = NA_integer_) {
+  if (!isTRUE(options$assumption_checks)) {
+    return(list(checks = empty_coda_assumption_checks(), plots = list()))
+  }
+
+  required <- unique(c(".survival_time", ".survival_status", "risk_score", covariates))
+  missing <- setdiff(required, names(risk_scores))
+  if (length(missing) > 0) {
+    return(list(
+      checks = coda_assumption_row(
+        input,
+        check = "diagnostic_model",
+        status = "failed",
+        reason = paste0("missing diagnostic column(s): ", paste(missing, collapse = ", ")),
+        n_used = n_used,
+        events_used = events_used
+      ),
+      plots = list()
+    ))
+  }
+
+  diagnostic_df <- risk_scores[, required, drop = FALSE]
+  diagnostic_df <- standardize_metadata_missing_df(diagnostic_df, required)
+  complete <- stats::complete.cases(diagnostic_df[, required, drop = FALSE])
+  diagnostic_df <- diagnostic_df[complete, , drop = FALSE]
+  diagnostic_n <- nrow(diagnostic_df)
+  if (diagnostic_n < 2) {
+    return(list(
+      checks = coda_assumption_row(
+        input,
+        check = "diagnostic_model",
+        status = "failed",
+        reason = "too_few_complete_cases",
+        n_used = diagnostic_n,
+        events_used = NA_integer_
+      ),
+      plots = list()
+    ))
+  }
+
+  model_data <- data.frame(
+    .survival_time = as.numeric(diagnostic_df$.survival_time),
+    .survival_status = as.numeric(diagnostic_df$.survival_status),
+    .risk_score = suppressWarnings(as.numeric(as.character(diagnostic_df$risk_score))),
+    stringsAsFactors = FALSE
+  )
+  diagnostic_events <- sum(model_data$.survival_status == 1, na.rm = TRUE)
+  if (diagnostic_events < 1) {
+    return(list(
+      checks = coda_assumption_row(
+        input,
+        check = "diagnostic_model",
+        status = "failed",
+        reason = "too_few_events",
+        n_used = diagnostic_n,
+        events_used = diagnostic_events
+      ),
+      plots = list()
+    ))
+  }
+  if (any(is.na(model_data$.risk_score)) ||
+      any(!is.finite(model_data$.risk_score)) ||
+      stats::sd(model_data$.risk_score) == 0) {
+    return(list(
+      checks = coda_assumption_row(
+        input,
+        check = "diagnostic_model",
+        term = "risk_score",
+        status = "failed",
+        reason = "risk_score has fewer than two usable values",
+        n_used = diagnostic_n,
+        events_used = diagnostic_events
+      ),
+      plots = list()
+    ))
+  }
+
+  covar_df <- tryCatch(
+    prepare_coda_covariates(diagnostic_df, covariates = covariates),
+    error = function(e) e
+  )
+  if (inherits(covar_df, "error")) {
+    return(list(
+      checks = coda_assumption_row(
+        input,
+        check = "diagnostic_model",
+        status = "failed",
+        reason = conditionMessage(covar_df),
+        n_used = diagnostic_n,
+        events_used = diagnostic_events
+      ),
+      plots = list()
+    ))
+  }
+
+  alias_map <- data.frame(
+    alias = ".risk_score",
+    term = "risk_score",
+    is_numeric = TRUE,
+    stringsAsFactors = FALSE
+  )
+  for (i in seq_along(covariates)) {
+    covariate <- covariates[[i]]
+    alias <- paste0(".cov", i)
+    model_data[[alias]] <- covar_df[[covariate]]
+    alias_map <- rbind(
+      alias_map,
+      data.frame(
+        alias = alias,
+        term = covariate,
+        is_numeric = is.numeric(covar_df[[covariate]]) || is.integer(covar_df[[covariate]]),
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+
+  formula <- stats::as.formula(paste(
+    "survival::Surv(.survival_time, .survival_status) ~",
+    paste(alias_map$alias, collapse = " + ")
+  ))
+  fit <- tryCatch(
+    withCallingHandlers(
+      survival::coxph(formula, data = model_data, x = TRUE),
+      warning = function(w) invokeRestart("muffleWarning")
+    ),
+    error = function(e) e
+  )
+  if (inherits(fit, "error")) {
+    return(list(
+      checks = coda_assumption_row(
+        input,
+        check = "diagnostic_model",
+        status = "failed",
+        reason = conditionMessage(fit),
+        n_used = diagnostic_n,
+        events_used = diagnostic_events
+      ),
+      plots = list()
+    ))
+  }
+
+  checks <- list()
+  plots <- list()
+
+  zph <- tryCatch(survival::cox.zph(fit), error = function(e) e)
+  if (inherits(zph, "error")) {
+    checks[[length(checks) + 1]] <- coda_assumption_row(
+      input,
+      check = "proportional_hazards",
+      status = "failed",
+      reason = conditionMessage(zph),
+      n_used = diagnostic_n,
+      events_used = diagnostic_events
+    )
+  } else {
+    checks[[length(checks) + 1]] <- coda_zph_table_rows(
+      zph,
+      input,
+      alias_map,
+      n_used = diagnostic_n,
+      events_used = diagnostic_events
+    )
+    checks[[length(checks) + 1]] <- coda_assumption_row(
+      input,
+      check = "schoenfeld_ph_plot",
+      status = "prepared",
+      n_used = diagnostic_n,
+      events_used = diagnostic_events
+    )
+    plots[[length(plots) + 1]] <- list(
+      analysis = input$analysis,
+      sample_strata_col = input$sample_strata_col,
+      sample_stratum = input$sample_stratum,
+      plot_type = "schoenfeld_ph",
+      file_stem = "CodaSchoenfeldPHPlot",
+      object = function() plot_coda_schoenfeld_ph(zph, alias_map)
+    )
+  }
+
+  deviance_residuals <- tryCatch(stats::residuals(fit, type = "deviance"), error = function(e) e)
+  if (inherits(deviance_residuals, "error")) {
+    checks[[length(checks) + 1]] <- coda_assumption_row(
+      input,
+      check = "deviance_residual_linearity",
+      status = "failed",
+      reason = conditionMessage(deviance_residuals),
+      n_used = diagnostic_n,
+      events_used = diagnostic_events
+    )
+  } else {
+    for (i in seq_len(nrow(alias_map))) {
+      checks[[length(checks) + 1]] <- coda_assumption_row(
+        input,
+        check = "deviance_residual_linearity",
+        term = alias_map$term[[i]],
+        status = if (isTRUE(alias_map$is_numeric[[i]])) "prepared" else "skipped",
+        reason = if (isTRUE(alias_map$is_numeric[[i]])) NA_character_ else "non_numeric_covariate",
+        n_used = diagnostic_n,
+        events_used = diagnostic_events
+      )
+    }
+    plots[[length(plots) + 1]] <- list(
+      analysis = input$analysis,
+      sample_strata_col = input$sample_strata_col,
+      sample_stratum = input$sample_stratum,
+      plot_type = "deviance_residual_linearity",
+      file_stem = "CodaDevianceResidualPlot",
+      object = function() plot_coda_deviance_residuals(model_data, deviance_residuals, alias_map)
+    )
+  }
+
+  checks <- do.call(rbind, checks)
+  if (is.null(checks)) checks <- empty_coda_assumption_checks()
+  list(checks = checks, plots = plots)
+}
+
 fit_coda_model_input <- function(input,
                                  covariates = character(0),
                                  min_n = 30,
@@ -1075,7 +1461,9 @@ fit_coda_model_input <- function(input,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = coda_metric_row(input, "skipped", "too_few_complete_cases", n_used, NA, dropped_missing, 0, options = options),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
 
@@ -1088,7 +1476,9 @@ fit_coda_model_input <- function(input,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = coda_metric_row(input, "skipped", "too_few_events", n_used, events_used, dropped_missing, 0, options = options),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
   if (length(taxa_cols) < 2) {
@@ -1096,7 +1486,9 @@ fit_coda_model_input <- function(input,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = coda_metric_row(input, "skipped", "too_few_taxa", n_used, events_used, dropped_missing, 0, options = options),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
   if (n_used < as.integer(options$nfolds)) {
@@ -1104,7 +1496,9 @@ fit_coda_model_input <- function(input,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = coda_metric_row(input, "skipped", "too_few_cv_folds", n_used, events_used, dropped_missing, 0, options = options),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
 
@@ -1117,7 +1511,9 @@ fit_coda_model_input <- function(input,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = coda_metric_row(input, "skipped", conditionMessage(covar_df), n_used, events_used, dropped_missing, 0, options = options),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
   if (inherits(coda_coxnet_fn, "error")) {
@@ -1125,7 +1521,9 @@ fit_coda_model_input <- function(input,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = coda_metric_row(input, "skipped", conditionMessage(coda_coxnet_fn), n_used, events_used, dropped_missing, 0, options = options),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
 
@@ -1163,7 +1561,9 @@ fit_coda_model_input <- function(input,
         0,
         options = options
       ),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
 
@@ -1186,9 +1586,20 @@ fit_coda_model_input <- function(input,
         nrow(signature),
         options = options
       ),
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
+
+  assumptions <- run_coda_assumption_checks(
+    input,
+    risk_scores,
+    covariates = covariates,
+    options = options,
+    n_used = n_used,
+    events_used = events_used
+  )
 
   list(
     signature = signature,
@@ -1206,7 +1617,9 @@ fit_coda_model_input <- function(input,
       sd_cv_cindex = coda_scalar_numeric(coda_result_value(coda_fit, "sd cv-Cindex")),
       options = options
     ),
-    plots = coda_plot_records(coda_fit, input, options = options)
+    plots = coda_plot_records(coda_fit, input, options = options),
+    assumption_checks = assumptions$checks,
+    assumption_plots = assumptions$plots
   )
 }
 
@@ -1224,7 +1637,9 @@ run_survival_coda_models <- function(sample_physeq,
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = empty_coda_metrics(),
       taxa_filter_stats = coda_inputs$filter_stats,
-      plots = list()
+      plots = list(),
+      assumption_checks = empty_coda_assumption_checks(),
+      assumption_plots = list()
     ))
   }
 
@@ -1251,17 +1666,23 @@ run_survival_coda_models <- function(sample_physeq,
   risk_scores <- do.call(rbind, lapply(fits, `[[`, "risk_scores"))
   metrics <- do.call(rbind, lapply(fits, `[[`, "metrics"))
   plots <- unlist(lapply(fits, `[[`, "plots"), recursive = FALSE)
+  assumption_checks <- do.call(rbind, lapply(fits, `[[`, "assumption_checks"))
+  assumption_plots <- unlist(lapply(fits, `[[`, "assumption_plots"), recursive = FALSE)
   if (is.null(signature)) signature <- empty_coda_signature()
   if (is.null(risk_scores)) risk_scores <- empty_coda_risk_scores(covariates)
   if (is.null(metrics)) metrics <- empty_coda_metrics()
   if (is.null(plots)) plots <- list()
+  if (is.null(assumption_checks)) assumption_checks <- empty_coda_assumption_checks()
+  if (is.null(assumption_plots)) assumption_plots <- list()
 
   list(
     signature = signature,
     risk_scores = risk_scores,
     metrics = metrics,
     taxa_filter_stats = coda_inputs$filter_stats,
-    plots = plots
+    plots = plots,
+    assumption_checks = assumption_checks,
+    assumption_plots = assumption_plots
   )
 }
 

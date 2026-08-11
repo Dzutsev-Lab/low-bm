@@ -702,6 +702,9 @@ stopifnot(identical(coda_spec$coda4microbiome$seed, 99L))
 stopifnot(identical(coda_spec$coda4microbiome$alpha, 0.5))
 stopifnot(identical(coda_spec$coda4microbiome$plot_width, 8))
 stopifnot(identical(coda_spec$coda4microbiome$plot_height, 6))
+stopifnot(isTRUE(coda_spec$coda4microbiome$assumption_checks))
+stopifnot(!"plot_format" %in% names(coda_spec$coda4microbiome))
+stopifnot(!"plot_dpi" %in% names(coda_spec$coda4microbiome))
 
 fake_coda_calls <- list()
 print.fake_coda_plot <- function(x, ...) {
@@ -770,6 +773,7 @@ stopifnot(nrow(coda_result$risk_scores) == 3)
 stopifnot(all(coda_result$risk_scores$sample_stratum == "Nontumor"))
 stopifnot(nrow(coda_result$taxa_filter_stats) == 4)
 stopifnot(all(c("sample_strata_col", "sample_stratum") %in% names(coda_result$taxa_filter_stats)))
+stopifnot(nrow(coda_result$assumption_checks) > 0)
 tumor_coda_metric <- coda_result$metrics[coda_result$metrics$sample_stratum == "Tumor", , drop = FALSE]
 nontumor_coda_metric <- coda_result$metrics[coda_result$metrics$sample_stratum == "Nontumor", , drop = FALSE]
 stopifnot(identical(tumor_coda_metric$status, "skipped"))
@@ -781,6 +785,72 @@ stopifnot(nontumor_coda_metric$n_used == 3)
 stopifnot(nontumor_coda_metric$events_used == 2)
 stopifnot(nontumor_coda_metric$n_taxa_selected == 2)
 stopifnot(isTRUE(all.equal(nontumor_coda_metric$mean_cv_cindex, 0.70)))
+
+diagnostic_input <- list(
+  analysis = "CodaDiagnostic",
+  sample_strata_col = "SampleType",
+  sample_stratum = "Nontumor"
+)
+diagnostic_scores <- data.frame(
+  PatientID = paste0("D", 1:12),
+  sample_strata_col = "SampleType",
+  sample_stratum = "Nontumor",
+  .survival_time = c(5, 8, 12, 13, 17, 19, 23, 25, 29, 31, 36, 40),
+  .survival_status = c(1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0),
+  Age = c(61, 44, 58, 52, 67, 49, 73, 55, 63, 47, 69, 51),
+  Gender = c("Female", "Male", "Female", "Male", "Male", "Female", "Female", "Male", "Female", "Male", "Male", "Female"),
+  risk_score = c(-0.4, 0.7, -1.1, 0.3, 1.2, -0.8, 0.5, -0.2, 1.5, -1.4, 0.1, 0.9),
+  stringsAsFactors = FALSE
+)
+diagnostic_options <- coda_spec$coda4microbiome
+coda_diagnostics <- run_coda_assumption_checks(
+  diagnostic_input,
+  diagnostic_scores,
+  covariates = c("Age", "Gender"),
+  options = diagnostic_options,
+  n_used = nrow(diagnostic_scores),
+  events_used = sum(diagnostic_scores$.survival_status == 1)
+)
+stopifnot(nrow(coda_diagnostics$checks) > 0)
+stopifnot(any(
+  coda_diagnostics$checks$check == "proportional_hazards" &
+    coda_diagnostics$checks$term == "risk_score" &
+    coda_diagnostics$checks$status == "fit"
+))
+stopifnot(any(
+  coda_diagnostics$checks$check == "deviance_residual_linearity" &
+    coda_diagnostics$checks$term == "Gender" &
+    coda_diagnostics$checks$status == "skipped"
+))
+stopifnot(length(coda_diagnostics$plots) == 2)
+coda_assumption_dir <- tempfile("coda-assumptions-")
+dir.create(coda_assumption_dir)
+coda_assumption_manifest <- write_coda_plot_outputs(
+  coda_diagnostics$plots,
+  analysis_dir = coda_assumption_dir,
+  trial_id = "trial",
+  safe_name = "CodaDiagnostic",
+  options = diagnostic_options
+)
+stopifnot(nrow(coda_assumption_manifest) == 2)
+stopifnot(all(coda_assumption_manifest$status == "written"))
+stopifnot(all(file.exists(coda_assumption_manifest$path)))
+stopifnot(all(grepl("\\.pdf$", coda_assumption_manifest$path)))
+stopifnot(all(coda_assumption_manifest$plot_type %in% c("schoenfeld_ph", "deviance_residual_linearity")))
+unlink(coda_assumption_dir, recursive = TRUE)
+disabled_diagnostic_options <- diagnostic_options
+disabled_diagnostic_options$assumption_checks <- FALSE
+disabled_diagnostics <- run_coda_assumption_checks(
+  diagnostic_input,
+  diagnostic_scores,
+  covariates = c("Age", "Gender"),
+  options = disabled_diagnostic_options,
+  n_used = nrow(diagnostic_scores),
+  events_used = sum(diagnostic_scores$.survival_status == 1)
+)
+stopifnot(nrow(disabled_diagnostics$checks) == 0)
+stopifnot(length(disabled_diagnostics$plots) == 0)
+stopifnot(identical(coda_plot_stratum_suffix(NA_character_, NA_character_), "unstratified"))
 
 fake_coda_calls <- list()
 coda_plot_spec <- coda_spec
@@ -809,6 +879,7 @@ coda_plot_manifest <- write_coda_plot_outputs(
 stopifnot(nrow(coda_plot_manifest) == 2)
 stopifnot(all(coda_plot_manifest$status == "written"))
 stopifnot(all(file.exists(coda_plot_manifest$path)))
+stopifnot(all(grepl("\\.pdf$", coda_plot_manifest$path)))
 stopifnot(all(coda_plot_manifest$sample_stratum == "Nontumor"))
 stopifnot(all(coda_plot_manifest$plot_type %in% c("risk_score", "signature")))
 unlink(coda_plot_dir, recursive = TRUE)
