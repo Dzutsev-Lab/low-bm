@@ -8,22 +8,27 @@ dependencies:
   - r-argparse
   - r-circlize
   - r-ckmeans.1d.dp
+  - r-corrplot
   - r-data.table
   - r-digest
   - r-dplyr
   - r-fsa
   - r-ggalluvial
+  - r-glmnet
   - r-ggplot2
   - r-ggpubr
   - r-ggrepel
   - r-metap
   - r-patchwork
+  - r-plyr
   - r-proc
   - r-purrr
   - r-readr
   - r-readxl
+  - r-remotes
   - r-stringr
   - r-survival
+  - r-survminer
   - r-taxonomizr
   - r-tibble
   - r-tidyr

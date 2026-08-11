@@ -668,6 +668,186 @@ survival_override_config <- normalize_survival_config(
 stopifnot(identical(survival_override_config$norm_method, "noNorm"))
 stopifnot(identical(survival_override_config$analyses[[1]]$norm_method, "RelAbund"))
 
+default_method_config <- normalize_survival_config(list(analyses = list(list(name = "DefaultMethod"))))
+stopifnot(identical(default_method_config$methods, "cox"))
+stopifnot(identical(default_method_config$analyses[[1]]$methods, "cox"))
+stopifnot(isTRUE(survival_method_enabled(default_method_config$analyses[[1]], "cox")))
+stopifnot(!survival_method_enabled(default_method_config$analyses[[1]], "coda4microbiome"))
+expect_error(
+  normalize_survival_config(list(methods = "not_a_method", analyses = list(list(name = "BadMethod")))),
+  "Unsupported survival analysis method"
+)
+
+coda_config <- normalize_survival_config(
+  list(
+    methods = c("cox", "coda4microbiome"),
+    coda4microbiome = list(nfolds = 2, seed = 99),
+    analyses = list(list(
+      name = "CodaStratified",
+      sample_filter = list(SampleType = c("Tumor", "Nontumor")),
+      methods = c("coda4microbiome"),
+      tax_agg_level = "Genus",
+      taxa_min_prevalence = 0,
+      taxa_min_mean_relative_abundance = 0,
+      min_n = 2,
+      min_events = 1,
+      coda4microbiome = list(alpha = 0.5)
+    ))
+  )
+)
+coda_spec <- coda_config$analyses[[1]]
+stopifnot(identical(coda_spec$methods, "coda4microbiome"))
+stopifnot(identical(coda_spec$coda4microbiome$nfolds, 2L))
+stopifnot(identical(coda_spec$coda4microbiome$seed, 99L))
+stopifnot(identical(coda_spec$coda4microbiome$alpha, 0.5))
+
+fake_coda_calls <- list()
+fake_coda <- function(x,
+                      time,
+                      status,
+                      covar = NULL,
+                      lambda = "lambda.1se",
+                      nvar = NULL,
+                      alpha = 0.9,
+                      nfolds = 10,
+                      showPlots = TRUE,
+                      coef_threshold = 0) {
+  fake_coda_calls[[length(fake_coda_calls) + 1]] <<- list(
+    x = x,
+    time = time,
+    status = status,
+    covar = covar,
+    lambda = lambda,
+    nvar = nvar,
+    alpha = alpha,
+    nfolds = nfolds,
+    showPlots = showPlots,
+    coef_threshold = coef_threshold
+  )
+  selected <- colnames(x)[seq_len(min(2, ncol(x)))]
+  coefficients <- c(0.75, -0.25)[seq_along(selected)]
+  list(
+    taxa.name = selected,
+    `log-contrast coefficients` = coefficients,
+    risk.score = seq_len(nrow(x)),
+    `apparent Cindex` = 0.80,
+    `mean cv-Cindex` = 0.70,
+    `sd cv-Cindex` = 0.03
+  )
+}
+
+coda_physeq <- apply_sample_filter(mixed_type_physeq, coda_spec$sample_filter)
+coda_result <- run_survival_coda_models(
+  sample_physeq = coda_physeq,
+  spec = coda_spec,
+  survival_config = coda_config,
+  covariates = character(0),
+  min_n = coda_spec$min_n,
+  min_events = coda_spec$min_events,
+  coda_coxnet_fn = fake_coda
+)
+stopifnot(length(fake_coda_calls) == 1)
+stopifnot(identical(rownames(fake_coda_calls[[1]]$x), c("P1", "P2", "P3")))
+stopifnot(isTRUE(all.equal(fake_coda_calls[[1]]$x["P1", "g__GenusA"], 20)))
+stopifnot(isTRUE(all.equal(fake_coda_calls[[1]]$x["P1", "g__GenusB"], 6)))
+stopifnot(identical(fake_coda_calls[[1]]$alpha, 0.5))
+stopifnot(identical(fake_coda_calls[[1]]$nfolds, 2L))
+stopifnot(isFALSE(fake_coda_calls[[1]]$showPlots))
+stopifnot(nrow(coda_result$signature) == 2)
+stopifnot(all(coda_result$signature$sample_stratum == "Nontumor"))
+stopifnot(all(coda_result$signature$risk_direction %in% c("positive", "negative")))
+stopifnot(nrow(coda_result$risk_scores) == 3)
+stopifnot(all(coda_result$risk_scores$sample_stratum == "Nontumor"))
+stopifnot(nrow(coda_result$taxa_filter_stats) == 4)
+stopifnot(all(c("sample_strata_col", "sample_stratum") %in% names(coda_result$taxa_filter_stats)))
+tumor_coda_metric <- coda_result$metrics[coda_result$metrics$sample_stratum == "Tumor", , drop = FALSE]
+nontumor_coda_metric <- coda_result$metrics[coda_result$metrics$sample_stratum == "Nontumor", , drop = FALSE]
+stopifnot(identical(tumor_coda_metric$status, "skipped"))
+stopifnot(identical(tumor_coda_metric$reason, "too_few_complete_cases"))
+stopifnot(tumor_coda_metric$n_with_stratum == 1)
+stopifnot(tumor_coda_metric$dropped_missing == 2)
+stopifnot(identical(nontumor_coda_metric$status, "fit"))
+stopifnot(nontumor_coda_metric$n_used == 3)
+stopifnot(nontumor_coda_metric$events_used == 2)
+stopifnot(nontumor_coda_metric$n_taxa_selected == 2)
+stopifnot(isTRUE(all.equal(nontumor_coda_metric$mean_cv_cindex, 0.70)))
+
+fake_coda_calls <- list()
+coda_covariate_spec <- coda_spec
+coda_covariate_spec$covariates <- "Age"
+coda_missing_age_physeq <- coda_physeq
+coda_missing_age_meta <- as(sample_data(coda_missing_age_physeq), "data.frame")
+coda_missing_age_meta$Age[coda_missing_age_meta$PatientID == "P1"] <- "NA"
+sample_data(coda_missing_age_physeq) <- sample_data(validate_metadata_df(coda_missing_age_meta))
+coda_covariate_result <- run_survival_coda_models(
+  sample_physeq = coda_missing_age_physeq,
+  spec = coda_covariate_spec,
+  survival_config = coda_config,
+  covariates = "Age",
+  min_n = 2,
+  min_events = 1,
+  coda_coxnet_fn = fake_coda
+)
+stopifnot(length(fake_coda_calls) == 1)
+stopifnot(identical(rownames(fake_coda_calls[[1]]$x), c("P2", "P3")))
+stopifnot(is.data.frame(fake_coda_calls[[1]]$covar))
+stopifnot(identical(names(fake_coda_calls[[1]]$covar), "Age"))
+covariate_metric <- coda_covariate_result$metrics[
+  coda_covariate_result$metrics$sample_stratum == "Nontumor",
+  ,
+  drop = FALSE
+]
+stopifnot(covariate_metric$dropped_missing == 1)
+stopifnot(covariate_metric$n_used == 2)
+
+fake_coda_calls <- list()
+unstratified_coda_config <- normalize_survival_config(
+  list(
+    sample_strata_col = NULL,
+    analyses = list(list(
+      name = "CodaUnstratified",
+      sample_filter = list(SampleType = c("Tumor", "Nontumor")),
+      methods = "coda4microbiome",
+      tax_agg_level = "Genus",
+      taxa_min_prevalence = 0,
+      taxa_min_mean_relative_abundance = 0,
+      min_n = 3,
+      min_events = 1,
+      coda4microbiome = list(nfolds = 2)
+    ))
+  )
+)
+unstratified_coda_spec <- unstratified_coda_config$analyses[[1]]
+unstratified_coda_physeq <- apply_sample_filter(mixed_type_physeq, unstratified_coda_spec$sample_filter)
+unstratified_coda_result <- run_survival_coda_models(
+  sample_physeq = unstratified_coda_physeq,
+  spec = unstratified_coda_spec,
+  survival_config = unstratified_coda_config,
+  covariates = character(0),
+  min_n = unstratified_coda_spec$min_n,
+  min_events = unstratified_coda_spec$min_events,
+  coda_coxnet_fn = fake_coda
+)
+stopifnot(length(fake_coda_calls) == 1)
+stopifnot(isTRUE(all.equal(fake_coda_calls[[1]]$x["P1", "g__GenusA"], 15)))
+stopifnot(all(is.na(unstratified_coda_result$metrics$sample_strata_col)))
+stopifnot(identical(unstratified_coda_result$metrics$status, "fit"))
+
+fake_coda_calls <- list()
+one_taxon_coda_spec <- coda_spec
+one_taxon_coda_spec$taxa_min_mean_relative_abundance <- 0.5
+one_taxon_coda_result <- run_survival_coda_models(
+  sample_physeq = coda_physeq,
+  spec = one_taxon_coda_spec,
+  survival_config = coda_config,
+  covariates = character(0),
+  min_n = one_taxon_coda_spec$min_n,
+  min_events = one_taxon_coda_spec$min_events,
+  coda_coxnet_fn = fake_coda
+)
+stopifnot(length(fake_coda_calls) == 0)
+stopifnot(any(one_taxon_coda_result$metrics$reason == "too_few_taxa"))
+
 cox_test_df <- data.frame(
   PatientID = paste0("P", 1:6),
   .survival_time = c(100, 130, 160, 210, 250, 300),

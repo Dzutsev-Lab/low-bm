@@ -1502,6 +1502,29 @@ class RunnerSetupTests(unittest.TestCase):
             self.assertNotEqual(first_prefix, post_deploy_prefix)
             self.assertNotEqual(post_deploy_prefix, source_prefix)
 
+    def test_managed_r_tools_prefix_includes_post_deploy_recipe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env_dir = root / "workflow" / "envs"
+            env_dir.mkdir(parents=True)
+            (env_dir / "R-tools-env.yaml").write_text("name: low-bm-r-tools\n")
+            post_deploy = env_dir / "R-tools-env.post-deploy.sh"
+            post_deploy.write_text("#!/usr/bin/env bash\necho v1\n")
+            env_root = root / ".low-bm" / "analysis" / "envs"
+
+            with patch.object(cli, "REPO_ROOT", root):
+                first_prefix = cli.managed_analysis_env_prefix(cli.R_TOOLS_ENV, env_root)
+                post_deploy.write_text("#!/usr/bin/env bash\necho v2\n")
+                post_deploy_prefix = cli.managed_analysis_env_prefix(cli.R_TOOLS_ENV, env_root)
+
+            self.assertNotEqual(first_prefix, post_deploy_prefix)
+
+    def test_r_tools_post_deploy_installs_pinned_coda4microbiome(self) -> None:
+        script = (REPO_ROOT / "workflow/envs/R-tools-env.post-deploy.sh").read_text()
+        self.assertIn('CODA4MICROBIOME_VERSION="${CODA4MICROBIOME_VERSION:-0.2.4}"', script)
+        self.assertIn('remotes::install_version(', script)
+        self.assertIn('"coda4microbiome"', script)
+
     def test_microclean_post_deploy_patches_tibble_namespace_import(self) -> None:
         script = (REPO_ROOT / "workflow/envs/micRoclean-env.post-deploy.sh").read_text()
         self.assertIn('required_imports <- c("stringr", "tibble")', script)

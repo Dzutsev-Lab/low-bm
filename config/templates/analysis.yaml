@@ -118,4 +118,13 @@ survival_analysis:
   norm_method: "log2HostMapped"
   pseudocount: 1
   sample_strata_col: "SampleType"
+  methods: ["cox"]
+  coda4microbiome:
+    lambda: "lambda.1se"
+    alpha: 0.9
+    nfolds: 10
+    nvar: null
+    coef_threshold: 0
+    seed: 12345
+    show_plots: false
   analyses: []

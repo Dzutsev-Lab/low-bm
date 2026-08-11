@@ -124,60 +124,124 @@ run_survival_analysis <- function(comp_physeq, spec) {
   patient_features <- feature_bundle$patient_features
   feature_map <- feature_bundle$feature_map
 
-  cox <- run_survival_cox_models(
-    patient_features = patient_features,
-    feature_map = feature_map,
-    covariates = covariates,
-    min_n = spec$min_n,
-    min_events = spec$min_events
-  )
-  missingness <- model_missingness_table(cox$results, cox$skipped)
-
-  result_cols <- c(
-    "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
-    "hazard_ratio", "conf_low", "conf_high", "coef", "se", "p", "fdr",
-    "n_total", "n_used", "events_used", "dropped_missing", "ph_p", "global_ph_p"
-  )
-  skipped_cols <- c(
-    "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
-    "reason", "n_total", "n_used", "events_used", "dropped_missing"
-  )
-  missingness_cols <- c(
-    "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
-    "n_total", "n_used", "events_used", "dropped_missing"
-  )
-
-  result_file <- write_tsv(
-    cox$results,
-    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CoxResults.tsv")),
-    columns = result_cols
-  )
-  skipped_file <- write_tsv(
-    cox$skipped,
-    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_SkippedFeatures.tsv")),
-    columns = skipped_cols
-  )
   feature_file <- write_tsv(
     patient_features,
     file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_PatientFeatureMatrix.tsv"))
-  )
-  missingness_file <- write_tsv(
-    missingness,
-    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_ModelMissingness.tsv")),
-    columns = missingness_cols
   )
   taxa_filter_file <- write_tsv(
     feature_bundle$taxa_filter_stats,
     file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_TaxaFilterStats.tsv"))
   )
 
-  message("Wrote Cox results: ", result_file)
-  message("Wrote skipped feature report: ", skipped_file)
   message("Wrote patient feature matrix: ", feature_file)
-  message("Wrote model missingness report: ", missingness_file)
   message("Wrote taxa filter stats: ", taxa_filter_file)
 
-  invisible(list(results = cox$results, skipped = cox$skipped))
+  cox <- list(results = data.frame(), skipped = data.frame())
+  if (survival_method_enabled(spec, "cox")) {
+    cox <- run_survival_cox_models(
+      patient_features = patient_features,
+      feature_map = feature_map,
+      covariates = covariates,
+      min_n = spec$min_n,
+      min_events = spec$min_events
+    )
+    missingness <- model_missingness_table(cox$results, cox$skipped)
+
+    result_cols <- c(
+      "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
+      "hazard_ratio", "conf_low", "conf_high", "coef", "se", "p", "fdr",
+      "n_total", "n_used", "events_used", "dropped_missing", "ph_p", "global_ph_p"
+    )
+    skipped_cols <- c(
+      "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
+      "reason", "n_total", "n_used", "events_used", "dropped_missing"
+    )
+    missingness_cols <- c(
+      "feature", "feature_family", "label", "sample_strata_col", "sample_stratum",
+      "n_total", "n_used", "events_used", "dropped_missing"
+    )
+
+    result_file <- write_tsv(
+      cox$results,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CoxResults.tsv")),
+      columns = result_cols
+    )
+    skipped_file <- write_tsv(
+      cox$skipped,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_SkippedFeatures.tsv")),
+      columns = skipped_cols
+    )
+    missingness_file <- write_tsv(
+      missingness,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_ModelMissingness.tsv")),
+      columns = missingness_cols
+    )
+
+    message("Wrote Cox results: ", result_file)
+    message("Wrote skipped feature report: ", skipped_file)
+    message("Wrote model missingness report: ", missingness_file)
+  } else {
+    message("Skipping standard Cox per-taxon modeling for analysis: ", analysis_name)
+  }
+
+  coda <- NULL
+  if (survival_method_enabled(spec, "coda4microbiome")) {
+    coda <- run_survival_coda_models(
+      sample_physeq = analysis_physeq,
+      spec = spec,
+      survival_config = survival_config,
+      covariates = covariates,
+      min_n = spec$min_n,
+      min_events = spec$min_events
+    )
+    coda_signature_cols <- c(
+      "analysis", "sample_strata_col", "sample_stratum", "taxon", "label",
+      "log_contrast_coefficient", "risk_direction", "abs_coefficient"
+    )
+    coda_risk_score_cols <- unique(c(
+      "PatientID", "sample_strata_col", "sample_stratum",
+      ".survival_time", ".survival_status", covariates,
+      "risk_score", "risk_group_median"
+    ))
+    coda_metrics_cols <- c(
+      "sample_strata_col", "sample_stratum", "status", "reason",
+      "n_total", "n_with_stratum", "n_used", "events_used", "dropped_missing",
+      "n_taxa_retained", "n_taxa_selected", "lambda", "alpha", "nfolds",
+      "apparent_cindex", "mean_cv_cindex", "sd_cv_cindex", "zero_handling"
+    )
+    coda_filter_cols <- c(
+      "sample_strata_col", "sample_stratum", "taxon",
+      "prevalence", "mean_relative_abundance", "retained"
+    )
+
+    coda_signature_file <- write_tsv(
+      coda$signature,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaSignature.tsv")),
+      columns = coda_signature_cols
+    )
+    coda_risk_file <- write_tsv(
+      coda$risk_scores,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaRiskScores.tsv")),
+      columns = coda_risk_score_cols
+    )
+    coda_metrics_file <- write_tsv(
+      coda$metrics,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaModelMetrics.tsv")),
+      columns = coda_metrics_cols
+    )
+    coda_filter_file <- write_tsv(
+      coda$taxa_filter_stats,
+      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaTaxaFilterStats.tsv")),
+      columns = coda_filter_cols
+    )
+
+    message("Wrote coda4microbiome signature: ", coda_signature_file)
+    message("Wrote coda4microbiome risk scores: ", coda_risk_file)
+    message("Wrote coda4microbiome model metrics: ", coda_metrics_file)
+    message("Wrote coda4microbiome taxa filter stats: ", coda_filter_file)
+  }
+
+  invisible(list(results = cox$results, skipped = cox$skipped, coda = coda))
 }
 
 CompPhyseq <- load_input_physeq()
