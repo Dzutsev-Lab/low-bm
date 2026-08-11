@@ -700,8 +700,15 @@ stopifnot(identical(coda_spec$methods, "coda4microbiome"))
 stopifnot(identical(coda_spec$coda4microbiome$nfolds, 2L))
 stopifnot(identical(coda_spec$coda4microbiome$seed, 99L))
 stopifnot(identical(coda_spec$coda4microbiome$alpha, 0.5))
+stopifnot(identical(coda_spec$coda4microbiome$plot_width, 8))
+stopifnot(identical(coda_spec$coda4microbiome$plot_height, 6))
 
 fake_coda_calls <- list()
+print.fake_coda_plot <- function(x, ...) {
+  graphics::plot.new()
+  graphics::text(0.5, 0.5, x$label)
+  invisible(x)
+}
 fake_coda <- function(x,
                       time,
                       status,
@@ -732,7 +739,9 @@ fake_coda <- function(x,
     risk.score = seq_len(nrow(x)),
     `apparent Cindex` = 0.80,
     `mean cv-Cindex` = 0.70,
-    `sd cv-Cindex` = 0.03
+    `sd cv-Cindex` = 0.03,
+    `risk score plot` = structure(list(label = "risk score"), class = "fake_coda_plot"),
+    `signature plot` = structure(list(label = "signature"), class = "fake_coda_plot")
   )
 }
 
@@ -753,6 +762,7 @@ stopifnot(isTRUE(all.equal(fake_coda_calls[[1]]$x["P1", "g__GenusB"], 6)))
 stopifnot(identical(fake_coda_calls[[1]]$alpha, 0.5))
 stopifnot(identical(fake_coda_calls[[1]]$nfolds, 2L))
 stopifnot(isFALSE(fake_coda_calls[[1]]$showPlots))
+stopifnot(length(coda_result$plots) == 0)
 stopifnot(nrow(coda_result$signature) == 2)
 stopifnot(all(coda_result$signature$sample_stratum == "Nontumor"))
 stopifnot(all(coda_result$signature$risk_direction %in% c("positive", "negative")))
@@ -771,6 +781,37 @@ stopifnot(nontumor_coda_metric$n_used == 3)
 stopifnot(nontumor_coda_metric$events_used == 2)
 stopifnot(nontumor_coda_metric$n_taxa_selected == 2)
 stopifnot(isTRUE(all.equal(nontumor_coda_metric$mean_cv_cindex, 0.70)))
+
+fake_coda_calls <- list()
+coda_plot_spec <- coda_spec
+coda_plot_spec$coda4microbiome$show_plots <- TRUE
+coda_plot_result <- run_survival_coda_models(
+  sample_physeq = coda_physeq,
+  spec = coda_plot_spec,
+  survival_config = coda_config,
+  covariates = character(0),
+  min_n = coda_plot_spec$min_n,
+  min_events = coda_plot_spec$min_events,
+  coda_coxnet_fn = fake_coda
+)
+stopifnot(length(fake_coda_calls) == 1)
+stopifnot(isFALSE(fake_coda_calls[[1]]$showPlots))
+stopifnot(length(coda_plot_result$plots) == 2)
+coda_plot_dir <- tempfile("coda-plots-")
+dir.create(coda_plot_dir)
+coda_plot_manifest <- write_coda_plot_outputs(
+  coda_plot_result$plots,
+  analysis_dir = coda_plot_dir,
+  trial_id = "trial",
+  safe_name = "CodaStratified",
+  options = coda_plot_spec$coda4microbiome
+)
+stopifnot(nrow(coda_plot_manifest) == 2)
+stopifnot(all(coda_plot_manifest$status == "written"))
+stopifnot(all(file.exists(coda_plot_manifest$path)))
+stopifnot(all(coda_plot_manifest$sample_stratum == "Nontumor"))
+stopifnot(all(coda_plot_manifest$plot_type %in% c("risk_score", "signature")))
+unlink(coda_plot_dir, recursive = TRUE)
 
 fake_coda_calls <- list()
 coda_covariate_spec <- coda_spec

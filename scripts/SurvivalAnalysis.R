@@ -209,6 +209,10 @@ run_survival_analysis <- function(comp_physeq, spec) {
       "n_taxa_retained", "n_taxa_selected", "lambda", "alpha", "nfolds",
       "apparent_cindex", "mean_cv_cindex", "sd_cv_cindex", "zero_handling"
     )
+    coda_plot_manifest_cols <- c(
+      "analysis", "sample_strata_col", "sample_stratum",
+      "plot_type", "path", "status", "reason"
+    )
 
     coda_signature_file <- write_tsv(
       coda$signature,
@@ -225,6 +229,21 @@ run_survival_analysis <- function(comp_physeq, spec) {
       file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaModelMetrics.tsv")),
       columns = coda_metrics_cols
     )
+    if (isTRUE(spec$coda4microbiome$show_plots)) {
+      coda_plot_manifest <- write_coda_plot_outputs(
+        coda$plots,
+        analysis_dir = analysis_dir,
+        trial_id = trial_id,
+        safe_name = safe_name,
+        options = spec$coda4microbiome
+      )
+      coda_plot_manifest_file <- write_tsv(
+        coda_plot_manifest,
+        file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaPlotManifest.tsv")),
+        columns = coda_plot_manifest_cols
+      )
+      message("Wrote coda4microbiome plot manifest: ", coda_plot_manifest_file)
+    }
     legacy_coda_filter_file <- file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaTaxaFilterStats.tsv"))
     if (file.exists(legacy_coda_filter_file)) {
       unlink(legacy_coda_filter_file)

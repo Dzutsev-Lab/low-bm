@@ -127,4 +127,6 @@ survival_analysis:
     coef_threshold: 0
     seed: 12345
     show_plots: false
+    plot_width: 8
+    plot_height: 6
   analyses: []

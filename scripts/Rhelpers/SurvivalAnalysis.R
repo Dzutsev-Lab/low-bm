@@ -68,13 +68,17 @@ normalize_coda_options <- function(options = list()) {
     nvar = NULL,
     coef_threshold = 0,
     seed = 12345,
-    show_plots = FALSE
+    show_plots = FALSE,
+    plot_width = 8,
+    plot_height = 6
   )
   options <- utils::modifyList(defaults, options %||% list(), keep.null = FALSE)
   options$alpha <- as.numeric(options$alpha)
   options$nfolds <- as.integer(options$nfolds)
   options$coef_threshold <- as.numeric(options$coef_threshold)
   options$seed <- as.integer(options$seed)
+  options$plot_width <- as.numeric(options$plot_width)
+  options$plot_height <- as.numeric(options$plot_height)
   if (!is.null(options$nvar)) options$nvar <- as.integer(options$nvar)
   options$show_plots <- if (is.logical(options$show_plots)) {
     isTRUE(options$show_plots)
@@ -92,6 +96,12 @@ normalize_coda_options <- function(options = list()) {
   }
   if (length(options$seed) == 0 || is.na(options$seed)) {
     stop("survival_analysis.coda4microbiome.seed must be an integer.", call. = FALSE)
+  }
+  if (!is.finite(options$plot_width) || options$plot_width <= 0) {
+    stop("survival_analysis.coda4microbiome.plot_width must be positive.", call. = FALSE)
+  }
+  if (!is.finite(options$plot_height) || options$plot_height <= 0) {
+    stop("survival_analysis.coda4microbiome.plot_height must be positive.", call. = FALSE)
   }
   options
 }
@@ -662,6 +672,19 @@ empty_coda_metrics <- function() {
   )
 }
 
+empty_coda_plot_manifest <- function() {
+  data.frame(
+    analysis = character(0),
+    sample_strata_col = character(0),
+    sample_stratum = character(0),
+    plot_type = character(0),
+    path = character(0),
+    status = character(0),
+    reason = character(0),
+    stringsAsFactors = FALSE
+  )
+}
+
 coda_scalar_character <- function(value, default = NA_character_) {
   if (is.null(value) || length(value) == 0 || is.na(value[[1]])) {
     return(default)
@@ -937,6 +960,102 @@ coda_risk_score_table <- function(result, input, model_df, covariates = characte
   out
 }
 
+coda_plot_records <- function(result, input, options = list()) {
+  if (!isTRUE(options$show_plots)) {
+    return(list())
+  }
+  plot_specs <- list(
+    list(result_name = "risk score plot", plot_type = "risk_score", file_stem = "CodaRiskScorePlot"),
+    list(result_name = "signature plot", plot_type = "signature", file_stem = "CodaSignaturePlot")
+  )
+  records <- list()
+  for (plot_spec in plot_specs) {
+    plot_object <- coda_result_value(result, plot_spec$result_name)
+    if (is.null(plot_object)) {
+      next
+    }
+    records[[length(records) + 1]] <- list(
+      analysis = input$analysis,
+      sample_strata_col = input$sample_strata_col,
+      sample_stratum = input$sample_stratum,
+      plot_type = plot_spec$plot_type,
+      file_stem = plot_spec$file_stem,
+      object = plot_object
+    )
+  }
+  records
+}
+
+coda_plot_stratum_suffix <- function(sample_strata_col, sample_stratum) {
+  if (length(sample_strata_col) == 0 ||
+      is.na(sample_strata_col[[1]]) ||
+      !nzchar(trimws(as.character(sample_strata_col[[1]])))) {
+    return("unstratified")
+  }
+  paste(
+    sanitize_survival_path_component(sample_strata_col[[1]], fallback = "strata"),
+    sanitize_survival_path_component(sample_stratum[[1]], fallback = "stratum"),
+    sep = "_"
+  )
+}
+
+save_coda_plot_object <- function(plot_object, path, width = 8, height = 6) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  grDevices::pdf(path, width = width, height = height, onefile = TRUE)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  if (inherits(plot_object, c("Heatmap", "HeatmapList")) &&
+      requireNamespace("ComplexHeatmap", quietly = TRUE)) {
+    ComplexHeatmap::draw(plot_object)
+  } else {
+    print(plot_object)
+  }
+  invisible(path)
+}
+
+write_coda_plot_outputs <- function(plot_records,
+                                    analysis_dir,
+                                    trial_id,
+                                    safe_name,
+                                    options = list()) {
+  if (length(plot_records) == 0) {
+    return(empty_coda_plot_manifest())
+  }
+  manifest <- lapply(plot_records, function(record) {
+    suffix <- coda_plot_stratum_suffix(record$sample_strata_col, record$sample_stratum)
+    path <- file.path(
+      analysis_dir,
+      paste0(trial_id, "_", safe_name, "_", record$file_stem, "_", suffix, ".pdf")
+    )
+    status <- "written"
+    reason <- NA_character_
+    result <- tryCatch(
+      save_coda_plot_object(
+        record$object,
+        path,
+        width = options$plot_width %||% 8,
+        height = options$plot_height %||% 6
+      ),
+      error = function(e) e
+    )
+    if (inherits(result, "error")) {
+      status <- "failed"
+      reason <- conditionMessage(result)
+    }
+    data.frame(
+      analysis = record$analysis,
+      sample_strata_col = record$sample_strata_col,
+      sample_stratum = record$sample_stratum,
+      plot_type = record$plot_type,
+      path = path,
+      status = status,
+      reason = reason,
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, manifest)
+  if (is.null(out)) empty_coda_plot_manifest() else out
+}
+
 fit_coda_model_input <- function(input,
                                  covariates = character(0),
                                  min_n = 30,
@@ -955,7 +1074,8 @@ fit_coda_model_input <- function(input,
     return(list(
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
-      metrics = coda_metric_row(input, "skipped", "too_few_complete_cases", n_used, NA, dropped_missing, 0, options = options)
+      metrics = coda_metric_row(input, "skipped", "too_few_complete_cases", n_used, NA, dropped_missing, 0, options = options),
+      plots = list()
     ))
   }
 
@@ -967,21 +1087,24 @@ fit_coda_model_input <- function(input,
     return(list(
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
-      metrics = coda_metric_row(input, "skipped", "too_few_events", n_used, events_used, dropped_missing, 0, options = options)
+      metrics = coda_metric_row(input, "skipped", "too_few_events", n_used, events_used, dropped_missing, 0, options = options),
+      plots = list()
     ))
   }
   if (length(taxa_cols) < 2) {
     return(list(
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
-      metrics = coda_metric_row(input, "skipped", "too_few_taxa", n_used, events_used, dropped_missing, 0, options = options)
+      metrics = coda_metric_row(input, "skipped", "too_few_taxa", n_used, events_used, dropped_missing, 0, options = options),
+      plots = list()
     ))
   }
   if (n_used < as.integer(options$nfolds)) {
     return(list(
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
-      metrics = coda_metric_row(input, "skipped", "too_few_cv_folds", n_used, events_used, dropped_missing, 0, options = options)
+      metrics = coda_metric_row(input, "skipped", "too_few_cv_folds", n_used, events_used, dropped_missing, 0, options = options),
+      plots = list()
     ))
   }
 
@@ -993,14 +1116,16 @@ fit_coda_model_input <- function(input,
     return(list(
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
-      metrics = coda_metric_row(input, "skipped", conditionMessage(covar_df), n_used, events_used, dropped_missing, 0, options = options)
+      metrics = coda_metric_row(input, "skipped", conditionMessage(covar_df), n_used, events_used, dropped_missing, 0, options = options),
+      plots = list()
     ))
   }
   if (inherits(coda_coxnet_fn, "error")) {
     return(list(
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
-      metrics = coda_metric_row(input, "skipped", conditionMessage(coda_coxnet_fn), n_used, events_used, dropped_missing, 0, options = options)
+      metrics = coda_metric_row(input, "skipped", conditionMessage(coda_coxnet_fn), n_used, events_used, dropped_missing, 0, options = options),
+      plots = list()
     ))
   }
 
@@ -1019,7 +1144,7 @@ fit_coda_model_input <- function(input,
       nvar = options$nvar,
       alpha = options$alpha,
       nfolds = options$nfolds,
-      showPlots = options$show_plots,
+      showPlots = FALSE,
       coef_threshold = options$coef_threshold
     ),
     error = function(e) e
@@ -1037,7 +1162,8 @@ fit_coda_model_input <- function(input,
         dropped_missing,
         0,
         options = options
-      )
+      ),
+      plots = list()
     ))
   }
 
@@ -1059,7 +1185,8 @@ fit_coda_model_input <- function(input,
         dropped_missing,
         nrow(signature),
         options = options
-      )
+      ),
+      plots = list()
     ))
   }
 
@@ -1078,7 +1205,8 @@ fit_coda_model_input <- function(input,
       mean_cv_cindex = coda_scalar_numeric(coda_result_value(coda_fit, "mean cv-Cindex")),
       sd_cv_cindex = coda_scalar_numeric(coda_result_value(coda_fit, "sd cv-Cindex")),
       options = options
-    )
+    ),
+    plots = coda_plot_records(coda_fit, input, options = options)
   )
 }
 
@@ -1095,7 +1223,8 @@ run_survival_coda_models <- function(sample_physeq,
       signature = empty_coda_signature(),
       risk_scores = empty_coda_risk_scores(covariates),
       metrics = empty_coda_metrics(),
-      taxa_filter_stats = coda_inputs$filter_stats
+      taxa_filter_stats = coda_inputs$filter_stats,
+      plots = list()
     ))
   }
 
@@ -1121,15 +1250,18 @@ run_survival_coda_models <- function(sample_physeq,
   signature <- do.call(rbind, lapply(fits, `[[`, "signature"))
   risk_scores <- do.call(rbind, lapply(fits, `[[`, "risk_scores"))
   metrics <- do.call(rbind, lapply(fits, `[[`, "metrics"))
+  plots <- unlist(lapply(fits, `[[`, "plots"), recursive = FALSE)
   if (is.null(signature)) signature <- empty_coda_signature()
   if (is.null(risk_scores)) risk_scores <- empty_coda_risk_scores(covariates)
   if (is.null(metrics)) metrics <- empty_coda_metrics()
+  if (is.null(plots)) plots <- list()
 
   list(
     signature = signature,
     risk_scores = risk_scores,
     metrics = metrics,
-    taxa_filter_stats = coda_inputs$filter_stats
+    taxa_filter_stats = coda_inputs$filter_stats,
+    plots = plots
   )
 }
 
