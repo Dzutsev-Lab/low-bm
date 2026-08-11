@@ -209,10 +209,6 @@ run_survival_analysis <- function(comp_physeq, spec) {
       "n_taxa_retained", "n_taxa_selected", "lambda", "alpha", "nfolds",
       "apparent_cindex", "mean_cv_cindex", "sd_cv_cindex", "zero_handling"
     )
-    coda_filter_cols <- c(
-      "sample_strata_col", "sample_stratum", "taxon",
-      "prevalence", "mean_relative_abundance", "retained"
-    )
 
     coda_signature_file <- write_tsv(
       coda$signature,
@@ -229,16 +225,15 @@ run_survival_analysis <- function(comp_physeq, spec) {
       file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaModelMetrics.tsv")),
       columns = coda_metrics_cols
     )
-    coda_filter_file <- write_tsv(
-      coda$taxa_filter_stats,
-      file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaTaxaFilterStats.tsv")),
-      columns = coda_filter_cols
-    )
+    legacy_coda_filter_file <- file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_CodaTaxaFilterStats.tsv"))
+    if (file.exists(legacy_coda_filter_file)) {
+      unlink(legacy_coda_filter_file)
+      message("Removed deprecated duplicate coda4microbiome taxa filter stats: ", legacy_coda_filter_file)
+    }
 
     message("Wrote coda4microbiome signature: ", coda_signature_file)
     message("Wrote coda4microbiome risk scores: ", coda_risk_file)
     message("Wrote coda4microbiome model metrics: ", coda_metrics_file)
-    message("Wrote coda4microbiome taxa filter stats: ", coda_filter_file)
   }
 
   invisible(list(results = cox$results, skipped = cox$skipped, coda = coda))
