@@ -3064,11 +3064,11 @@ def validate_microclean_source(path: Path) -> list[str]:
         values[key.strip()] = value.strip().strip('"').strip("'")
 
     errors = []
-    for key in ("MICROCLEAN_GIT_REF", "SCRUB_GIT_REF"):
+    for key in ("MICROCLEAN_GIT_REF", "SCRUB_GIT_REF", "ANCOMBC_GIT_REF"):
         value = values.get(key, "")
         if not GIT_SHA_RE.match(value):
             errors.append(f"{key} must be a fixed Git SHA")
-    for key in ("MICROCLEAN_GIT_URL", "SCRUB_GIT_URL"):
+    for key in ("MICROCLEAN_GIT_URL", "SCRUB_GIT_URL", "ANCOMBC_GIT_URL"):
         if not values.get(key):
             errors.append(f"{key} is required")
     return errors

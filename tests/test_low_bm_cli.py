@@ -1529,6 +1529,14 @@ class RunnerSetupTests(unittest.TestCase):
         script = (REPO_ROOT / "workflow/envs/micRoclean-env.post-deploy.sh").read_text()
         self.assertIn('required_imports <- c("stringr", "tibble")', script)
         self.assertIn('get("add_column", envir = ns, inherits = TRUE)', script)
+        self.assertIn("ANCOMBC_GIT_REF", script)
+        self.assertIn("Installing upstream ANCOMBC with quadprog trend optimization", script)
+        self.assertIn('requireNamespace("quadprog", quietly = TRUE)', script)
+        self.assertIn('!"CVXR" %in% names(getNamespaceImports("ANCOMBC"))', script)
+
+    def test_microclean_env_includes_quadprog_for_upstream_ancombc(self) -> None:
+        env = (REPO_ROOT / "workflow/envs/micRoclean-env.yaml").read_text()
+        self.assertIn("  - r-quadprog\n", env)
 
     def test_microclean_source_requires_fixed_shas(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1538,6 +1546,8 @@ class RunnerSetupTests(unittest.TestCase):
                 "MICROCLEAN_GIT_REF=8d823ed8ad11f2d4da91ebbf6b75710f9af082d7\n"
                 "SCRUB_GIT_URL=https://example.org/scrub.git\n"
                 "SCRUB_GIT_REF=fcbb8524190f0b27b7ad52cde232c8c4f59810e0\n"
+                "ANCOMBC_GIT_URL=https://example.org/ancombc.git\n"
+                "ANCOMBC_GIT_REF=4595750750e354dfa61645f4a3f1f6c53645f683\n"
             )
             self.assertEqual(validate_microclean_source(source), [])
             source.write_text(
@@ -1545,6 +1555,8 @@ class RunnerSetupTests(unittest.TestCase):
                 "MICROCLEAN_GIT_REF=main\n"
                 "SCRUB_GIT_URL=https://example.org/scrub.git\n"
                 "SCRUB_GIT_REF=fcbb8524190f0b27b7ad52cde232c8c4f59810e0\n"
+                "ANCOMBC_GIT_URL=https://example.org/ancombc.git\n"
+                "ANCOMBC_GIT_REF=4595750750e354dfa61645f4a3f1f6c53645f683\n"
             )
             self.assertIn("MICROCLEAN_GIT_REF must be a fixed Git SHA", validate_microclean_source(source))
 

@@ -59,6 +59,24 @@ R CMD INSTALL --no-test-load "${scrub_dir}"
 
 Rscript --no-environ -e 'stopifnot(length(find.package("SCRuB", quiet = TRUE)) == 1)'
 
+ANCOMBC_GIT_URL="${ANCOMBC_GIT_URL:-https://github.com/FrederickHuangLin/ANCOMBC.git}"
+: "${ANCOMBC_GIT_REF:?Set ANCOMBC_GIT_REF to the fixed upstream ANCOMBC commit SHA.}"
+
+if [[ ! "${ANCOMBC_GIT_REF}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    echo "ANCOMBC_GIT_REF must be a fixed Git commit SHA, not a branch or moving tag: ${ANCOMBC_GIT_REF}" >&2
+    exit 2
+fi
+
+ancombc_dir="${tmpdir}/ANCOMBC"
+echo "Cloning ANCOMBC..."
+git clone "${ANCOMBC_GIT_URL}" "${ancombc_dir}"
+git -C "${ancombc_dir}" checkout --detach "${ANCOMBC_GIT_REF}"
+
+echo "Installing upstream ANCOMBC with quadprog trend optimization..."
+R CMD INSTALL --no-test-load "${ancombc_dir}"
+
+Rscript --no-environ -e 'stopifnot(length(find.package("ANCOMBC", quiet = TRUE)) == 1); stopifnot(requireNamespace("quadprog", quietly = TRUE)); stopifnot(utils::packageVersion("ANCOMBC") >= "2.13.2"); stopifnot(!"CVXR" %in% names(getNamespaceImports("ANCOMBC")))'
+
 : "${MICROCLEAN_GIT_URL:?Set MICROCLEAN_GIT_URL, MICROCLEAN_SOURCE_ENV, or create workflow/envs/micRoclean-source.env.}"
 : "${MICROCLEAN_GIT_REF:?Set MICROCLEAN_GIT_REF to the fixed patched micRoclean commit SHA.}"
 

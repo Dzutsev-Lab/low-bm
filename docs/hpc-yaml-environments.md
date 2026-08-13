@@ -27,18 +27,21 @@ creation fails or a package is missing.
 This is required only if you plan to run optional
 `low-bm meta decontaminate-phyloseq`. This repository tracks
 `workflow/envs/micRoclean-source.env` as part of the reproducibility record. It
-should contain the patched package Git URL plus fixed commit SHA values:
+should contain the patched micRoclean Git URL plus fixed commit SHA values for
+source-installed dependencies:
 
 ```bash
 MICROCLEAN_GIT_URL=git@github.com:your-org/micRoclean.git
 MICROCLEAN_GIT_REF=0123456789abcdef0123456789abcdef01234567
 SCRUB_GIT_URL=https://github.com/Shenhav-and-Korem-labs/SCRuB.git
 SCRUB_GIT_REF=0123456789abcdef0123456789abcdef01234567
+ANCOMBC_GIT_URL=https://github.com/FrederickHuangLin/ANCOMBC.git
+ANCOMBC_GIT_REF=0123456789abcdef0123456789abcdef01234567
 ```
 
-The post-deploy script intentionally installs with `dependencies = FALSE`.
-Missing `micRoclean` dependencies should be added to `micRoclean-env.yaml`
-rather than installed opportunistically.
+The post-deploy script installs pinned SCRuB, ANCOMBC, and micRoclean sources
+without opportunistically resolving dependencies. Missing dependencies should be
+added to `micRoclean-env.yaml`.
 
 ## 3. Create A Small-Batch Test Config
 
