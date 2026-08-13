@@ -30,4 +30,5 @@ dependencies:
   - bioconductor-ancombc
   - bioconductor-biomformat
   - bioconductor-decontam
+  - bioconductor-microbiome
   - bioconductor-phyloseq

@@ -1531,11 +1531,13 @@ class RunnerSetupTests(unittest.TestCase):
         self.assertIn('get("add_column", envir = ns, inherits = TRUE)', script)
         self.assertIn("ANCOMBC_GIT_REF", script)
         self.assertIn("Installing upstream ANCOMBC with quadprog trend optimization", script)
+        self.assertIn('requireNamespace("microbiome", quietly = TRUE)', script)
         self.assertIn('requireNamespace("quadprog", quietly = TRUE)', script)
         self.assertIn('!"CVXR" %in% names(getNamespaceImports("ANCOMBC"))', script)
 
-    def test_microclean_env_includes_quadprog_for_upstream_ancombc(self) -> None:
+    def test_microclean_env_includes_upstream_ancombc_runtime_dependencies(self) -> None:
         env = (REPO_ROOT / "workflow/envs/micRoclean-env.yaml").read_text()
+        self.assertIn("  - bioconductor-microbiome\n", env)
         self.assertIn("  - r-quadprog\n", env)
 
     def test_microclean_source_requires_fixed_shas(self) -> None:

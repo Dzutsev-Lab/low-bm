@@ -75,7 +75,7 @@ git -C "${ancombc_dir}" checkout --detach "${ANCOMBC_GIT_REF}"
 echo "Installing upstream ANCOMBC with quadprog trend optimization..."
 R CMD INSTALL --no-test-load "${ancombc_dir}"
 
-Rscript --no-environ -e 'stopifnot(length(find.package("ANCOMBC", quiet = TRUE)) == 1); stopifnot(requireNamespace("quadprog", quietly = TRUE)); stopifnot(utils::packageVersion("ANCOMBC") >= "2.13.2"); stopifnot(!"CVXR" %in% names(getNamespaceImports("ANCOMBC")))'
+Rscript --no-environ -e 'stopifnot(length(find.package("ANCOMBC", quiet = TRUE)) == 1); stopifnot(requireNamespace("microbiome", quietly = TRUE)); stopifnot(requireNamespace("quadprog", quietly = TRUE)); stopifnot(utils::packageVersion("ANCOMBC") >= "2.13.2"); stopifnot(!"CVXR" %in% names(getNamespaceImports("ANCOMBC")))'
 
 : "${MICROCLEAN_GIT_URL:?Set MICROCLEAN_GIT_URL, MICROCLEAN_SOURCE_ENV, or create workflow/envs/micRoclean-source.env.}"
 : "${MICROCLEAN_GIT_REF:?Set MICROCLEAN_GIT_REF to the fixed patched micRoclean commit SHA.}"
