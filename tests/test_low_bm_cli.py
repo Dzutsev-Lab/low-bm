@@ -1524,6 +1524,16 @@ class RunnerSetupTests(unittest.TestCase):
         self.assertIn('CODA4MICROBIOME_VERSION="${CODA4MICROBIOME_VERSION:-0.2.4}"', script)
         self.assertIn('remotes::install_version(', script)
         self.assertIn('"coda4microbiome"', script)
+        self.assertIn('ANCOMBC_GIT_REF="${ANCOMBC_GIT_REF:-4595750750e354dfa61645f4a3f1f6c53645f683}"', script)
+        self.assertIn("Installing upstream ANCOMBC with quadprog trend optimization", script)
+        self.assertIn('requireNamespace("microbiome", quietly = TRUE)', script)
+        self.assertIn('requireNamespace("quadprog", quietly = TRUE)', script)
+        self.assertIn('!"CVXR" %in% names(getNamespaceImports("ANCOMBC"))', script)
+
+    def test_r_tools_env_includes_upstream_ancombc_runtime_dependencies(self) -> None:
+        env = (REPO_ROOT / "workflow/envs/R-tools-env.yaml").read_text()
+        self.assertIn("  - bioconductor-microbiome\n", env)
+        self.assertIn("  - r-quadprog\n", env)
 
     def test_microclean_post_deploy_patches_tibble_namespace_import(self) -> None:
         script = (REPO_ROOT / "workflow/envs/micRoclean-env.post-deploy.sh").read_text()

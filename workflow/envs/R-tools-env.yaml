@@ -23,6 +23,7 @@ dependencies:
   - r-plyr
   - r-proc
   - r-purrr
+  - r-quadprog
   - r-readr
   - r-readxl
   - r-remotes
