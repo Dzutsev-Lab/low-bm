@@ -515,8 +515,17 @@ standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff)
 }
 
 run_ancombc_comparison <- function(physeq, spec, global_config) {
-  if (!requireNamespace("ANCOMBC", quietly = TRUE)) {
-    stop("The R package 'ANCOMBC' is required for ANCOMBC differential abundance.", call. = FALSE)
+  ancombc_load_error <- tryCatch({
+    loadNamespace("ANCOMBC")
+    NULL
+  }, error = function(e) e)
+  if (!is.null(ancombc_load_error)) {
+    stop(
+      "The R package 'ANCOMBC' is required for ANCOMBC differential abundance ",
+      "but could not be loaded: ",
+      conditionMessage(ancombc_load_error),
+      call. = FALSE
+    )
   }
 
   tax_agg_level <- if (!is.null(spec$tax_agg_level)) spec$tax_agg_level else global_config$tax_agg_level
