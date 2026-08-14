@@ -11,6 +11,7 @@ source(file.path("scripts", "Rhelpers", "DifferentialAbundance.R"))
 source(file.path("scripts", "Rhelpers", "LEfSeAnalysis.R"))
 source(file.path("scripts", "Rhelpers", "SurvivalAnalysis.R"))
 source(file.path("scripts", "Rhelpers", "AbundanceBarPlots.R"))
+source(file.path("scripts", "Rhelpers", "XGBoostClassification.R"))
 
 expect_error <- function(expr, pattern = NULL) {
   err <- tryCatch(
@@ -476,6 +477,94 @@ missing_group_spec <- inferred_spec
 missing_group_spec$group <- "MissingGroup"
 missing_group_spec$formula <- "MissingGroup"
 expect_error(prepare_da_physeq(physeq, missing_group_spec, list(tax_agg_level = "Genus")), "missing required")
+
+xgboost_model_config <- list(
+  name = "TumorVsNontumor",
+  sample_filter = list(SampleType = c("Tumor", "Nontumor")),
+  target = list(
+    column = "SampleType",
+    negative = "Nontumor",
+    positive = "Tumor"
+  )
+)
+xgboost_config <- normalize_xgboost_config(
+  list(models = list(xgboost_model_config)),
+  project_config = list(norm_method = "log2HostMapped", tax_agg_level = "Genus")
+)
+stopifnot(length(xgboost_config$models) == 1)
+stopifnot(identical(xgboost_config$models[[1]]$name, "TumorVsNontumor"))
+stopifnot(identical(xgboost_config$models[[1]]$split_group_col, "PatientID"))
+stopifnot(identical(xgboost_config$models[[1]]$target$positive, "Tumor"))
+stopifnot(identical(xgboost_config$models[[1]]$xgb_params$objective, "binary:logistic"))
+expect_error(normalize_xgboost_config(list()), "xgboost_classification.models")
+expect_error(
+  normalize_xgboost_config(list(class_factors = c("PatientSample", "TumorType"))),
+  "xgboost_classification.models"
+)
+expect_error(
+  normalize_xgboost_config(list(models = list(xgboost_model_config, xgboost_model_config))),
+  "duplicate model"
+)
+
+xgboost_filtered <- apply_sample_filter(physeq, xgboost_model_config$sample_filter)
+xgboost_meta <- prepare_xgboost_model_metadata(xgboost_filtered, xgboost_config$models[[1]])
+stopifnot(nrow(xgboost_meta) == 4)
+stopifnot(identical(sort(unique(xgboost_meta$.xgb_class)), c(0L, 1L)))
+stopifnot(all(xgboost_meta$.xgb_class[as.character(xgboost_meta$SampleType) == "Tumor"] == 1L))
+stopifnot(all(xgboost_meta$.xgb_class[as.character(xgboost_meta$SampleType) == "Nontumor"] == 0L))
+missing_target_model <- xgboost_config$models[[1]]
+missing_target_model$target$column <- "MissingTarget"
+expect_error(prepare_xgboost_model_metadata(xgboost_filtered, missing_target_model), "missing required")
+
+split_meta <- data.frame(
+  .sample_name = paste0("SplitSample", seq_len(8)),
+  .xgb_class = rep(c(0L, 1L), 4),
+  SubjectID = rep(paste0("Subject", seq_len(4)), each = 2),
+  stringsAsFactors = FALSE
+)
+group_split_config <- normalize_xgboost_config(list(
+  test_fraction = 0.5,
+  cv_folds = 2,
+  models = list(modifyList(
+    xgboost_model_config,
+    list(name = "GroupedSplit", split_group_col = "SubjectID")
+  ))
+))
+group_split_spec <- group_split_config$models[[1]]
+set.seed(1)
+group_split <- make_xgboost_split(split_meta, group_split_spec)
+stopifnot(identical(group_split$split_group_col, "SubjectID"))
+stopifnot(length(intersect(split_meta$SubjectID[group_split$train_idx], split_meta$SubjectID[group_split$test_idx])) == 0)
+stopifnot(length(unique(split_meta$.xgb_class[group_split$train_idx])) == 2)
+stopifnot(length(unique(split_meta$.xgb_class[group_split$test_idx])) == 2)
+group_folds <- make_xgboost_cv_folds(split_meta, group_split$train_idx, group_split_spec)
+stopifnot(length(group_folds) == 2)
+stopifnot(all(unlist(group_folds) <= sum(group_split$train_idx)))
+
+sample_split_config <- normalize_xgboost_config(list(
+  test_fraction = 0.5,
+  cv_folds = 2,
+  models = list(list(
+    name = "SampleSplit",
+    split_group_col = NULL,
+    target = xgboost_model_config$target
+  ))
+))
+sample_split_spec <- sample_split_config$models[[1]]
+set.seed(2)
+sample_split <- make_xgboost_split(split_meta, sample_split_spec)
+stopifnot(is.null(sample_split$split_group_col))
+stopifnot(length(unique(split_meta$.xgb_class[sample_split$train_idx])) == 2)
+stopifnot(length(unique(split_meta$.xgb_class[sample_split$test_idx])) == 2)
+sample_cv_meta <- data.frame(
+  .sample_name = paste0("SampleCV", seq_len(12)),
+  .xgb_class = rep(c(0L, 1L), 6),
+  stringsAsFactors = FALSE
+)
+sample_cv_train_idx <- seq_len(nrow(sample_cv_meta)) <= 8
+sample_folds <- make_xgboost_cv_folds(sample_cv_meta, sample_cv_train_idx, sample_split_spec)
+stopifnot(length(sample_folds) == 2)
+stopifnot(all(unlist(sample_folds) <= sum(sample_cv_train_idx)))
 
 direction_spec <- list(
   coefficient = "SampleTypeTumor",

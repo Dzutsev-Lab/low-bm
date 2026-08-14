@@ -131,6 +131,45 @@ Differential abundance followed by confirmatory BLAST:
   --analysis-config config/local/analysis.yaml
 ```
 
+Config-driven XGBoost classification:
+
+```bash
+./low-bm analysis run xgboost --analysis-config config/local/analysis.yaml
+```
+
+Each binary classifier is defined under `xgboost_classification.models`. The
+top-level XGBoost settings act as defaults, and per-model fields override them.
+Set `split_group_col: null` on a model only when sample-level train/test
+splitting is intended.
+
+```yaml
+xgboost_classification:
+  batch_adj_covar: "Hospital"
+  batch_adj_method: "ComBat"
+  split_group_col: "PatientID"
+  models:
+    - name: "TumorVsNontumor"
+      plot_title: "Tumor vs Nontumor"
+      sample_filter:
+        SampleType: ["Tumor", "Nontumor"]
+      target:
+        column: "SampleType"
+        negative: ["Nontumor"]
+        positive: ["Tumor"]
+    - name: "HCCvsiCC"
+      plot_title: "HCC vs iCC Tumors"
+      sample_filter:
+        SampleType: ["Tumor"]
+      target:
+        column: "TumorType"
+        negative: ["iCC"]
+        positive: ["HCC"]
+```
+
+The former `class_factors: [PatientSample, TumorType]` presets are no longer
+recognized; encode those choices as explicit model entries like the examples
+above.
+
 `blast-confirmation` expands to:
 
 ```text
