@@ -123,6 +123,12 @@ normalize_da_config <- function(config) {
   if (is.null(config$tax_label_level)) config$tax_label_level <- config$tax_agg_level
   if (is.null(config$alpha)) config$alpha <- 0.05
   if (is.null(config$lfc_cutoff)) config$lfc_cutoff <- 1
+  config$patient_duplicate_policy <- normalize_patient_duplicate_policy(
+    config$patient_duplicate_policy,
+    default_action = "keep",
+    allowed_actions = c("keep", "drop", "error"),
+    context = "differential_abundance.patient_duplicate_policy"
+  )
 
   if (is.null(config$comparisons) || length(config$comparisons) == 0) {
     stop("DA config must define at least one comparison.", call. = FALSE)
@@ -136,6 +142,18 @@ normalize_da_config <- function(config) {
       call. = FALSE
     )
   }
+
+  config$comparisons <- lapply(config$comparisons, function(spec) {
+    spec <- spec %||% list()
+    spec_name <- if (!is.null(spec$name) && length(spec$name) > 0) as.character(spec$name)[[1]] else "comparison"
+    spec$patient_duplicate_policy <- normalize_patient_duplicate_policy(
+      spec$patient_duplicate_policy %||% config$patient_duplicate_policy,
+      default_action = config$patient_duplicate_policy$action,
+      allowed_actions = c("keep", "drop", "error"),
+      context = paste0("differential_abundance.comparisons['", spec_name, "'].patient_duplicate_policy")
+    )
+    spec
+  })
 
   config
 }
@@ -196,6 +214,52 @@ apply_factor_levels <- function(physeq, factor_levels) {
   }
   phyloseq::sample_data(physeq) <- phyloseq::sample_data(metadata_df)
   physeq
+}
+
+da_formula_uses_patient_id <- function(spec, patient_id_col = "PatientID") {
+  if (is_missing_da_value(spec$formula)) {
+    return(FALSE)
+  }
+  formula_text <- as.character(spec$formula)[[1]]
+  formula_terms <- tryCatch(
+    all.vars(stats::as.formula(paste0("~ ", formula_text))),
+    error = function(e) character(0)
+  )
+  patient_id_col %in% formula_terms
+}
+
+apply_da_patient_duplicate_policy <- function(physeq,
+                                              spec,
+                                              global_config,
+                                              patient_id_col = "PatientID") {
+  policy <- spec$patient_duplicate_policy %||% global_config$patient_duplicate_policy
+  policy <- normalize_patient_duplicate_policy(
+    policy,
+    default_action = "keep",
+    allowed_actions = c("keep", "drop", "error"),
+    context = "differential_abundance.patient_duplicate_policy"
+  )
+
+  if (!da_formula_uses_patient_id(spec, patient_id_col = patient_id_col) ||
+      is_missing_da_value(spec$group)) {
+    return(list(
+      physeq = physeq,
+      audit = empty_patient_duplicate_policy_audit(),
+      policy = policy
+    ))
+  }
+
+  comparison_name <- if (!is.null(spec$name) && length(spec$name) > 0) as.character(spec$name)[[1]] else "comparison"
+  group_col <- as.character(spec$group)[[1]]
+  apply_patient_duplicate_policy_physeq(
+    physeq,
+    policy = policy,
+    patient_id_col = patient_id_col,
+    unit_cols = group_col,
+    default_action = "keep",
+    allowed_actions = c("keep", "drop", "error"),
+    context = paste0("DA comparison '", comparison_name, "'")
+  )
 }
 
 inferred_structural_zero_groups <- function(group, levels) {
@@ -416,6 +480,13 @@ validate_comparison_spec <- function(physeq, spec) {
 
 prepare_da_physeq <- function(physeq, spec, global_config, select_taxa = NULL) {
   physeq <- apply_sample_filter(physeq, spec$sample_filter)
+  duplicate_policy <- apply_da_patient_duplicate_policy(
+    physeq,
+    spec = spec,
+    global_config = global_config,
+    patient_id_col = "PatientID"
+  )
+  physeq <- duplicate_policy$physeq
   resolved <- resolve_ancombc_comparison_spec(physeq, spec)
   physeq <- resolved$physeq
 
@@ -432,6 +503,8 @@ prepare_da_physeq <- function(physeq, spec, global_config, select_taxa = NULL) {
   }
 
   attr(physeq, "da_comparison_spec") <- resolved$spec
+  attr(physeq, "patient_duplicate_policy_audit") <- duplicate_policy$audit
+  attr(physeq, "patient_duplicate_policy") <- duplicate_policy$policy
   physeq
 }
 

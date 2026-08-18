@@ -172,6 +172,26 @@ read_select_taxa <- function(paths) {
   })))
 }
 
+write_patient_duplicate_policy_audit <- function(audit_df, out_dir, trial_id, method, comparison_name) {
+  if (is.null(audit_df)) {
+    audit_df <- empty_patient_duplicate_policy_audit()
+  }
+  comparison_dir <- file.path(out_dir, method, comparison_name)
+  dir.create(comparison_dir, recursive = TRUE, showWarnings = FALSE)
+  out_file <- file.path(
+    comparison_dir,
+    paste0(trial_id, "_", comparison_name, "_PatientDuplicatePolicy.tsv")
+  )
+  write.table(
+    audit_df,
+    file = out_file,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE
+  )
+  out_file
+}
+
 add_result_labels <- function(results_df, grouped_physeq, tax_label_level, tax_agg_level) {
   results_df$label <- results_df$taxon
   tax_df <- as.data.frame(as(tax_table(grouped_physeq), "matrix"), stringsAsFactors = FALSE)
@@ -315,6 +335,14 @@ for (spec in da_config$comparisons) {
   if (is.null(resolved_spec)) {
     resolved_spec <- spec
   }
+  duplicate_policy_file <- write_patient_duplicate_policy_audit(
+    attr(comparison_physeq, "patient_duplicate_policy_audit"),
+    out_dir = out_dir,
+    trial_id = trial_id,
+    method = "ANCOMBC",
+    comparison_name = resolved_spec$name
+  )
+  message("Wrote patient duplicate policy audit: ", duplicate_policy_file)
 
   alpha <- resolved_spec$alpha %||% da_config$alpha
   lfc_cutoff <- resolved_spec$lfc_cutoff %||% da_config$lfc_cutoff

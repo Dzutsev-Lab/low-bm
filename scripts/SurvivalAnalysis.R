@@ -103,6 +103,19 @@ run_survival_analysis <- function(comp_physeq, spec) {
 
   message("Running survival analysis: ", analysis_name)
   analysis_physeq <- apply_sample_filter(comp_physeq, spec$sample_filter)
+  duplicate_policy <- apply_survival_patient_duplicate_policy(
+    analysis_physeq,
+    spec = spec,
+    survival_config = survival_config
+  )
+  analysis_physeq <- duplicate_policy$physeq
+  duplicate_policy_file <- write_tsv(
+    duplicate_policy$audit,
+    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_PatientDuplicatePolicy.tsv")),
+    columns = names(duplicate_policy$audit)
+  )
+  message("Wrote patient duplicate policy audit: ", duplicate_policy_file)
+
   metadata_df <- as.data.frame(phyloseq::sample_data(analysis_physeq), stringsAsFactors = FALSE)
   covariates <- as.character(unlist(spec$covariates %||% character(0), use.names = FALSE))
   prepare_survival_metadata(

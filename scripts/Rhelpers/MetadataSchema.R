@@ -274,6 +274,197 @@ drop_inconsistent_patient_metadata <- function(metadata_df,
   metadata_df
 }
 
+normalize_patient_duplicate_policy <- function(policy = NULL,
+                                               default_action = "keep",
+                                               allowed_actions = c("keep", "drop", "error"),
+                                               context = "patient_duplicate_policy") {
+  if (is.null(policy)) {
+    policy <- list(action = default_action)
+  } else if (is.character(policy)) {
+    policy <- list(action = policy[[1]])
+  }
+
+  action <- policy$action
+  if (is.null(action) || length(action) == 0 || is.na(action[[1]]) || !nzchar(trimws(as.character(action[[1]])))) {
+    action <- default_action
+  }
+  action <- tolower(trimws(as.character(action[[1]])))
+  allowed_actions <- tolower(as.character(allowed_actions))
+  if (!action %in% allowed_actions) {
+    stop(
+      context,
+      ".action must be one of: ",
+      paste(allowed_actions, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  list(action = action)
+}
+
+empty_patient_duplicate_policy_audit <- function(unit_cols = character(0)) {
+  unit_cols <- as.character(unit_cols)
+  audit <- data.frame(PatientID = character(0), stringsAsFactors = FALSE)
+  for (column in unit_cols) {
+    audit[[column]] <- character(0)
+  }
+  audit$sample_names <- character(0)
+  audit$n_samples <- integer(0)
+  audit$action <- character(0)
+  audit$reason <- character(0)
+  audit
+}
+
+format_patient_duplicate_units <- function(audit_df, preview_n = 10) {
+  if (is.null(audit_df) || nrow(audit_df) == 0) {
+    return("")
+  }
+  preview_n <- min(preview_n, nrow(audit_df))
+  unit_cols <- setdiff(names(audit_df), c("PatientID", "sample_names", "n_samples", "action", "reason"))
+  preview <- vapply(seq_len(preview_n), function(i) {
+    unit_values <- if (length(unit_cols) == 0) {
+      character(0)
+    } else {
+      vapply(
+        unit_cols,
+        function(column) paste0(column, "=", as.character(audit_df[[column]][[i]])),
+        character(1),
+        USE.NAMES = FALSE
+      )
+    }
+    paste0(
+      audit_df$PatientID[[i]],
+      if (length(unit_values) > 0) paste0(" / ", paste(unit_values, collapse = " / ")) else "",
+      " (",
+      audit_df$n_samples[[i]],
+      " samples: ",
+      audit_df$sample_names[[i]],
+      ")"
+    )
+  }, character(1), USE.NAMES = FALSE)
+  more <- if (nrow(audit_df) > preview_n) paste0("; ... and ", nrow(audit_df) - preview_n, " more") else ""
+  paste0(paste(preview, collapse = "; "), more)
+}
+
+patient_duplicate_policy_plan <- function(metadata_df,
+                                          policy = NULL,
+                                          patient_id_col = "PatientID",
+                                          unit_cols = character(0),
+                                          default_action = "keep",
+                                          allowed_actions = c("keep", "drop", "error"),
+                                          context = "metadata") {
+  metadata_df <- as.data.frame(metadata_df, stringsAsFactors = FALSE)
+  unit_cols <- as.character(unit_cols)
+  unit_cols <- unit_cols[!is.na(unit_cols) & nzchar(trimws(unit_cols))]
+  required <- unique(c(patient_id_col, unit_cols))
+  fail_missing_columns(names(metadata_df), required, context)
+
+  policy <- normalize_patient_duplicate_policy(
+    policy,
+    default_action = default_action,
+    allowed_actions = allowed_actions,
+    context = paste0(context, " patient_duplicate_policy")
+  )
+
+  audit <- empty_patient_duplicate_policy_audit(unit_cols)
+  keep <- rep(TRUE, nrow(metadata_df))
+  if (nrow(metadata_df) == 0) {
+    return(list(metadata = metadata_df, keep = keep, audit = audit, policy = policy))
+  }
+
+  metadata_df <- standardize_metadata_missing_df(metadata_df, required)
+  missing_patient <- is_metadata_missing_like(metadata_df[[patient_id_col]])
+  if (any(missing_patient)) {
+    stop(context, " contains empty value(s) in patient ID column: ", patient_id_col, call. = FALSE)
+  }
+
+  complete_unit <- rep(TRUE, nrow(metadata_df))
+  if (length(unit_cols) > 0) {
+    for (column in unit_cols) {
+      complete_unit <- complete_unit & !is_metadata_missing_like(metadata_df[[column]])
+    }
+  }
+  if (!any(complete_unit)) {
+    return(list(metadata = metadata_df, keep = keep, audit = audit, policy = policy))
+  }
+
+  key_df <- metadata_df[complete_unit, required, drop = FALSE]
+  key_values <- do.call(
+    paste,
+    c(lapply(key_df, as.character), sep = "\r")
+  )
+  duplicate_keys <- names(table(key_values))[table(key_values) > 1]
+  if (length(duplicate_keys) == 0) {
+    return(list(metadata = metadata_df, keep = keep, audit = audit, policy = policy))
+  }
+
+  complete_rows <- which(complete_unit)
+  sample_names <- rownames(metadata_df)
+  if (is.null(sample_names) || any(is.na(sample_names)) || any(!nzchar(sample_names))) {
+    sample_names <- as.character(seq_len(nrow(metadata_df)))
+  }
+
+  audit_rows <- lapply(duplicate_keys, function(key) {
+    rows <- complete_rows[key_values == key]
+    first_row <- rows[[1]]
+    out <- data.frame(PatientID = as.character(metadata_df[[patient_id_col]][[first_row]]), stringsAsFactors = FALSE)
+    for (column in unit_cols) {
+      out[[column]] <- as.character(metadata_df[[column]][[first_row]])
+    }
+    out$sample_names <- paste(sample_names[rows], collapse = ",")
+    out$n_samples <- length(rows)
+    out$action <- policy$action
+    out$reason <- paste0("duplicate ", paste(required, collapse = " + "))
+    out
+  })
+  audit <- do.call(rbind, audit_rows)
+
+  if (identical(policy$action, "error")) {
+    stop(
+      context,
+      " contains duplicated patient unit(s): ",
+      format_patient_duplicate_units(audit),
+      call. = FALSE
+    )
+  }
+
+  if (identical(policy$action, "drop")) {
+    drop_rows <- complete_rows[key_values %in% duplicate_keys]
+    keep[drop_rows] <- FALSE
+    metadata_df <- metadata_df[keep, , drop = FALSE]
+    if (nrow(metadata_df) == 0) {
+      stop(context, " has no samples remaining after dropping duplicated patient unit(s).", call. = FALSE)
+    }
+  }
+
+  list(metadata = metadata_df, keep = keep, audit = audit, policy = policy)
+}
+
+apply_patient_duplicate_policy_physeq <- function(physeq,
+                                                  policy = NULL,
+                                                  patient_id_col = "PatientID",
+                                                  unit_cols = character(0),
+                                                  default_action = "keep",
+                                                  allowed_actions = c("keep", "drop", "error"),
+                                                  context = "phyloseq sample_data") {
+  metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
+  plan <- patient_duplicate_policy_plan(
+    metadata_df,
+    policy = policy,
+    patient_id_col = patient_id_col,
+    unit_cols = unit_cols,
+    default_action = default_action,
+    allowed_actions = allowed_actions,
+    context = context
+  )
+
+  if (identical(plan$policy$action, "drop")) {
+    physeq <- phyloseq::prune_samples(plan$keep, physeq)
+  }
+
+  list(physeq = physeq, audit = plan$audit, policy = plan$policy)
+}
+
 derive_control_status <- function(metadata_df) {
   fail_missing_columns(names(metadata_df), "SampleType", "metadata")
 

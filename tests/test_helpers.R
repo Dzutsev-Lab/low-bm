@@ -202,6 +202,41 @@ dropped_patient_meta <- suppressWarnings(validate_metadata_df(bad_patient_meta))
 stopifnot(!"P1" %in% as.character(dropped_patient_meta$PatientID))
 stopifnot(nrow(dropped_patient_meta) == nrow(bad_patient_meta) - 2)
 
+duplicate_plan <- patient_duplicate_policy_plan(
+  as(sample_data(physeq), "data.frame"),
+  policy = list(action = "drop"),
+  patient_id_col = "PatientID",
+  unit_cols = "SampleType",
+  context = "test metadata"
+)
+stopifnot(nrow(duplicate_plan$audit) == 1)
+stopifnot(identical(duplicate_plan$audit$PatientID[[1]], "P1"))
+stopifnot(identical(duplicate_plan$audit$SampleType[[1]], "Tumor"))
+stopifnot(duplicate_plan$audit$n_samples[[1]] == 2)
+stopifnot(identical(duplicate_plan$audit$action[[1]], "drop"))
+stopifnot(!any(as.character(duplicate_plan$metadata$PatientID) == "P1"))
+expect_error(
+  patient_duplicate_policy_plan(
+    as(sample_data(physeq), "data.frame"),
+    policy = list(action = "error"),
+    patient_id_col = "PatientID",
+    unit_cols = "SampleType",
+    context = "test metadata"
+  ),
+  "duplicated patient"
+)
+no_duplicate_meta <- as(sample_data(physeq), "data.frame")
+no_duplicate_meta <- no_duplicate_meta[rownames(no_duplicate_meta) != "SampleA_rep2", , drop = FALSE]
+no_duplicate_plan <- patient_duplicate_policy_plan(
+  no_duplicate_meta,
+  policy = list(action = "drop"),
+  patient_id_col = "PatientID",
+  unit_cols = "SampleType",
+  context = "test metadata"
+)
+stopifnot(nrow(no_duplicate_plan$audit) == 0)
+stopifnot(all(no_duplicate_plan$keep))
+
 tmp_file <- file.path(tempdir(), "test_physeq.RData")
 saved_file <- save_physeq(physeq, tmp_file)
 stopifnot(saved_file == tmp_file)
@@ -400,16 +435,45 @@ stopifnot(identical(as.numeric(lefse_config$relative_abundance_scale), 1e6))
 stopifnot(identical(resolve_lefse_norm_method(lefse_config, list(norm_method = "log2HostMapped")), "log2HostMapped"))
 
 spec <- legacy_comparison_spec("PatientSample")
-prepared <- prepare_da_physeq(physeq, spec, build_legacy_da_config(
+legacy_da_config <- build_legacy_da_config(
   trial_id = "test",
   comparisons = "PatientSample",
   out_dir = tempdir()
-))
+)
+prepared <- prepare_da_physeq(physeq, spec, legacy_da_config)
 stopifnot(inherits(prepared, "phyloseq"))
 prepared_meta <- as(sample_data(prepared), "data.frame")
 stopifnot(identical(levels(prepared_meta$SampleType), c("Nontumor", "Tumor")))
 prepared_spec <- attr(prepared, "da_comparison_spec")
 stopifnot(identical(prepared_spec$coefficient, "SampleTypeTumor"))
+prepared_duplicate_audit <- attr(prepared, "patient_duplicate_policy_audit")
+stopifnot(nrow(prepared_duplicate_audit) == 1)
+stopifnot(identical(prepared_duplicate_audit$action[[1]], "keep"))
+
+da_drop_spec <- spec
+da_drop_spec$patient_duplicate_policy <- list(action = "drop")
+da_drop_policy <- apply_da_patient_duplicate_policy(
+  apply_sample_filter(physeq, da_drop_spec$sample_filter),
+  spec = da_drop_spec,
+  global_config = legacy_da_config
+)
+da_drop_meta <- as(sample_data(da_drop_policy$physeq), "data.frame")
+stopifnot(nrow(da_drop_policy$audit) == 1)
+stopifnot(!"P1" %in% as.character(da_drop_meta$PatientID))
+
+cross_group_physeq <- physeq
+cross_group_meta <- as(sample_data(cross_group_physeq), "data.frame")
+cross_group_meta$SampleType[[2]] <- "Nontumor"
+sample_data(cross_group_physeq) <- sample_data(validate_metadata_df(cross_group_meta))
+da_cross_group_spec <- spec
+da_cross_group_spec$patient_duplicate_policy <- list(action = "error")
+da_cross_group_policy <- apply_da_patient_duplicate_policy(
+  apply_sample_filter(cross_group_physeq, da_cross_group_spec$sample_filter),
+  spec = da_cross_group_spec,
+  global_config = legacy_da_config
+)
+stopifnot(nrow(da_cross_group_policy$audit) == 0)
+stopifnot(nsamples(da_cross_group_policy$physeq) == 4)
 
 inferred_spec <- list(
   name = "InferTumorNontumor",
@@ -682,6 +746,65 @@ stopifnot(isTRUE(all.equal(
   feature_bundle$patient_features[p1_feature_row, tumor_genus_a_feature],
   15 / (15 + 5.5)
 )))
+stopifnot(identical(survival_config$patient_duplicate_policy$action, "collapse"))
+stopifnot(identical(survival_spec$patient_duplicate_policy$action, "collapse"))
+
+survival_drop_config <- normalize_survival_config(
+  list(
+    patient_duplicate_policy = list(action = "drop"),
+    analyses = list(list(
+      name = "DropDuplicateSurvival",
+      sample_filter = list(SampleType = "*"),
+      covariates = c("Age"),
+      tax_agg_level = "Genus",
+      taxa_min_prevalence = 0,
+      taxa_min_mean_relative_abundance = 0.5,
+      min_n = 2,
+      min_events = 1
+    ))
+  ),
+  project_config = list(norm_method = "RelAbund", pseudocount = 1)
+)
+survival_drop_spec <- survival_drop_config$analyses[[1]]
+survival_drop_policy <- apply_survival_patient_duplicate_policy(physeq, survival_drop_spec, survival_drop_config)
+survival_drop_meta <- as(sample_data(survival_drop_policy$physeq), "data.frame")
+stopifnot(nrow(survival_drop_policy$audit) == 1)
+stopifnot(identical(survival_drop_policy$audit$action[[1]], "drop"))
+stopifnot(!"P1" %in% as.character(survival_drop_meta$PatientID))
+survival_drop_bundle <- build_patient_feature_matrix(
+  survival_drop_policy$physeq,
+  survival_drop_spec,
+  survival_drop_config
+)
+stopifnot(!"P1" %in% survival_drop_bundle$patient_features$PatientID)
+survival_drop_coda_inputs <- build_coda_model_inputs(
+  survival_drop_policy$physeq,
+  survival_drop_spec,
+  survival_drop_config
+)
+stopifnot(all(vapply(
+  survival_drop_coda_inputs$inputs,
+  function(input) !"P1" %in% input$base_df$PatientID,
+  logical(1)
+)))
+
+survival_error_config <- normalize_survival_config(
+  list(
+    patient_duplicate_policy = list(action = "error"),
+    analyses = list(list(
+      name = "ErrorDuplicateSurvival",
+      sample_filter = list(SampleType = "*")
+    ))
+  )
+)
+expect_error(
+  apply_survival_patient_duplicate_policy(
+    physeq,
+    survival_error_config$analyses[[1]],
+    survival_error_config
+  ),
+  "duplicated patient"
+)
 
 mixed_type_physeq <- physeq
 mixed_type_meta <- as(sample_data(mixed_type_physeq), "data.frame")

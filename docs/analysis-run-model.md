@@ -131,6 +131,25 @@ Differential abundance followed by confirmatory BLAST:
   --analysis-config config/local/analysis.yaml
 ```
 
+Patient duplicate handling for inferential analyses:
+
+```yaml
+differential_abundance:
+  patient_duplicate_policy:
+    action: "keep"     # keep, drop, error
+
+survival_analysis:
+  patient_duplicate_policy:
+    action: "collapse" # collapse, drop, error
+```
+
+Differential-abundance duplicate handling is applied only to comparisons whose
+formula includes `PatientID`; duplicate units are `PatientID + group`. Survival
+duplicate units are `PatientID + sample_strata_col` when strata are enabled, or
+`PatientID` when unstratified. Use `drop` to remove every sample in duplicated
+units before modeling, or `error` to stop and review the metadata. Each run
+writes a `PatientDuplicatePolicy.tsv` audit file beside the analysis outputs.
+
 Config-driven XGBoost classification:
 
 ```bash

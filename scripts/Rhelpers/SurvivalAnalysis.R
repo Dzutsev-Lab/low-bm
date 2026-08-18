@@ -34,6 +34,32 @@ survival_strata_enabled <- function(sample_strata_col) {
     nzchar(trimws(as.character(sample_strata_col[[1]])))
 }
 
+survival_patient_duplicate_unit_cols <- function(sample_strata_col) {
+  if (survival_strata_enabled(sample_strata_col)) {
+    return(as.character(sample_strata_col[[1]]))
+  }
+  character(0)
+}
+
+apply_survival_patient_duplicate_policy <- function(sample_physeq,
+                                                    spec,
+                                                    survival_config,
+                                                    context = NULL) {
+  analysis_name <- spec$name %||% "survival analysis"
+  if (is.null(context)) {
+    context <- paste0("survival analysis '", as.character(analysis_name)[[1]], "'")
+  }
+  apply_patient_duplicate_policy_physeq(
+    sample_physeq,
+    policy = spec$patient_duplicate_policy,
+    patient_id_col = survival_config$patient_id_col,
+    unit_cols = survival_patient_duplicate_unit_cols(spec$sample_strata_col),
+    default_action = "collapse",
+    allowed_actions = c("collapse", "drop", "error"),
+    context = context
+  )
+}
+
 normalize_survival_methods <- function(methods = NULL) {
   if (is.null(methods)) {
     return("cox")
@@ -124,6 +150,12 @@ normalize_survival_config <- function(config = list(), project_config = list()) 
   if (is.null(config$pseudocount)) config$pseudocount <- project_config$pseudocount %||% 1
   if (is.null(config$tax_agg_level)) config$tax_agg_level <- project_config$tax_agg_level %||% "Genus"
   if (!"sample_strata_col" %in% names(config)) config$sample_strata_col <- "SampleType"
+  config$patient_duplicate_policy <- normalize_patient_duplicate_policy(
+    config$patient_duplicate_policy,
+    default_action = "collapse",
+    allowed_actions = c("collapse", "drop", "error"),
+    context = "survival_analysis.patient_duplicate_policy"
+  )
   config$methods <- normalize_survival_methods(config$methods)
   config$coda4microbiome <- normalize_coda_options(config$coda4microbiome)
 
@@ -141,6 +173,12 @@ normalize_survival_config <- function(config = list(), project_config = list()) 
     if (is.null(spec$norm_method)) spec$norm_method <- config$norm_method
     if (is.null(spec$pseudocount)) spec$pseudocount <- config$pseudocount
     if (!"sample_strata_col" %in% names(spec)) spec$sample_strata_col <- config$sample_strata_col
+    spec$patient_duplicate_policy <- normalize_patient_duplicate_policy(
+      spec$patient_duplicate_policy %||% config$patient_duplicate_policy,
+      default_action = config$patient_duplicate_policy$action,
+      allowed_actions = c("collapse", "drop", "error"),
+      context = paste0("survival_analysis.analyses['", as.character(spec$name)[[1]], "'].patient_duplicate_policy")
+    )
     if (is.null(spec$methods)) spec$methods <- config$methods
     spec$methods <- normalize_survival_methods(spec$methods)
     spec$coda4microbiome <- normalize_coda_options(utils::modifyList(

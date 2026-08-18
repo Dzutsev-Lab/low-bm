@@ -46,6 +46,10 @@ differential_abundance:
   tax_label_level: "Genus"
   alpha: 0.05
   lfc_cutoff: 0.3
+  patient_duplicate_policy:
+    # Applied only when a comparison formula includes PatientID.
+    # Options: keep, drop, error.
+    action: "keep"
   comparisons:
     # ANCOM-BC factor levels, coefficient names, and structural-zero column names
     # are inferred after sample filtering; each comparison must have two group levels.
@@ -144,6 +148,10 @@ survival_analysis:
   norm_method: "log2HostMapped"
   pseudocount: 1
   sample_strata_col: "SampleType"
+  patient_duplicate_policy:
+    # Duplicate unit is PatientID + sample_strata_col when strata are enabled.
+    # Options: collapse, drop, error.
+    action: "collapse"
   methods: ["cox"]
   coda4microbiome:
     lambda: "lambda.1se"
