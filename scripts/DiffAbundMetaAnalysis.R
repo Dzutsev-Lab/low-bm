@@ -23,8 +23,8 @@ parser$add_argument("--batch2-Name",
                     help = "Name for batch 2 to locate differential abundance results within Exp_Output")
 parser$add_argument("--DA-method",
                     type = "character",
-                    default = "ANCOMBC",
-                    help = "The tool used to generate differenital abundance results (Options: LIMMA_VOOM, ANCOMBC)")
+                    default = "ANCOMBC2",
+                    help = "The tool used to generate differential abundance results (Options: LIMMA_VOOM, ANCOMBC2)")
 parser$add_argument("--comparison",
                     type = "character",
                     help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample)")
@@ -56,8 +56,16 @@ if (!is.null(args$analysis_config)) {
 
 args$batch1_Name <- args$batch1_Name %||% meta_config$batch1_name %||% meta_config$batch1_Name
 args$batch2_Name <- args$batch2_Name %||% meta_config$batch2_name %||% meta_config$batch2_Name
-args$DA_method <- meta_config$DA_method %||% meta_config$da_method %||% args$DA_method %||% "ANCOMBC"
+normalize_da_method <- function(method) {
+    method <- toupper(as.character(method))
+    method[method == "ANCOMBC"] <- "ANCOMBC2"
+    method
+}
+
+args$DA_method <- normalize_da_method(meta_config$DA_method %||% meta_config$da_method %||% args$DA_method %||% "ANCOMBC2")
 args$comparison <- args$comparison %||% meta_config$comparison
+args$DA_result_test <- meta_config$DA_result_test %||% meta_config$da_result_test %||% "primary"
+args$DA_result_contrast <- meta_config$DA_result_contrast %||% meta_config$da_result_contrast
 args$hetQ_p_cutoff <- as.numeric(meta_config$hetQ_p_cutoff %||% meta_config$hetq_p_cutoff %||% args$hetQ_p_cutoff)
 args$fisher_q_cutoff <- as.numeric(meta_config$fisher_q_cutoff %||% args$fisher_q_cutoff)
 
@@ -85,12 +93,84 @@ if (length(missing_inputs) > 0) {
 #------------------------------------------------
 # Stardarized Differential Abundance tsv Read-in
 #------------------------------------------------
-readin_DA <- function(file, batch_label) {
+da_results_file_candidates <- function(base_dir, batch_name, DA_method, comparison) {
+    method <- normalize_da_method(DA_method)
+    candidates <- c(file.path(
+        base_dir,
+        batch_name,
+        method,
+        comparison,
+        paste0(batch_name, "_", comparison, "_", method, "Results.tsv")
+    ))
+    if (identical(method, "ANCOMBC2")) {
+        candidates <- c(candidates, file.path(
+            base_dir,
+            batch_name,
+            "ANCOMBC",
+            comparison,
+            paste0(batch_name, "_", comparison, "_ANCOMBCResults.tsv")
+        ))
+    }
+    candidates
+}
+
+readin_DA <- function(file, batch_label, result_test = "primary", result_contrast = NULL) {
     df <- read.delim(
         file,
         header = TRUE,
         sep = "\t"
     )
+
+    if ("test" %in% names(df)) {
+        if (result_test %in% c("global", "trend")) {
+            stop(
+                "DA meta-analysis requires one contrast-level result with log2FoldChange and se; ",
+                "ANCOM-BC2 ",
+                result_test,
+                " results are not valid meta-analysis inputs.",
+                call. = FALSE
+            )
+        }
+        df <- df |> filter(test == result_test)
+    }
+    if (!is.null(result_contrast) && "contrast" %in% names(df)) {
+        df <- df |> filter(contrast == result_contrast)
+    }
+    if ("contrast" %in% names(df)) {
+        contrasts <- unique(df$contrast[!is.na(df$contrast) & nzchar(trimws(df$contrast))])
+        if (length(contrasts) > 1 && is.null(result_contrast)) {
+            stop(
+                "DA meta-analysis found multiple ANCOM-BC2 contrasts in ",
+                file,
+                ": ",
+                paste(contrasts, collapse = ", "),
+                ". Set meta_differential_abundance.DA_result_contrast.",
+                call. = FALSE
+            )
+        }
+    }
+    required_cols <- c("taxon", "log2FoldChange", "p", "padj", "se", "direction")
+    missing_cols <- setdiff(required_cols, names(df))
+    if (length(missing_cols) > 0) {
+        stop(
+            "DA meta-analysis input is missing required contrast-level column(s) in ",
+            file,
+            ": ",
+            paste(missing_cols, collapse = ", "),
+            call. = FALSE
+        )
+    }
+    if (any(duplicated(df$taxon))) {
+        stop(
+            "DA meta-analysis input has duplicate taxa after result filtering in ",
+            file,
+            ". Select one ANCOM-BC2 contrast before meta-analysis.",
+            call. = FALSE
+        )
+    }
+    if (nrow(df) == 0) {
+        stop("DA meta-analysis input has zero rows after result filtering: ", file, call. = FALSE)
+    }
 
     df |>
         mutate(
@@ -106,15 +186,24 @@ B2_name_components <- str_split(args$batch2_Name, "_")[[1]]
 B2_ID <- B2_name_components[1]
 B2_ExpID <- B2_name_components[2]
 
-#---------------------------------------------------
-# Read in Limma Voom Differential Abundance Results
-#---------------------------------------------------
-B1_DA_results <- readin_DA(file = file.path(base_dir,
-                                            args$batch1_Name,
-                                            args$DA_method,
-                                            args$comparison,
-                                            paste0(args$batch1_Name, "_", args$comparison, "_", args$DA_method, "Results.tsv")),
-                           batch_label = B1_ExpID) |>
+B1_candidates <- da_results_file_candidates(base_dir, args$batch1_Name, args$DA_method, args$comparison)
+B1_existing <- B1_candidates[file.exists(B1_candidates)]
+if (length(B1_existing) == 0) {
+    stop("Missing batch 1 DA result file. Tried: ", paste(B1_candidates, collapse = "; "), call. = FALSE)
+}
+B1_file <- B1_existing[[1]]
+B2_candidates <- da_results_file_candidates(base_dir, args$batch2_Name, args$DA_method, args$comparison)
+B2_existing <- B2_candidates[file.exists(B2_candidates)]
+if (length(B2_existing) == 0) {
+    stop("Missing batch 2 DA result file. Tried: ", paste(B2_candidates, collapse = "; "), call. = FALSE)
+}
+B2_file <- B2_existing[[1]]
+
+B1_DA_results <- readin_DA(
+                            file = B1_file,
+                            batch_label = B1_ExpID,
+                            result_test = args$DA_result_test,
+                            result_contrast = args$DA_result_contrast) |>
                     rename(
                         b1 = batch,
                         logFC_b1 = log2FoldChange,
@@ -123,12 +212,11 @@ B1_DA_results <- readin_DA(file = file.path(base_dir,
                         se_b1 = se,
                         direction_b1 = direction
                     )
-B2_DA_results <- readin_DA(file = file.path(base_dir,
-                                            args$batch2_Name,
-                                            args$DA_method,
-                                            args$comparison,
-                                            paste0(args$batch2_Name, "_", args$comparison, "_", args$DA_method, "Results.tsv")),
-                           batch_label = B2_ExpID) |>
+B2_DA_results <- readin_DA(
+                            file = B2_file,
+                            batch_label = B2_ExpID,
+                            result_test = args$DA_result_test,
+                            result_contrast = args$DA_result_contrast) |>
                     rename(
                         b2 = batch,
                         logFC_b2 = log2FoldChange,
@@ -138,7 +226,7 @@ B2_DA_results <- readin_DA(file = file.path(base_dir,
                         direction_b2 = direction
                     )
 
-if (args$DA_method == "ANCOMBC") {
+if (args$DA_method == "ANCOMBC2") {
     B1_DA_results <- B1_DA_results |>
                         rename(struc0_b1 = struc0)
     B2_DA_results <- B2_DA_results |>

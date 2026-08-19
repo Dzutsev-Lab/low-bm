@@ -43,8 +43,12 @@ meta_differential_abundance:
   # directory names such as <trialID>_<trial_descript>.
   batch1_name: "<batch1_trialID>_<batch1_trial_descript>"
   batch2_name: "<batch2_trialID>_<batch2_trial_descript>"
-  DA_method: "ANCOMBC"
+  DA_method: "ANCOMBC2"
   comparison: "ExampleComparison"
+  # Meta-analysis requires one contrast-level ANCOM-BC2 result. Use primary,
+  # pairwise, or dunnet; global and trend summaries are intentionally rejected.
+  DA_result_test: "primary"
+  DA_result_contrast: null
   hetQ_p_cutoff: 0.05
   fisher_q_cutoff: 0.05
   output_dir: null

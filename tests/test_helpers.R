@@ -513,7 +513,7 @@ stopifnot(identical(resolved_matching$spec$coefficient, "SampleTypeTumor"))
 
 bad_spec <- spec
 bad_spec$factor_levels <- list(SampleType = c("Tumor"))
-expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")), "Inferred factor_levels")
+expect_error(prepare_da_physeq(physeq, bad_spec, list(tax_agg_level = "Genus")), "absent from configured ANCOM-BC2 group levels")
 
 conflicting_coef_spec <- matching_legacy_spec
 conflicting_coef_spec$coefficient <- "SampleTypeNontumor"
@@ -531,11 +531,35 @@ expect_error(
 
 one_level_spec <- inferred_spec
 one_level_spec$sample_filter <- list(SampleType = "Tumor")
-expect_error(prepare_da_physeq(physeq, one_level_spec, list(tax_agg_level = "Genus")), "exactly two observed")
+expect_error(prepare_da_physeq(physeq, one_level_spec, list(tax_agg_level = "Genus")), "at least two observed")
 
 three_level_da_spec <- inferred_spec
 three_level_da_spec$sample_filter <- list(SampleType = "*")
-expect_error(prepare_da_physeq(physeq, three_level_da_spec, list(tax_agg_level = "Genus")), "found 3")
+three_level_da_spec$factor_levels <- list(SampleType = c("NegativeControl", "Nontumor", "Tumor"))
+three_level_da_spec$tests <- c("global", "dunnet")
+three_level_resolved <- resolve_ancombc_comparison_spec(
+  apply_sample_filter(physeq, three_level_da_spec$sample_filter),
+  three_level_da_spec
+)
+stopifnot(identical(three_level_resolved$spec$factor_levels$SampleType, c("NegativeControl", "Nontumor", "Tumor")))
+stopifnot(is.null(three_level_resolved$spec$coefficient))
+
+trend_da_spec <- three_level_da_spec
+trend_da_spec$tests <- "trend"
+trend_da_spec$ordered_levels <- c("NegativeControl", "Nontumor", "Tumor")
+trend_resolved <- resolve_ancombc_comparison_spec(
+  apply_sample_filter(physeq, trend_da_spec$sample_filter),
+  trend_da_spec
+)
+trend_control <- build_ancombc2_trend_control(trend_resolved$spec, list())
+stopifnot(length(trend_control$contrast) == 2)
+stopifnot(identical(as.integer(unlist(trend_control$node)), c(2L, 2L)))
+bad_trend_spec <- three_level_da_spec
+bad_trend_spec$tests <- "trend"
+expect_error(
+  resolve_ancombc_comparison_spec(apply_sample_filter(physeq, bad_trend_spec$sample_filter), bad_trend_spec),
+  "must define ordered_levels"
+)
 
 missing_group_spec <- inferred_spec
 missing_group_spec$group <- "MissingGroup"
@@ -670,6 +694,83 @@ stopifnot(direction_results$direction[match("none", direction_results$taxon)] ==
 stopifnot(direction_results$direction[match("struc_neg", direction_results$taxon)] == "neg")
 stopifnot(direction_results$direction[match("struc_pos", direction_results$taxon)] == "pos")
 stopifnot(direction_results$significance[match("neg", direction_results$taxon)] == "Sig")
+
+fake_levels_spec <- trend_resolved$spec
+fake_levels_spec$tests <- c("global", "pairwise", "dunnet", "trend")
+fake_taxa <- c("taxon_a", "taxon_b")
+fake_res <- data.frame(
+  taxon = fake_taxa,
+  lfc_SampleTypeNontumor = c(log(2), 0),
+  lfc_SampleTypeTumor = c(log(4), log(2)),
+  se_SampleTypeNontumor = c(log(1.2), log(1.1)),
+  se_SampleTypeTumor = c(log(1.4), log(1.3)),
+  W_SampleTypeNontumor = c(5, 0),
+  W_SampleTypeTumor = c(6, 2),
+  p_SampleTypeNontumor = c(0.001, 1),
+  p_SampleTypeTumor = c(0.002, 0.2),
+  q_SampleTypeNontumor = c(0.01, 1),
+  q_SampleTypeTumor = c(0.02, 0.4),
+  diff_SampleTypeNontumor = c(TRUE, FALSE),
+  diff_SampleTypeTumor = c(TRUE, FALSE),
+  passed_ss_SampleTypeNontumor = c(TRUE, TRUE),
+  passed_ss_SampleTypeTumor = c(TRUE, TRUE),
+  diff_robust_SampleTypeNontumor = c(TRUE, FALSE),
+  diff_robust_SampleTypeTumor = c(TRUE, FALSE),
+  check.names = FALSE
+)
+fake_pair <- fake_res
+fake_pair$lfc_SampleTypeTumor_SampleTypeNontumor <- c(log(2), log(2))
+fake_pair$se_SampleTypeTumor_SampleTypeNontumor <- c(log(1.1), log(1.1))
+fake_pair$W_SampleTypeTumor_SampleTypeNontumor <- c(3, 4)
+fake_pair$p_SampleTypeTumor_SampleTypeNontumor <- c(0.03, 0.04)
+fake_pair$q_SampleTypeTumor_SampleTypeNontumor <- c(0.04, 0.05)
+fake_pair$diff_SampleTypeTumor_SampleTypeNontumor <- c(TRUE, TRUE)
+fake_pair$passed_ss_SampleTypeTumor_SampleTypeNontumor <- c(TRUE, TRUE)
+fake_pair$diff_robust_SampleTypeTumor_SampleTypeNontumor <- c(TRUE, TRUE)
+fake_global <- data.frame(
+  taxon = fake_taxa,
+  W = c(8, 0),
+  p_val = c(0.001, 1),
+  q_val = c(0.01, 1),
+  diff_abn = c(TRUE, FALSE),
+  passed_ss = c(TRUE, TRUE),
+  diff_robust_abn = c(TRUE, FALSE),
+  check.names = FALSE
+)
+fake_trend <- fake_global
+fake_trend$lfc_SampleTypeNontumor <- c(log(2), 0)
+fake_trend$lfc_SampleTypeTumor <- c(log(4), 0)
+fake_trend$se_SampleTypeNontumor <- c(log(1.2), log(1.1))
+fake_trend$se_SampleTypeTumor <- c(log(1.4), log(1.3))
+fake_zero <- data.frame(
+  taxon = fake_taxa,
+  `structural_zero (SampleType = NegativeControl)` = c(FALSE, FALSE),
+  `structural_zero (SampleType = Nontumor)` = c(FALSE, FALSE),
+  `structural_zero (SampleType = Tumor)` = c(FALSE, FALSE),
+  check.names = FALSE
+)
+fake_ancombc2 <- list(
+  res = fake_res,
+  res_global = fake_global,
+  res_pair = fake_pair,
+  res_dunn = fake_res,
+  res_trend = fake_trend,
+  zero_ind = fake_zero
+)
+fake_standardized <- standardize_ancombc2_results(fake_ancombc2, fake_levels_spec, alpha = 0.05, lfc_cutoff = 0.3)
+stopifnot(all(c("primary", "global", "pairwise", "dunnet", "trend") %in% unique(fake_standardized$test)))
+stopifnot(any(fake_standardized$test == "pairwise" & fake_standardized$contrast == "Tumor vs Nontumor"))
+primary_taxon_a <- fake_standardized[
+  fake_standardized$taxon == "taxon_a" &
+    fake_standardized$test == "primary" &
+    fake_standardized$contrast == "Nontumor vs NegativeControl",
+  ,
+  drop = FALSE
+]
+stopifnot(isTRUE(all.equal(primary_taxon_a$log2FoldChange[[1]], 1)))
+stopifnot(identical(primary_taxon_a$significance[[1]], "Sig"))
+global_taxon_b <- fake_standardized[fake_standardized$taxon == "taxon_b" & fake_standardized$test == "global", , drop = FALSE]
+stopifnot(identical(global_taxon_b$significance[[1]], "NotSig"))
 
 surv_meta <- prepare_survival_metadata(
   as(sample_data(physeq), "data.frame"),
@@ -1276,9 +1377,10 @@ stopifnot(identical(batch_df$trialID[[1]], "051926.1"))
 stopifnot(identical(batch_row_to_label(batch_df[1, , drop = FALSE]), "051926.1_TIGER062822_PrelimAnalysis"))
 
 if (requireNamespace("ANCOMBC", quietly = TRUE)) {
-  message("ANCOMBC is available; full model smoke tests can be added for project fixtures.")
+  stopifnot(exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE))
+  message("ANCOMBC with ancombc2() is available; full model smoke tests can be added for project fixtures.")
 } else {
-  message("Skipping ANCOMBC model smoke test because ANCOMBC is not installed.")
+  message("Skipping ANCOM-BC2 model smoke test because ANCOMBC is not installed.")
 }
 
 if (requireNamespace("lefser", quietly = TRUE)) {

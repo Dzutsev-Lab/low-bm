@@ -95,6 +95,22 @@ This wraps the existing two-result-table meta-analysis. It remains separate
 from standard `low-bm analysis run differential-abundance`, which runs DA on one
 phyloseq endpoint.
 
+For ANCOM-BC2 outputs, meta-analysis must use one contrast-level result with an
+effect size and standard error. Set `DA_method: "ANCOMBC2"` and, when a
+comparison has multiple contrasts, set `DA_result_test` plus
+`DA_result_contrast`:
+
+```yaml
+meta_differential_abundance:
+  DA_method: "ANCOMBC2"
+  comparison: "DoseGlobalDunnett"
+  DA_result_test: "dunnet"
+  DA_result_contrast: "High vs Vehicle"
+```
+
+`global` and `trend` ANCOM-BC2 summaries are intentionally rejected by this
+meta-analysis step because they are not single effect-size contrasts.
+
 ## Standard Analysis Handoff
 
 After compilation, update `config/local/analysis.yaml`:

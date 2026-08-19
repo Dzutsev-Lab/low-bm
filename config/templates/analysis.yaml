@@ -42,23 +42,60 @@ abundance_barplots:
       top_n: 20
 
 differential_abundance:
-  methods: ["ANCOMBC"]
+  methods: ["ANCOMBC2"]
   tax_label_level: "Genus"
   alpha: 0.05
   lfc_cutoff: 0.3
+  # ANCOM-BC2 defaults. Per-comparison values override these.
+  p_adj_method: "holm"
+  pseudo_sens: true
+  prv_cut: 0.10
+  lib_cut: 1000
+  s0_perc: 0.05
+  struc_zero: true
+  neg_lb: true
+  n_cl: 1
   patient_duplicate_policy:
     # Applied only when a comparison formula includes PatientID.
     # Options: keep, drop, error.
     action: "keep"
   comparisons:
-    # ANCOM-BC factor levels, coefficient names, and structural-zero column names
-    # are inferred after sample filtering; each comparison must have two group levels.
-    - name: "ExampleComparison"
+    # Legacy-style two-level comparison. `formula` is still accepted as an alias,
+    # but new configs should use ANCOM-BC2's `fix_formula`.
+    - name: "ControlVsTreatment"
       sample_filter:
         SampleType: ["Control", "Treatment"]
-      formula: "SampleType"
+      factor_levels:
+        SampleType: ["Control", "Treatment"]
+      fix_formula: "SampleType"
       group: "SampleType"
       plot_title: "Control vs Treatment"
+      tests: ["primary"]
+
+    # Three-level categorical comparison. The first factor level is the
+    # reference unless `reference_level` is set.
+    - name: "DoseGlobalDunnett"
+      sample_filter:
+        DoseGroup: ["Vehicle", "Low", "High"]
+      factor_levels:
+        DoseGroup: ["Vehicle", "Low", "High"]
+      fix_formula: "DoseGroup"
+      group: "DoseGroup"
+      reference_level: "Vehicle"
+      tests: ["global", "dunnet"]
+      plot_title: "Dose groups vs vehicle"
+
+    # Ordered trend analysis. Always provide ordered_levels; trend order is
+    # never inferred alphabetically.
+    - name: "DoseTrend"
+      sample_filter:
+        DoseGroup: ["Vehicle", "Low", "High"]
+      ordered_levels: ["Vehicle", "Low", "High"]
+      fix_formula: "DoseGroup"
+      group: "DoseGroup"
+      tests: ["trend"]
+      trend_patterns: ["increasing", "decreasing"]
+      plot_title: "Monotonic dose trends"
 
 lefse_analysis:
   source_comparisons: "differential_abundance"
@@ -74,7 +111,11 @@ lefse_analysis:
 blast_confirmation:
   # Differential-abundance candidate selection.
   DA_comparisons: []
-  DA_method: "ANCOMBC"
+  DA_method: "ANCOMBC2"
+  # Optional ANCOM-BC2 slice for differential-abundance candidate selection.
+  # Leave null for all significant rows, or set e.g. primary/global/dunnet/trend.
+  DA_result_test: null
+  DA_result_contrast: null
 
   # Top-abundance candidate selection. Set candidate_source to "top_abundance"
   # and provide candidate_comparisons to run a BLAST confirmation that does not

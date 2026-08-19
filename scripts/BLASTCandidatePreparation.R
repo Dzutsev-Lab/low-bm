@@ -33,6 +33,14 @@ parser$add_argument("--candidate-source",
 parser$add_argument("--DA-method",
                     type = "character",
                     help = "Differential abundance method used to perform comparisons")
+parser$add_argument("--DA-result-test",
+                    type = "character",
+                    default = NULL,
+                    help = "ANCOM-BC2 result family to select taxa from, such as primary, global, pairwise, dunnet, or trend")
+parser$add_argument("--DA-result-contrast",
+                    type = "character",
+                    default = NULL,
+                    help = "Optional ANCOM-BC2 contrast label to select taxa from")
 parser$add_argument("--top-n-taxa",
                     type = "integer",
                     default = NULL,
@@ -113,6 +121,12 @@ sanitize_path_component <- function(x, fallback = "taxon") {
   if (!nzchar(x)) fallback else x
 }
 
+normalize_da_method <- function(method) {
+  method <- toupper(as.character(method))
+  method[method == "ANCOMBC"] <- "ANCOMBC2"
+  method
+}
+
 load_input_physeq <- function() {
   if (!is.null(args$compiled_physeq)) {
     return(load_physeq(args$compiled_physeq))
@@ -131,22 +145,53 @@ load_input_physeq <- function() {
   )
 }
 
-read_significant_taxa <- function(io_dir, DA_method, trialID, comparisons) {
+da_results_file_candidates <- function(io_dir, DA_method, trialID, comparison) {
+  method <- normalize_da_method(DA_method)
+  candidates <- c(file.path(
+    io_dir,
+    method,
+    comparison,
+    paste0(trialID, "_", comparison, "_", method, "Results.tsv")
+  ))
+  if (identical(method, "ANCOMBC2")) {
+    candidates <- c(candidates, file.path(
+      io_dir,
+      "ANCOMBC",
+      comparison,
+      paste0(trialID, "_", comparison, "_ANCOMBCResults.tsv")
+    ))
+  }
+  candidates
+}
+
+read_significant_taxa <- function(io_dir,
+                                  DA_method,
+                                  trialID,
+                                  comparisons,
+                                  result_test = NULL,
+                                  result_contrast = NULL) {
   sig_taxa_by_comparison <- list()
 
   for (comparison in comparisons) {
-    results_file <- file.path(
-      io_dir,
-      DA_method,
-      comparison,
-      paste0(trialID, "_", comparison, "_", DA_method, "Results.tsv")
-    )
+    results_candidates <- da_results_file_candidates(io_dir, DA_method, trialID, comparison)
+    existing <- results_candidates[file.exists(results_candidates)]
 
-    if (!file.exists(results_file)) {
-      stop("Missing differential abundance results file: ", results_file, call. = FALSE)
+    if (length(existing) == 0) {
+      stop(
+        "Missing differential abundance results file. Tried: ",
+        paste(results_candidates, collapse = "; "),
+        call. = FALSE
+      )
     }
+    results_file <- existing[[1]]
 
     DA_results_df <- read.delim(results_file, stringsAsFactors = FALSE)
+    if (!is_missing_value(result_test) && "test" %in% names(DA_results_df)) {
+      DA_results_df <- DA_results_df[as.character(DA_results_df$test) == as.character(result_test), , drop = FALSE]
+    }
+    if (!is_missing_value(result_contrast) && "contrast" %in% names(DA_results_df)) {
+      DA_results_df <- DA_results_df[as.character(DA_results_df$contrast) == as.character(result_contrast), , drop = FALSE]
+    }
     missing_columns <- setdiff(c("taxon", "significance"), names(DA_results_df))
     if (length(missing_columns) > 0) {
       stop(
@@ -154,6 +199,15 @@ read_significant_taxa <- function(io_dir, DA_method, trialID, comparisons) {
         results_file,
         ": ",
         paste(missing_columns, collapse = ", "),
+        call. = FALSE
+      )
+    }
+
+    if (nrow(DA_results_df) == 0) {
+      stop(
+        "No rows remained in ",
+        results_file,
+        " after applying DA result filters.",
         call. = FALSE
       )
     }
@@ -394,6 +448,8 @@ if (!is.null(args$analysis_config)) {
   candidate_sample_filter <- blast_config$candidate_sample_filter %||% blast_config$sample_filter
   candidate_norm_method <- blast_config$candidate_norm_method %||% "noNorm"
   candidate_pseudocount <- blast_config$candidate_pseudocount %||% project_config$pseudocount %||% 1
+  DA_result_test <- blast_config$DA_result_test %||% blast_config$da_result_test
+  DA_result_contrast <- blast_config$DA_result_contrast %||% blast_config$da_result_contrast
   asv_fasta_project_config <- project_config
   asv_fasta_base_dir <- project_config$base_dir %||% args$base_dir
 } else {
@@ -410,6 +466,8 @@ if (!is.null(args$analysis_config)) {
   candidate_sample_filter <- NULL
   candidate_norm_method <- args$candidate_norm_method %||% "noNorm"
   candidate_pseudocount <- args$candidate_pseudocount %||% 1
+  DA_result_test <- args$DA_result_test
+  DA_result_contrast <- args$DA_result_contrast
   asv_fasta_project_config <- list(
     trialID = trialID,
     compiled_physeq = args$compiled_physeq,
@@ -460,7 +518,9 @@ if (candidate_source == "differential_abundance") {
     io_dir = io_dir,
     DA_method = DA_method,
     trialID = trialID,
-    comparisons = DA_comparisons
+    comparisons = DA_comparisons,
+    result_test = DA_result_test,
+    result_contrast = DA_result_contrast
   )
 } else if (candidate_source == "top_abundance") {
   sig_taxa_by_comparison <- read_top_abundance_taxa(
@@ -487,7 +547,12 @@ selection_name <- blast_config$candidate_selection_name %||%
 selection_name <- sanitize_path_component(selection_name, fallback = "selected_taxa")
 selection_file <- file.path(io_dir, "SelectedTaxa", paste0(selection_name, "_taxa.tsv"))
 selection_reason <- if (candidate_source == "differential_abundance") {
-  paste0("significance == Sig; method = ", DA_method)
+  paste0(
+    "significance == Sig; method = ",
+    normalize_da_method(DA_method),
+    if (!is_missing_value(DA_result_test)) paste0("; test = ", DA_result_test) else "",
+    if (!is_missing_value(DA_result_contrast)) paste0("; contrast = ", DA_result_contrast) else ""
+  )
 } else if (candidate_source == "top_abundance") {
   paste0("top_n_taxa = ", top_n_taxa, "; norm_method = ", candidate_norm_method)
 } else {

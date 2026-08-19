@@ -131,6 +131,149 @@ Differential abundance followed by confirmatory BLAST:
   --analysis-config config/local/analysis.yaml
 ```
 
+## ANCOM-BC2 Differential Abundance
+
+The config-driven differential-abundance step now uses ANCOM-BC2 exclusively.
+Set `methods: ["ANCOMBC2"]` in new configs. Existing `ANCOMBC` values are
+accepted as a migration alias, but new output directories and filenames use
+`ANCOMBC2`.
+
+ANCOM-BC2 differs from the old project wrapper in three practical ways:
+
+- `fix_formula` replaces `formula`; `formula` is still accepted as an alias.
+- The `group` variable may have two or more levels.
+- Multi-level outputs can include primary/reference contrasts, global tests,
+  all pairwise tests, Dunnett-type tests against a reference, and ordered trend
+  tests.
+
+Required comparison fields:
+
+```yaml
+differential_abundance:
+  methods: ["ANCOMBC2"]
+  comparisons:
+    - name: "ControlVsTreatment"
+      sample_filter:
+        SampleType: ["Control", "Treatment"]
+      factor_levels:
+        SampleType: ["Control", "Treatment"]
+      fix_formula: "SampleType"
+      group: "SampleType"
+      tests: ["primary"]
+```
+
+Use `factor_levels` to control model order. The first configured level is the
+reference unless `reference_level` is set. Do not rely on alphabetical order for
+scientific comparisons.
+
+Three-level global and Dunnett-type example:
+
+```yaml
+differential_abundance:
+  comparisons:
+    - name: "DoseGlobalDunnett"
+      sample_filter:
+        DoseGroup: ["Vehicle", "Low", "High"]
+      factor_levels:
+        DoseGroup: ["Vehicle", "Low", "High"]
+      fix_formula: "DoseGroup + ProcessingBatch"
+      group: "DoseGroup"
+      reference_level: "Vehicle"
+      tests: ["global", "dunnet"]
+```
+
+Ordered trend example:
+
+```yaml
+differential_abundance:
+  comparisons:
+    - name: "DoseTrend"
+      sample_filter:
+        DoseGroup: ["Vehicle", "Low", "High"]
+      ordered_levels: ["Vehicle", "Low", "High"]
+      fix_formula: "DoseGroup"
+      group: "DoseGroup"
+      tests: ["trend"]
+      trend_patterns: ["increasing", "decreasing"]
+```
+
+Trend tests require `ordered_levels`; the code intentionally refuses to infer a
+trend order. Built-in trend patterns are `increasing` and `decreasing`. Advanced
+users can provide `trend_control` directly, matching ANCOM-BC2's `contrast`,
+`node`, and `B` controls.
+
+Optional ANCOM-BC2 settings can be placed globally under
+`differential_abundance` or overridden per comparison:
+
+```yaml
+differential_abundance:
+  p_adj_method: "holm"
+  pseudo_sens: true
+  prv_cut: 0.10
+  lib_cut: 1000
+  s0_perc: 0.05
+  struc_zero: true
+  neg_lb: true
+  n_cl: 1
+  mdfdr_control:
+    fwer_ctrl_method: "holm"
+    B: 100
+```
+
+The main result file is:
+
+```text
+<output_dir>/ANCOMBC2/<comparison>/<trialID>_<comparison>_ANCOMBC2Results.tsv
+```
+
+It is a long table with `test` and `contrast` columns. Per-family files are also
+written beside it: `ANCOMBC2Primary.tsv`, `ANCOMBC2Global.tsv`,
+`ANCOMBC2Pairwise.tsv`, `ANCOMBC2Dunnett.tsv`, and `ANCOMBC2Trend.tsv` when the
+corresponding output exists.
+
+Important result fields:
+
+- `log2FoldChange`: ANCOM-BC2 log fold changes converted to log2 scale for
+  compatibility with existing plots and thresholds.
+- `diff_abn`: ANCOM-BC2 differential-abundance call before sensitivity filtering.
+- `passed_ss`: whether the taxon passed pseudo-count sensitivity analysis.
+- `diff_robust`: sensitivity-robust ANCOM-BC2 call when available.
+- `significance`: project-level call used by BLAST and plots. It uses
+  `diff_robust` when present, otherwise `diff_abn`/`padj`, and still applies
+  `lfc_cutoff` for contrast-level rows.
+- `struc0`: structural-zero indicator. For legacy two-level contrasts this
+  remains `group1`/`group2`; for multi-level comparisons it lists affected
+  levels.
+
+BLAST candidate selection can use all significant ANCOM-BC2 rows or a specific
+slice:
+
+```yaml
+blast_confirmation:
+  DA_method: "ANCOMBC2"
+  DA_comparisons: ["DoseGlobalDunnett"]
+  DA_result_test: "global"       # optional
+  DA_result_contrast: null       # optional, useful for pairwise/dunnet
+```
+
+Meta differential abundance requires one contrast-level result with
+`log2FoldChange` and `se`. Use `primary`, `pairwise`, or `dunnet`, and set
+`DA_result_contrast` when a comparison has multiple contrasts. `global` and
+`trend` summaries are rejected for meta-analysis because they do not represent a
+single batch-level effect size.
+
+Migration guide:
+
+```text
+Old field/output                 ANCOM-BC2 replacement
+methods: ["ANCOMBC"]             methods: ["ANCOMBC2"]  # old value still accepted
+formula                          fix_formula
+coefficient                      inferred from group levels; no longer needed
+structural_zero_groups           inferred from group levels; no longer needed
+exactly two group levels          two or more group levels supported
+ANCOMBC/<comparison>/...          ANCOMBC2/<comparison>/...
+```
+
 Patient duplicate handling for inferential analyses:
 
 ```yaml

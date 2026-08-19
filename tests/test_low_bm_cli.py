@@ -1709,7 +1709,7 @@ def write_minimal_meta_config(path: Path) -> None:
         "meta_differential_abundance:\n"
         "  batch1_name: 010126.1_batch1\n"
         "  batch2_name: 010126.2_batch2\n"
-        "  DA_method: ANCOMBC\n"
+        "  DA_method: ANCOMBC2\n"
         "  comparison: PatientSample\n"
     )
 

@@ -115,14 +115,65 @@ build_legacy_da_config <- function(trial_id,
   )
 }
 
+normalize_da_method <- function(method) {
+  method <- toupper(as.character(method))
+  method[method == "ANCOMBC"] <- "ANCOMBC2"
+  method
+}
+
+normalize_ancombc2_tests <- function(tests = NULL) {
+  if (is.null(tests) || length(tests) == 0) {
+    return("primary")
+  }
+  tests <- tolower(as.character(unlist(tests, use.names = FALSE)))
+  aliases <- c(
+    reference = "primary",
+    contrast = "primary",
+    contrasts = "primary",
+    global_test = "global",
+    pair = "pairwise",
+    pairs = "pairwise",
+    dunnett = "dunnet",
+    dunnett_type = "dunnet",
+    pattern = "trend",
+    patterns = "trend"
+  )
+  tests <- ifelse(tests %in% names(aliases), aliases[tests], tests)
+  supported <- c("primary", "global", "pairwise", "dunnet", "trend")
+  unsupported <- setdiff(tests, supported)
+  if (length(unsupported) > 0) {
+    stop(
+      "Unsupported ANCOM-BC2 test(s): ",
+      paste(unsupported, collapse = ", "),
+      ". Supported tests: ",
+      paste(supported, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  unique(tests)
+}
+
 normalize_da_config <- function(config) {
-  if (is.null(config$methods)) config$methods <- c("ANCOMBC")
+  if (is.null(config$methods)) config$methods <- c("ANCOMBC2")
+  config$methods <- normalize_da_method(config$methods)
   if (is.null(config$norm_method)) config$norm_method <- "noNorm"
   if (is.null(config$pseudocount)) config$pseudocount <- 1
   if (is.null(config$tax_agg_level)) config$tax_agg_level <- "Genus"
   if (is.null(config$tax_label_level)) config$tax_label_level <- config$tax_agg_level
   if (is.null(config$alpha)) config$alpha <- 0.05
   if (is.null(config$lfc_cutoff)) config$lfc_cutoff <- 1
+  if (is.null(config$p_adj_method)) config$p_adj_method <- "holm"
+  if (is.null(config$pseudo_sens)) config$pseudo_sens <- TRUE
+  if (is.null(config$prv_cut)) config$prv_cut <- 0.10
+  if (is.null(config$lib_cut)) config$lib_cut <- 1000
+  if (is.null(config$s0_perc)) config$s0_perc <- 0.05
+  if (is.null(config$struc_zero)) config$struc_zero <- TRUE
+  if (is.null(config$neg_lb)) config$neg_lb <- TRUE
+  if (is.null(config$n_cl)) config$n_cl <- 1
+  if (is.null(config$verbose)) config$verbose <- TRUE
+  if (is.null(config$mdfdr_control)) {
+    config$mdfdr_control <- list(fwer_ctrl_method = "holm", B = 100)
+  }
   config$patient_duplicate_policy <- normalize_patient_duplicate_policy(
     config$patient_duplicate_policy,
     default_action = "keep",
@@ -134,10 +185,10 @@ normalize_da_config <- function(config) {
     stop("DA config must define at least one comparison.", call. = FALSE)
   }
 
-  unsupported <- setdiff(config$methods, "ANCOMBC")
+  unsupported <- setdiff(config$methods, "ANCOMBC2")
   if (length(unsupported) > 0) {
     stop(
-      "Only ANCOMBC is supported by the config-driven DA interface. Unsupported method(s): ",
+      "Only ANCOMBC2 is supported by the config-driven DA interface. Unsupported method(s): ",
       paste(unsupported, collapse = ", "),
       call. = FALSE
     )
@@ -146,6 +197,20 @@ normalize_da_config <- function(config) {
   config$comparisons <- lapply(config$comparisons, function(spec) {
     spec <- spec %||% list()
     spec_name <- if (!is.null(spec$name) && length(spec$name) > 0) as.character(spec$name)[[1]] else "comparison"
+    spec$method <- normalize_da_method(spec$method %||% config$methods[[1]])
+    if (!identical(spec$method, "ANCOMBC2")) {
+      stop(
+        "Only ANCOMBC2 is supported for DA comparison '",
+        spec_name,
+        "'. Unsupported method: ",
+        spec$method,
+        call. = FALSE
+      )
+    }
+    if (is.null(spec$fix_formula) && !is.null(spec$formula)) {
+      spec$fix_formula <- spec$formula
+    }
+    spec$tests <- normalize_ancombc2_tests(spec$tests)
     spec$patient_duplicate_policy <- normalize_patient_duplicate_policy(
       spec$patient_duplicate_policy %||% config$patient_duplicate_policy,
       default_action = config$patient_duplicate_policy$action,
@@ -216,11 +281,16 @@ apply_factor_levels <- function(physeq, factor_levels) {
   physeq
 }
 
+da_fix_formula <- function(spec) {
+  spec$fix_formula %||% spec$formula
+}
+
 da_formula_uses_patient_id <- function(spec, patient_id_col = "PatientID") {
-  if (is_missing_da_value(spec$formula)) {
+  formula_value <- da_fix_formula(spec)
+  if (is_missing_da_value(formula_value)) {
     return(FALSE)
   }
-  formula_text <- as.character(spec$formula)[[1]]
+  formula_text <- as.character(formula_value)[[1]]
   formula_terms <- tryCatch(
     all.vars(stats::as.formula(paste0("~ ", formula_text))),
     error = function(e) character(0)
@@ -334,47 +404,109 @@ stop_da_inferred_field_conflict <- function(spec_name,
   )
 }
 
+resolve_configured_group_levels <- function(spec, observed_levels) {
+  group <- as.character(spec$group)[[1]]
+  levels <- NULL
+
+  if (!is.null(spec$ordered_levels) && length(spec$ordered_levels) > 0) {
+    levels <- as.character(unlist(spec$ordered_levels, use.names = FALSE))
+  } else if (!is.null(spec$factor_levels) &&
+             length(spec$factor_levels) > 0 &&
+             !is.null(names(spec$factor_levels)) &&
+             group %in% names(spec$factor_levels)) {
+    levels <- as.character(unlist(spec$factor_levels[[group]], use.names = FALSE))
+  }
+
+  if (is.null(levels)) {
+    levels <- sort(observed_levels)
+  }
+
+  levels <- levels[!is.na(levels) & nzchar(trimws(levels))]
+  missing_observed <- setdiff(observed_levels, levels)
+  if (length(missing_observed) > 0) {
+    stop(
+      "Observed value(s) in ",
+      group,
+      " are absent from configured ANCOM-BC2 group levels: ",
+      paste(missing_observed, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  missing_configured <- setdiff(levels, observed_levels)
+  if (length(missing_configured) > 0) {
+    stop(
+      "Configured ANCOM-BC2 group level(s) in comparison '",
+      spec$name,
+      "' were not observed after sample filtering: ",
+      paste(missing_configured, collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  if (!is_missing_da_value(spec$reference_level)) {
+    reference_level <- as.character(spec$reference_level)[[1]]
+    if (!reference_level %in% levels) {
+      stop(
+        "ANCOM-BC2 reference_level for comparison '",
+        spec$name,
+        "' is not among the resolved group levels: ",
+        reference_level,
+        call. = FALSE
+      )
+    }
+    levels <- c(reference_level, levels[levels != reference_level])
+  }
+
+  levels
+}
+
+validate_ancombc2_trend_spec <- function(spec, levels) {
+  if (!"trend" %in% spec$tests) {
+    return(invisible(TRUE))
+  }
+  if (is.null(spec$ordered_levels) || length(spec$ordered_levels) == 0) {
+    stop(
+      "ANCOM-BC2 trend comparison '",
+      spec$name,
+      "' must define ordered_levels. Alphabetical ordering is not inferred for trend tests.",
+      call. = FALSE
+    )
+  }
+  ordered_levels <- as.character(unlist(spec$ordered_levels, use.names = FALSE))
+  if (!identical(ordered_levels, levels)) {
+    stop(
+      "ANCOM-BC2 trend comparison '",
+      spec$name,
+      "' must use ordered_levels as the resolved factor order. Resolved levels: ",
+      paste(levels, collapse = ", "),
+      "; ordered_levels: ",
+      paste(ordered_levels, collapse = ", "),
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
+}
+
 validate_legacy_factor_levels <- function(spec, inferred_levels) {
   if (is.null(spec$factor_levels) || length(spec$factor_levels) == 0) {
     return(invisible(TRUE))
   }
 
-  spec_name <- as.character(spec$name)[[1]]
   group <- as.character(spec$group)[[1]]
   factor_level_names <- names(spec$factor_levels)
   if (is.null(factor_level_names) || !group %in% factor_level_names) {
-    configured_label <- if (is.null(factor_level_names)) {
-      "<unnamed>"
-    } else {
-      paste(factor_level_names, collapse = ", ")
-    }
     stop_da_inferred_field_conflict(
-      spec_name,
+      as.character(spec$name)[[1]],
       "factor_levels",
       paste0(group, " = [", paste(inferred_levels, collapse = ", "), "]"),
-      configured_label
-    )
-  }
-
-  extra_columns <- setdiff(factor_level_names, group)
-  if (length(extra_columns) > 0) {
-    stop_da_inferred_field_conflict(
-      spec_name,
-      "factor_levels",
-      paste0(group, " = [", paste(inferred_levels, collapse = ", "), "]"),
-      paste0(
-        paste(factor_level_names, collapse = ", "),
-        " (unsupported extra column(s): ",
-        paste(extra_columns, collapse = ", "),
-        ")"
-      )
+      if (is.null(factor_level_names)) "<unnamed>" else paste(factor_level_names, collapse = ", ")
     )
   }
 
   configured_levels <- as.character(unlist(spec$factor_levels[[group]], use.names = FALSE))
-  if (!identical(configured_levels, inferred_levels)) {
+  if (!setequal(configured_levels, inferred_levels)) {
     stop_da_inferred_field_conflict(
-      spec_name,
+      as.character(spec$name)[[1]],
       "factor_levels",
       paste0(group, " = [", paste(inferred_levels, collapse = ", "), "]"),
       paste0(group, " = [", paste(configured_levels, collapse = ", "), "]")
@@ -421,7 +553,14 @@ validate_legacy_structural_zero_groups <- function(spec, inferred_groups) {
 }
 
 resolve_ancombc_comparison_spec <- function(physeq, spec) {
-  required <- c("name", "formula", "group")
+  if (is.null(spec$fix_formula) && !is.null(spec$formula)) {
+    spec$fix_formula <- spec$formula
+  }
+  if (is.null(spec$tests)) {
+    spec$tests <- normalize_ancombc2_tests(spec$tests)
+  }
+
+  required <- c("name", "fix_formula", "group")
   missing <- required[!vapply(required, function(x) x %in% names(spec) && !is_missing_da_value(spec[[x]]), logical(1))]
   if (length(missing) > 0) {
     stop(
@@ -432,40 +571,47 @@ resolve_ancombc_comparison_spec <- function(physeq, spec) {
   }
 
   spec$name <- as.character(spec$name)[[1]]
-  spec$formula <- as.character(spec$formula)[[1]]
+  spec$fix_formula <- as.character(spec$fix_formula)[[1]]
+  spec$formula <- spec$fix_formula
   spec$group <- as.character(spec$group)[[1]]
+  spec$tests <- normalize_ancombc2_tests(spec$tests)
 
   metadata_df <- as.data.frame(phyloseq::sample_data(physeq), stringsAsFactors = FALSE)
-  formula_terms <- all.vars(stats::as.formula(paste0("~ ", spec$formula)))
+  formula_terms <- all.vars(stats::as.formula(paste0("~ ", spec$fix_formula)))
   fail_missing_columns(names(metadata_df), unique(c(spec$group, formula_terms)), "phyloseq sample_data")
 
   grouping_values <- as.character(metadata_df[[spec$group]])
   grouping_values <- grouping_values[!is.na(grouping_values) & nzchar(trimws(grouping_values))]
-  inferred_levels <- sort(unique(grouping_values))
-  if (length(inferred_levels) != 2) {
+  observed_levels <- sort(unique(grouping_values))
+  if (length(observed_levels) < 2) {
     stop(
       "DA comparison '",
       spec$name,
-      "' must have exactly two observed non-empty group levels in ",
+      "' must have at least two observed non-empty group levels in ",
       spec$group,
       " after sample filtering; found ",
-      length(inferred_levels),
-      if (length(inferred_levels) > 0) paste0(": ", paste(inferred_levels, collapse = ", ")) else "",
-      ". Update sample_filter or split multi-level contrasts into separate DA comparisons.",
+      length(observed_levels),
+      if (length(observed_levels) > 0) paste0(": ", paste(observed_levels, collapse = ", ")) else "",
+      ". Update sample_filter or factor/ordered levels.",
       call. = FALSE
     )
   }
 
+  inferred_levels <- resolve_configured_group_levels(spec, observed_levels)
   inferred_coefficient <- paste0(spec$group, inferred_levels[[2]])
   inferred_struc0_groups <- inferred_structural_zero_groups(spec$group, inferred_levels)
 
   validate_legacy_factor_levels(spec, inferred_levels)
-  validate_legacy_coefficient(spec, inferred_coefficient)
-  validate_legacy_structural_zero_groups(spec, inferred_struc0_groups)
+  if (length(inferred_levels) == 2) {
+    validate_legacy_coefficient(spec, inferred_coefficient)
+    validate_legacy_structural_zero_groups(spec, inferred_struc0_groups)
+  }
+  validate_ancombc2_trend_spec(spec, inferred_levels)
 
   spec$factor_levels <- stats::setNames(list(inferred_levels), spec$group)
-  spec$coefficient <- inferred_coefficient
+  spec$coefficient <- if (length(inferred_levels) == 2) inferred_coefficient else NULL
   spec$structural_zero_groups <- inferred_struc0_groups
+  spec$reference_level <- inferred_levels[[1]]
 
   metadata_df[[spec$group]] <- factor(as.character(metadata_df[[spec$group]]), levels = inferred_levels)
   phyloseq::sample_data(physeq) <- phyloseq::sample_data(metadata_df)
@@ -548,7 +694,401 @@ assign_da_direction <- function(log2_fold_change, struc0) {
   direction
 }
 
+logical_or_na <- function(x) {
+  if (is.null(x)) {
+    return(NA)
+  }
+  as.logical(x)
+}
+
+numeric_or_na <- function(x) {
+  if (is.null(x)) {
+    return(NA_real_)
+  }
+  suppressWarnings(as.numeric(x))
+}
+
+ancombc2_group_levels <- function(spec) {
+  if (!is.null(spec$factor_levels) &&
+      !is.null(names(spec$factor_levels)) &&
+      spec$group %in% names(spec$factor_levels)) {
+    return(as.character(unlist(spec$factor_levels[[spec$group]], use.names = FALSE)))
+  }
+  character(0)
+}
+
+ancombc2_contrast_specs <- function(spec, test = "primary") {
+  levels <- ancombc2_group_levels(spec)
+  if (length(levels) < 2) {
+    return(data.frame(
+      coefficient = character(0),
+      contrast = character(0),
+      reference_level = character(0),
+      target_level = character(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  rows <- list()
+  group <- spec$group
+  if (test %in% c("primary", "dunnet")) {
+    for (i in 2:length(levels)) {
+      rows[[length(rows) + 1]] <- data.frame(
+        coefficient = paste0(group, levels[[i]]),
+        contrast = paste0(levels[[i]], " vs ", levels[[1]]),
+        reference_level = levels[[1]],
+        target_level = levels[[i]],
+        stringsAsFactors = FALSE
+      )
+    }
+  } else if (identical(test, "pairwise")) {
+    for (i in seq_len(length(levels) - 1)) {
+      for (j in (i + 1):length(levels)) {
+        rows[[length(rows) + 1]] <- data.frame(
+          coefficient = if (i == 1) {
+            paste0(group, levels[[j]])
+          } else {
+            paste0(group, levels[[j]], "_", group, levels[[i]])
+          },
+          contrast = paste0(levels[[j]], " vs ", levels[[i]]),
+          reference_level = levels[[i]],
+          target_level = levels[[j]],
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  }
+
+  if (length(rows) == 0) {
+    return(data.frame(
+      coefficient = character(0),
+      contrast = character(0),
+      reference_level = character(0),
+      target_level = character(0),
+      stringsAsFactors = FALSE
+    ))
+  }
+  do.call(rbind, rows)
+}
+
+ancombc2_col <- function(table, prefix, coefficient, fallback = NULL) {
+  candidates <- unique(c(
+    paste0(prefix, "_", coefficient),
+    paste0(prefix, coefficient),
+    fallback
+  ))
+  candidates <- candidates[!is.na(candidates) & nzchar(candidates)]
+  match <- intersect(candidates, names(table))
+  if (length(match) == 0) NULL else match[[1]]
+}
+
+ancombc2_vector <- function(table, column, default = NA_real_) {
+  if (is.null(column) || !column %in% names(table)) {
+    return(rep(default, nrow(table)))
+  }
+  table[[column]]
+}
+
+format_structural_zero_levels <- function(ancombc_output, spec) {
+  zero_ind <- ancombc_output[["zero_ind"]]
+  levels <- ancombc2_group_levels(spec)
+  structural_zero_groups <- inferred_structural_zero_groups(spec$group, levels)
+  if (is.null(zero_ind) || length(levels) == 0) {
+    return(data.frame(taxon = character(0), struc0 = character(0), stringsAsFactors = FALSE))
+  }
+
+  required <- c("taxon", structural_zero_groups)
+  available <- intersect(required, colnames(zero_ind))
+  if (!"taxon" %in% available || length(available) == 1) {
+    return(data.frame(taxon = character(0), struc0 = character(0), stringsAsFactors = FALSE))
+  }
+
+  zero_df <- zero_ind[, available, drop = FALSE]
+  group_cols <- setdiff(names(zero_df), "taxon")
+  struc0 <- vapply(seq_len(nrow(zero_df)), function(i) {
+    flags <- as.logical(zero_df[i, group_cols, drop = TRUE])
+    flagged <- levels[match(group_cols[flags], structural_zero_groups)]
+    flagged <- flagged[!is.na(flagged)]
+    if (length(flagged) == 0) {
+      return(NA_character_)
+    }
+    if (length(levels) == 2 && length(flagged) == 1) {
+      return(if (identical(flagged[[1]], levels[[1]])) "group1" else "group2")
+    }
+    paste(flagged, collapse = ";")
+  }, character(1))
+
+  data.frame(taxon = zero_df$taxon, struc0 = struc0, stringsAsFactors = FALSE)
+}
+
+empty_ancombc2_results <- function() {
+  data.frame(
+    taxon = character(0),
+    test = character(0),
+    contrast = character(0),
+    coefficient = character(0),
+    reference_level = character(0),
+    target_level = character(0),
+    log2FoldChange = numeric(0),
+    p = numeric(0),
+    padj = numeric(0),
+    struc0 = character(0),
+    se = numeric(0),
+    W = numeric(0),
+    diff_abn = logical(0),
+    passed_ss = logical(0),
+    diff_robust = logical(0),
+    significance = character(0),
+    direction = character(0),
+    stringsAsFactors = FALSE
+  )
+}
+
+ancombc2_significance <- function(log2_fold_change,
+                                  p,
+                                  padj,
+                                  diff_abn,
+                                  passed_ss,
+                                  diff_robust,
+                                  struc0,
+                                  alpha,
+                                  lfc_cutoff) {
+  base_sig <- ifelse(
+    !is.na(diff_robust),
+    diff_robust,
+    ifelse(
+      !is.na(diff_abn),
+      diff_abn & (is.na(passed_ss) | passed_ss),
+      !is.na(padj) & padj < alpha
+    )
+  )
+  has_effect <- is.na(log2_fold_change) |
+    abs(log2_fold_change) > lfc_cutoff |
+    (!is.na(struc0) & nzchar(struc0))
+  ifelse(base_sig & has_effect, "Sig", "NotSig")
+}
+
+standardize_ancombc2_contrast_results <- function(table,
+                                                  spec,
+                                                  test,
+                                                  alpha,
+                                                  lfc_cutoff,
+                                                  structural_zero_df = NULL) {
+  if (is.null(table) || nrow(table) == 0) {
+    return(empty_ancombc2_results())
+  }
+  contrasts <- ancombc2_contrast_specs(spec, test)
+  if (nrow(contrasts) == 0) {
+    return(empty_ancombc2_results())
+  }
+
+  rows <- lapply(seq_len(nrow(contrasts)), function(i) {
+    contrast <- contrasts[i, , drop = FALSE]
+    coefficient <- contrast$coefficient[[1]]
+    lfc_col <- ancombc2_col(table, "lfc", coefficient)
+    se_col <- ancombc2_col(table, "se", coefficient)
+    w_col <- ancombc2_col(table, "W", coefficient)
+    p_col <- ancombc2_col(table, "p", coefficient)
+    q_col <- ancombc2_col(table, "q", coefficient)
+    diff_col <- ancombc2_col(table, "diff", coefficient)
+    passed_col <- ancombc2_col(table, "passed_ss", coefficient)
+    robust_col <- ancombc2_col(table, "diff_robust", coefficient)
+
+    out <- data.frame(
+      taxon = table$taxon,
+      test = test,
+      contrast = contrast$contrast[[1]],
+      coefficient = coefficient,
+      reference_level = contrast$reference_level[[1]],
+      target_level = contrast$target_level[[1]],
+      log2FoldChange = numeric_or_na(ancombc2_vector(table, lfc_col)) / log(2),
+      p = numeric_or_na(ancombc2_vector(table, p_col)),
+      padj = numeric_or_na(ancombc2_vector(table, q_col)),
+      struc0 = NA_character_,
+      se = numeric_or_na(ancombc2_vector(table, se_col)) / log(2),
+      W = numeric_or_na(ancombc2_vector(table, w_col)),
+      diff_abn = logical_or_na(ancombc2_vector(table, diff_col, default = NA)),
+      passed_ss = logical_or_na(ancombc2_vector(table, passed_col, default = NA)),
+      diff_robust = logical_or_na(ancombc2_vector(table, robust_col, default = NA)),
+      stringsAsFactors = FALSE
+    )
+    if (!is.null(structural_zero_df) && nrow(structural_zero_df) > 0) {
+      out <- merge(out, structural_zero_df, by = "taxon", all.x = TRUE, suffixes = c("", ".zero"))
+      out$struc0 <- out$struc0.zero %||% out$struc0
+      out$struc0.zero <- NULL
+    }
+    out$significance <- ancombc2_significance(
+      out$log2FoldChange,
+      out$p,
+      out$padj,
+      out$diff_abn,
+      out$passed_ss,
+      out$diff_robust,
+      out$struc0,
+      alpha,
+      lfc_cutoff
+    )
+    out$direction <- assign_da_direction(out$log2FoldChange, out$struc0)
+    out
+  })
+
+  do.call(rbind, rows)
+}
+
+standardize_ancombc2_omnibus_results <- function(table,
+                                                 spec,
+                                                 test,
+                                                 alpha,
+                                                 lfc_cutoff,
+                                                 contrast = test) {
+  if (is.null(table) || nrow(table) == 0) {
+    return(empty_ancombc2_results())
+  }
+  p_col <- if ("p_val" %in% names(table)) "p_val" else if ("p" %in% names(table)) "p" else NULL
+  q_col <- if ("q_val" %in% names(table)) "q_val" else if ("q" %in% names(table)) "q" else NULL
+  diff_col <- if ("diff_robust_abn" %in% names(table)) "diff_abn" else if ("diff_abn" %in% names(table)) "diff_abn" else NULL
+  robust_col <- if ("diff_robust_abn" %in% names(table)) "diff_robust_abn" else NULL
+  passed_col <- if ("passed_ss" %in% names(table)) "passed_ss" else NULL
+  out <- data.frame(
+    taxon = table$taxon,
+    test = test,
+    contrast = contrast,
+    coefficient = NA_character_,
+    reference_level = spec$reference_level %||% NA_character_,
+    target_level = NA_character_,
+    log2FoldChange = NA_real_,
+    p = numeric_or_na(ancombc2_vector(table, p_col)),
+    padj = numeric_or_na(ancombc2_vector(table, q_col)),
+    struc0 = NA_character_,
+    se = NA_real_,
+    W = numeric_or_na(ancombc2_vector(table, if ("W" %in% names(table)) "W" else NULL)),
+    diff_abn = logical_or_na(ancombc2_vector(table, diff_col, default = NA)),
+    passed_ss = logical_or_na(ancombc2_vector(table, passed_col, default = NA)),
+    diff_robust = logical_or_na(ancombc2_vector(table, robust_col, default = NA)),
+    stringsAsFactors = FALSE
+  )
+  out$significance <- ancombc2_significance(
+    out$log2FoldChange,
+    out$p,
+    out$padj,
+    out$diff_abn,
+    out$passed_ss,
+    out$diff_robust,
+    out$struc0,
+    alpha,
+    lfc_cutoff
+  )
+  out$direction <- "none"
+  out
+}
+
+standardize_ancombc2_trend_results <- function(table,
+                                               spec,
+                                               alpha,
+                                               lfc_cutoff) {
+  if (is.null(table) || nrow(table) == 0) {
+    return(empty_ancombc2_results())
+  }
+  contrasts <- ancombc2_contrast_specs(spec, "primary")
+  if (nrow(contrasts) == 0) {
+    return(standardize_ancombc2_omnibus_results(table, spec, "trend", alpha, lfc_cutoff, "trend"))
+  }
+  omnibus <- standardize_ancombc2_omnibus_results(table, spec, "trend", alpha, lfc_cutoff, "trend")
+  rows <- lapply(seq_len(nrow(contrasts)), function(i) {
+    contrast <- contrasts[i, , drop = FALSE]
+    coefficient <- contrast$coefficient[[1]]
+    lfc_col <- ancombc2_col(table, "lfc", coefficient)
+    se_col <- ancombc2_col(table, "se", coefficient)
+    row <- omnibus
+    row$contrast <- contrast$contrast[[1]]
+    row$coefficient <- coefficient
+    row$reference_level <- contrast$reference_level[[1]]
+    row$target_level <- contrast$target_level[[1]]
+    row$log2FoldChange <- numeric_or_na(ancombc2_vector(table, lfc_col)) / log(2)
+    row$se <- numeric_or_na(ancombc2_vector(table, se_col)) / log(2)
+    row$direction <- assign_da_direction(row$log2FoldChange, row$struc0)
+    row$significance <- ancombc2_significance(
+      row$log2FoldChange,
+      row$p,
+      row$padj,
+      row$diff_abn,
+      row$passed_ss,
+      row$diff_robust,
+      row$struc0,
+      alpha,
+      lfc_cutoff
+    )
+    row
+  })
+  do.call(rbind, rows)
+}
+
+standardize_ancombc2_results <- function(ancombc_output, spec, alpha, lfc_cutoff) {
+  structural_zero_df <- format_structural_zero_levels(ancombc_output, spec)
+  parts <- list()
+  if (!is.null(ancombc_output$res)) {
+    parts[[length(parts) + 1]] <- standardize_ancombc2_contrast_results(
+      ancombc_output$res,
+      spec,
+      "primary",
+      alpha,
+      lfc_cutoff,
+      structural_zero_df
+    )
+  }
+  if ("global" %in% spec$tests && !is.null(ancombc_output$res_global)) {
+    parts[[length(parts) + 1]] <- standardize_ancombc2_omnibus_results(
+      ancombc_output$res_global,
+      spec,
+      "global",
+      alpha,
+      lfc_cutoff,
+      "global"
+    )
+  }
+  if ("pairwise" %in% spec$tests && !is.null(ancombc_output$res_pair)) {
+    parts[[length(parts) + 1]] <- standardize_ancombc2_contrast_results(
+      ancombc_output$res_pair,
+      spec,
+      "pairwise",
+      alpha,
+      lfc_cutoff,
+      structural_zero_df
+    )
+  }
+  if ("dunnet" %in% spec$tests && !is.null(ancombc_output$res_dunn)) {
+    parts[[length(parts) + 1]] <- standardize_ancombc2_contrast_results(
+      ancombc_output$res_dunn,
+      spec,
+      "dunnet",
+      alpha,
+      lfc_cutoff,
+      structural_zero_df
+    )
+  }
+  if ("trend" %in% spec$tests && !is.null(ancombc_output$res_trend)) {
+    parts[[length(parts) + 1]] <- standardize_ancombc2_trend_results(
+      ancombc_output$res_trend,
+      spec,
+      alpha,
+      lfc_cutoff
+    )
+  }
+
+  parts <- parts[vapply(parts, function(x) !is.null(x) && nrow(x) > 0, logical(1))]
+  if (length(parts) == 0) {
+    return(empty_ancombc2_results())
+  }
+  results <- do.call(rbind, parts)
+  rownames(results) <- NULL
+  results
+}
+
 standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff) {
+  if (is.data.frame(ancombc_output[["res"]])) {
+    return(standardize_ancombc2_results(ancombc_output, spec, alpha, lfc_cutoff))
+  }
+
   lfc_df <- extract_ancombc_table(ancombc_output, "lfc", spec$coefficient)
   p_df <- extract_ancombc_table(ancombc_output, "p_val", spec$coefficient)
   q_df <- extract_ancombc_table(ancombc_output, "q_val", spec$coefficient)
@@ -587,6 +1127,106 @@ standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff)
   results[, c("taxon", "log2FoldChange", "p", "padj", "struc0", "se", "significance", "direction")]
 }
 
+default_ancombc2_trend_matrix <- function(pattern, n_coef) {
+  mat <- matrix(0, nrow = n_coef, ncol = n_coef)
+  if (identical(pattern, "increasing")) {
+    mat[1, 1] <- 1
+    if (n_coef > 1) {
+      for (i in 2:n_coef) {
+        mat[i, i - 1] <- -1
+        mat[i, i] <- 1
+      }
+    }
+  } else if (identical(pattern, "decreasing")) {
+    mat[1, 1] <- -1
+    if (n_coef > 1) {
+      for (i in 2:n_coef) {
+        mat[i, i - 1] <- 1
+        mat[i, i] <- -1
+      }
+    }
+  } else {
+    stop("Unsupported default ANCOM-BC2 trend pattern: ", pattern, call. = FALSE)
+  }
+  mat
+}
+
+as_trend_matrix <- function(x) {
+  if (is.matrix(x)) {
+    return(x)
+  }
+  values <- as.numeric(unlist(x, use.names = FALSE))
+  n <- sqrt(length(values))
+  if (n != floor(n)) {
+    stop("Explicit ANCOM-BC2 trend contrast must be a square matrix or square-length numeric vector.", call. = FALSE)
+  }
+  matrix(values, nrow = n, byrow = TRUE)
+}
+
+normalize_ancombc2_trend_patterns <- function(spec) {
+  levels <- ancombc2_group_levels(spec)
+  n_coef <- length(levels) - 1
+  if (n_coef < 1) {
+    return(list())
+  }
+  patterns <- spec$trend_patterns %||% spec$trend_pattern
+  if (is.null(patterns) || length(patterns) == 0) {
+    patterns <- c("increasing", "decreasing")
+  }
+
+  if (is.character(patterns)) {
+    return(lapply(patterns, function(pattern) {
+      pattern <- tolower(pattern)
+      list(
+        name = pattern,
+        contrast = default_ancombc2_trend_matrix(pattern, n_coef),
+        node = n_coef
+      )
+    }))
+  }
+
+  lapply(patterns, function(pattern) {
+    if (is.character(pattern)) {
+      pattern <- tolower(pattern[[1]])
+      return(list(
+        name = pattern,
+        contrast = default_ancombc2_trend_matrix(pattern, n_coef),
+        node = n_coef
+      ))
+    }
+    pattern_name <- as.character(pattern$name %||% pattern$type %||% "custom")
+    pattern_type <- tolower(as.character(pattern$type %||% pattern_name)[[1]])
+    contrast <- if (!is.null(pattern$contrast)) {
+      as_trend_matrix(pattern$contrast)
+    } else {
+      default_ancombc2_trend_matrix(pattern_type, n_coef)
+    }
+    node <- as.integer(pattern$node %||% if (pattern_type %in% c("increasing", "decreasing")) n_coef else 1L)
+    list(name = pattern_name, contrast = contrast, node = node)
+  })
+}
+
+build_ancombc2_trend_control <- function(spec, global_config) {
+  trend_control <- spec$trend_control %||% global_config$trend_control %||% list()
+  if (!"trend" %in% spec$tests) {
+    return(trend_control)
+  }
+  if (!is.null(trend_control$contrast) && !is.null(trend_control$node)) {
+    return(trend_control)
+  }
+  patterns <- normalize_ancombc2_trend_patterns(spec)
+  trend_control$contrast <- lapply(patterns, `[[`, "contrast")
+  trend_control$node <- lapply(patterns, `[[`, "node")
+  if (is.null(trend_control$B)) {
+    trend_control$B <- 100
+  }
+  trend_control
+}
+
+ancombc2_arg <- function(spec, global_config, name, default = NULL) {
+  spec[[name, exact = TRUE]] %||% global_config[[name, exact = TRUE]] %||% default
+}
+
 run_ancombc_comparison <- function(physeq, spec, global_config) {
   ancombc_load_error <- tryCatch({
     loadNamespace("ANCOMBC")
@@ -594,9 +1234,16 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
   }, error = function(e) e)
   if (!is.null(ancombc_load_error)) {
     stop(
-      "The R package 'ANCOMBC' is required for ANCOMBC differential abundance ",
+      "The R package 'ANCOMBC' is required for ANCOM-BC2 differential abundance ",
       "but could not be loaded: ",
       conditionMessage(ancombc_load_error),
+      call. = FALSE
+    )
+  }
+  if (!exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE)) {
+    stop(
+      "The installed R package 'ANCOMBC' does not export ancombc2(). ",
+      "Install a current ANCOMBC release before running differential abundance.",
       call. = FALSE
     )
   }
@@ -608,17 +1255,34 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
   physeq <- resolved$physeq
   spec <- resolved$spec
 
-  ancombc_output <- ANCOMBC::ancombc(
+  ancombc_output <- ANCOMBC::ancombc2(
     data = physeq,
     tax_level = tax_agg_level,
-    formula = spec$formula,
-    p_adj_method = "holm",
+    fix_formula = spec$fix_formula,
+    rand_formula = spec$rand_formula %||% NULL,
+    p_adj_method = ancombc2_arg(spec, global_config, "p_adj_method", "holm"),
+    pseudo_sens = as.logical(ancombc2_arg(spec, global_config, "pseudo_sens", TRUE)),
+    prv_cut = as.numeric(ancombc2_arg(spec, global_config, "prv_cut", 0.10)),
+    lib_cut = as.numeric(ancombc2_arg(spec, global_config, "lib_cut", 1000)),
+    s0_perc = as.numeric(ancombc2_arg(spec, global_config, "s0_perc", 0.05)),
     group = spec$group,
-    struc_zero = TRUE,
-    alpha = alpha
+    struc_zero = as.logical(ancombc2_arg(spec, global_config, "struc_zero", TRUE)),
+    neg_lb = as.logical(ancombc2_arg(spec, global_config, "neg_lb", TRUE)),
+    alpha = alpha,
+    n_cl = as.integer(ancombc2_arg(spec, global_config, "n_cl", 1)),
+    verbose = as.logical(ancombc2_arg(spec, global_config, "verbose", TRUE)),
+    global = "global" %in% spec$tests,
+    pairwise = "pairwise" %in% spec$tests,
+    dunnet = "dunnet" %in% spec$tests,
+    trend = "trend" %in% spec$tests,
+    iter_control = ancombc2_arg(spec, global_config, "iter_control", list(tol = 1e-2, max_iter = 20, verbose = FALSE)),
+    em_control = ancombc2_arg(spec, global_config, "em_control", list(tol = 1e-5, max_iter = 100)),
+    lme_control = ancombc2_arg(spec, global_config, "lme_control", NULL),
+    mdfdr_control = ancombc2_arg(spec, global_config, "mdfdr_control", list(fwer_ctrl_method = "holm", B = 100)),
+    trend_control = build_ancombc2_trend_control(spec, global_config)
   )
 
-  standardize_ancombc_results(ancombc_output, spec, alpha, lfc_cutoff)
+  standardize_ancombc2_results(ancombc_output, spec, alpha, lfc_cutoff)
 }
 
 write_da_results <- function(results_df, out_dir, trial_id, method, comparison_name) {
@@ -636,4 +1300,44 @@ write_da_results <- function(results_df, out_dir, trial_id, method, comparison_n
     row.names = FALSE
   )
   out_file
+}
+
+write_ancombc2_results <- function(results_df, out_dir, trial_id, comparison_name) {
+  method <- "ANCOMBC2"
+  main_file <- write_da_results(
+    results_df,
+    out_dir = out_dir,
+    trial_id = trial_id,
+    method = method,
+    comparison_name = comparison_name
+  )
+
+  comparison_dir <- file.path(out_dir, method, comparison_name)
+  test_suffix <- c(
+    primary = "Primary",
+    global = "Global",
+    pairwise = "Pairwise",
+    dunnet = "Dunnett",
+    trend = "Trend"
+  )
+  family_files <- list()
+  if ("test" %in% names(results_df)) {
+    for (test in intersect(names(test_suffix), unique(as.character(results_df$test)))) {
+      family_df <- results_df[as.character(results_df$test) == test, , drop = FALSE]
+      out_file <- file.path(
+        comparison_dir,
+        paste0(trial_id, "_", comparison_name, "_ANCOMBC2", test_suffix[[test]], ".tsv")
+      )
+      write.table(
+        family_df,
+        file = out_file,
+        sep = "\t",
+        quote = FALSE,
+        row.names = FALSE
+      )
+      family_files[[test]] <- out_file
+    }
+  }
+
+  c(main = main_file, unlist(family_files, use.names = TRUE))
 }

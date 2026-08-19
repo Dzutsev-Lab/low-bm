@@ -51,7 +51,7 @@ parser$add_argument("--DA-methods",
                     type = "character",
                     nargs = "+",
                     default = NULL,
-                    help = "Legacy method list; config-driven v1 supports ANCOMBC")
+                    help = "Legacy method list; config-driven DA uses ANCOMBC2")
 parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
@@ -117,7 +117,7 @@ load_project_and_da_config <- function() {
     da = normalize_da_config(build_legacy_da_config(
       trial_id = args$trialID %||% "analysis",
       comparisons = args$DA_comparisons,
-      methods = args$DA_methods %||% c("ANCOMBC"),
+      methods = args$DA_methods %||% c("ANCOMBC2"),
       out_dir = args$out %||% "Exp_Output/analysis",
       norm_method = args$norm_method,
       pseudocount = args$pseudocount,
@@ -211,56 +211,76 @@ add_result_labels <- function(results_df, grouped_physeq, tax_label_level, tax_a
 }
 
 plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_id) {
-  plot_df <- results_df |> filter(is.na(struc0))
-  sig_df <- plot_df |> filter(significance == "Sig", !is.na(padj), abs(log2FoldChange) > lfc_cutoff)
+  if ("test" %in% names(results_df)) {
+    plot_df <- results_df |>
+      filter(test %in% c("primary", "pairwise", "dunnet", "trend"), !is.na(log2FoldChange), is.na(struc0))
+  } else {
+    plot_df <- results_df |> filter(is.na(struc0))
+  }
+  if (nrow(plot_df) == 0) {
+    return(invisible(NULL))
+  }
 
   plot_title <- spec$plot_title %||% spec$name
   direction_labels <- ancombc_direction_labels(spec)
-  volcano <- ggplot(plot_df, aes(x = log2FoldChange, y = -log10(padj))) +
-    geom_point(alpha = 0.6, size = 4, color = "grey40") +
-    geom_vline(xintercept = 0) +
-    geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "darkred") +
-    geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "darkred") +
-    labs(
-      title = paste("Volcano Plot:", plot_title),
-      x = direction_labels$x,
-      y = "-log10(adjusted p-value)",
-      caption = direction_labels$caption
-    ) +
-    theme_bw() +
-    theme(plot.caption = element_text(hjust = 0.5, size = 12))
+  plot_groups <- split(plot_df, interaction(plot_df$test %||% "primary", plot_df$contrast %||% "contrast", drop = TRUE))
 
-  if (nrow(sig_df) > 0) {
-    volcano <- volcano +
-      geom_point(data = sig_df, aes(color = direction), size = 5) +
-      scale_color_manual(
-        name = direction_labels$legend_title,
-        values = c(pos = "firebrick1", neg = "dodgerblue1", none = "grey40"),
-        breaks = c("neg", "pos", "none"),
-        labels = direction_labels$legend_labels,
-        na.translate = FALSE
+  for (plot_name in names(plot_groups)) {
+    single_plot_df <- plot_groups[[plot_name]]
+    sig_df <- single_plot_df |> filter(significance == "Sig", !is.na(padj), abs(log2FoldChange) > lfc_cutoff)
+    contrast_label <- if ("contrast" %in% names(single_plot_df)) unique(single_plot_df$contrast)[[1]] else NULL
+    test_label <- if ("test" %in% names(single_plot_df)) unique(single_plot_df$test)[[1]] else "primary"
+    volcano <- ggplot(single_plot_df, aes(x = log2FoldChange, y = -log10(padj))) +
+      geom_point(alpha = 0.6, size = 4, color = "grey40") +
+      geom_vline(xintercept = 0) +
+      geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "darkred") +
+      geom_hline(yintercept = -log10(alpha), linetype = "dashed", color = "darkred") +
+      labs(
+        title = paste("Volcano Plot:", plot_title),
+        subtitle = paste(na.omit(c(test_label, contrast_label)), collapse = " | "),
+        x = direction_labels$x,
+        y = "-log10(adjusted p-value)",
+        caption = direction_labels$caption
       ) +
-      geom_text_repel(
-        data = sig_df,
-        aes(label = label, color = direction),
-        size = 5,
-        max.overlaps = Inf,
-        box.padding = 0.5,
-        point.padding = 0.4,
-        segment.size = 0.5,
-        segment.color = "grey40",
-        show.legend = FALSE
-      )
+      theme_bw() +
+      theme(plot.caption = element_text(hjust = 0.5, size = 12))
+
+    if (nrow(sig_df) > 0) {
+      volcano <- volcano +
+        geom_point(data = sig_df, aes(color = direction), size = 5) +
+        scale_color_manual(
+          name = direction_labels$legend_title,
+          values = c(pos = "firebrick1", neg = "dodgerblue1", none = "grey40"),
+          breaks = c("neg", "pos", "none"),
+          labels = direction_labels$legend_labels,
+          na.translate = FALSE
+        ) +
+        geom_text_repel(
+          data = sig_df,
+          aes(label = label, color = direction),
+          size = 5,
+          max.overlaps = Inf,
+          box.padding = 0.5,
+          point.padding = 0.4,
+          segment.size = 0.5,
+          segment.color = "grey40",
+          show.legend = FALSE
+        )
+    }
+
+    suffix <- gsub("[^A-Za-z0-9._-]+", "_", paste(na.omit(c(test_label, contrast_label)), collapse = "_"))
+    suffix <- gsub("_+", "_", suffix)
+    ggsave(
+      filename = file.path(out_dir, "ANCOMBC2", spec$name, paste0(trial_id, "_", spec$name, "_", suffix, "_ANCOMBC2Volcano.png")),
+      plot = volcano,
+      width = 14,
+      height = 12,
+      units = "in",
+      dpi = 300
+    )
   }
 
-  ggsave(
-    filename = file.path(out_dir, "ANCOMBC", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBCVolcano.png")),
-    plot = volcano,
-    width = 14,
-    height = 12,
-    units = "in",
-    dpi = 300
-  )
+  invisible(NULL)
 }
 
 plot_da_heatmap <- function(grouped_physeq,
@@ -311,10 +331,42 @@ plot_da_heatmap <- function(grouped_physeq,
   }
 
   ggsave(
-    filename = file.path(out_dir, "ANCOMBC", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBCHeatmap.png")),
+    filename = file.path(out_dir, "ANCOMBC2", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBC2Heatmap.png")),
     plot = heatmap,
     width = 14,
     height = 12,
+    units = "in",
+    dpi = 300
+  )
+}
+
+plot_ancombc2_result_heatmap <- function(results_df, spec, out_dir, trial_id) {
+  if (!all(c("test", "contrast", "log2FoldChange", "significance") %in% names(results_df))) {
+    return(invisible(NULL))
+  }
+  plot_df <- results_df |>
+    filter(test %in% c("primary", "pairwise", "dunnet", "trend"), !is.na(log2FoldChange), significance == "Sig")
+  if (nrow(plot_df) == 0) {
+    return(invisible(NULL))
+  }
+  plot_df$display_contrast <- paste(plot_df$test, plot_df$contrast, sep = ": ")
+  plot <- ggplot(plot_df, aes(x = display_contrast, y = taxon, fill = log2FoldChange)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = "dodgerblue3", mid = "white", high = "firebrick3", midpoint = 0) +
+    labs(
+      title = paste("ANCOM-BC2 Significant Effects:", spec$plot_title %||% spec$name),
+      x = NULL,
+      y = NULL,
+      fill = "log2 FC"
+    ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+  ggsave(
+    filename = file.path(out_dir, "ANCOMBC2", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBC2ResultHeatmap.png")),
+    plot = plot,
+    width = 12,
+    height = max(4, min(14, 0.3 * length(unique(plot_df$taxon)) + 3)),
     units = "in",
     dpi = 300
   )
@@ -324,7 +376,7 @@ select_taxa <- read_select_taxa(args$select_taxa_names)
 CompPhyseq <- load_input_physeq()
 
 for (spec in da_config$comparisons) {
-  message("Running ANCOMBC comparison: ", spec$name)
+  message("Running ANCOMBC2 comparison: ", spec$name)
   comparison_physeq <- prepare_da_physeq(
     physeq = CompPhyseq,
     spec = spec,
@@ -339,7 +391,7 @@ for (spec in da_config$comparisons) {
     attr(comparison_physeq, "patient_duplicate_policy_audit"),
     out_dir = out_dir,
     trial_id = trial_id,
-    method = "ANCOMBC",
+    method = "ANCOMBC2",
     comparison_name = resolved_spec$name
   )
   message("Wrote patient duplicate policy audit: ", duplicate_policy_file)
@@ -354,15 +406,15 @@ for (spec in da_config$comparisons) {
     resolved_spec$tax_agg_level %||% da_config$tax_agg_level
   )
 
-  result_file <- write_da_results(
+  result_files <- write_ancombc2_results(
     results_df,
     out_dir = out_dir,
     trial_id = trial_id,
-    method = "ANCOMBC",
     comparison_name = resolved_spec$name
   )
-  message("Wrote DA results: ", result_file)
+  message("Wrote DA results: ", paste(result_files, collapse = ", "))
 
   plot_da_volcano(results_for_plots, resolved_spec, alpha, lfc_cutoff, out_dir, trial_id)
+  plot_ancombc2_result_heatmap(results_for_plots, resolved_spec, out_dir, trial_id)
   plot_da_heatmap(comparison_physeq, results_for_plots, resolved_spec, da_config, out_dir, trial_id)
 }
