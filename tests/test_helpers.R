@@ -772,6 +772,34 @@ stopifnot(identical(primary_taxon_a$significance[[1]], "Sig"))
 global_taxon_b <- fake_standardized[fake_standardized$taxon == "taxon_b" & fake_standardized$test == "global", , drop = FALSE]
 stopifnot(identical(global_taxon_b$significance[[1]], "NotSig"))
 
+fake_res_qval <- fake_res
+names(fake_res_qval) <- sub("^p_", "p_val_", names(fake_res_qval))
+names(fake_res_qval) <- sub("^q_", "q_val_", names(fake_res_qval))
+fake_qval_standardized <- standardize_ancombc2_results(
+  list(res = fake_res_qval, zero_ind = fake_zero),
+  modifyList(fake_levels_spec, list(tests = "primary")),
+  alpha = 0.05,
+  lfc_cutoff = 0.3
+)
+fake_qval_row <- fake_qval_standardized[
+  fake_qval_standardized$taxon == "taxon_a" &
+    fake_qval_standardized$contrast == "Nontumor vs NegativeControl",
+  ,
+  drop = FALSE
+]
+stopifnot(isTRUE(all.equal(fake_qval_row$padj[[1]], 0.01)))
+
+volcano_fallback_df <- data.frame(
+  taxon = "taxon_a",
+  log2FoldChange = 1,
+  p = 0.001,
+  padj = NA_real_,
+  significance = "Sig",
+  stringsAsFactors = FALSE
+)
+stopifnot(isTRUE(da_volcano_highlight_mask(volcano_fallback_df, lfc_cutoff = 0.3)[[1]]))
+stopifnot(isTRUE(all.equal(da_volcano_p_value(volcano_fallback_df)[[1]], 0.001)))
+
 surv_meta <- prepare_survival_metadata(
   as(sample_data(physeq), "data.frame"),
   time_col = "SurvivalDays",

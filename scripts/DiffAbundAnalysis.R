@@ -227,10 +227,20 @@ plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_
 
   for (plot_name in names(plot_groups)) {
     single_plot_df <- plot_groups[[plot_name]]
-    sig_df <- single_plot_df |> filter(significance == "Sig", !is.na(padj), abs(log2FoldChange) > lfc_cutoff)
+    single_plot_df$volcano_p <- da_volcano_p_value(single_plot_df)
+    single_plot_df <- single_plot_df |> filter(!is.na(volcano_p), is.finite(volcano_p))
+    if (nrow(single_plot_df) == 0) {
+      next
+    }
+    sig_df <- single_plot_df[da_volcano_highlight_mask(single_plot_df, lfc_cutoff), , drop = FALSE]
     contrast_label <- if ("contrast" %in% names(single_plot_df)) unique(single_plot_df$contrast)[[1]] else NULL
     test_label <- if ("test" %in% names(single_plot_df)) unique(single_plot_df$test)[[1]] else "primary"
-    volcano <- ggplot(single_plot_df, aes(x = log2FoldChange, y = -log10(padj))) +
+    y_label <- if (any(is.na(single_plot_df$padj) & !is.na(single_plot_df$p))) {
+      "-log10(adjusted p-value; p-value fallback)"
+    } else {
+      "-log10(adjusted p-value)"
+    }
+    volcano <- ggplot(single_plot_df, aes(x = log2FoldChange, y = -log10(volcano_p))) +
       geom_point(alpha = 0.6, size = 4, color = "grey40") +
       geom_vline(xintercept = 0) +
       geom_vline(xintercept = c(-lfc_cutoff, lfc_cutoff), linetype = "dashed", color = "darkred") +
@@ -239,7 +249,7 @@ plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_
         title = paste("Volcano Plot:", plot_title),
         subtitle = paste(na.omit(c(test_label, contrast_label)), collapse = " | "),
         x = direction_labels$x,
-        y = "-log10(adjusted p-value)",
+        y = y_label,
         caption = direction_labels$caption
       ) +
       theme_bw() +

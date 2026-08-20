@@ -782,6 +782,16 @@ ancombc2_col <- function(table, prefix, coefficient, fallback = NULL) {
   if (length(match) == 0) NULL else match[[1]]
 }
 
+ancombc2_metric_col <- function(table, prefixes, coefficient, fallback = NULL) {
+  for (prefix in prefixes) {
+    col <- ancombc2_col(table, prefix, coefficient, fallback = fallback)
+    if (!is.null(col)) {
+      return(col)
+    }
+  }
+  NULL
+}
+
 ancombc2_vector <- function(table, column, default = NA_real_) {
   if (is.null(column) || !column %in% names(table)) {
     return(rep(default, nrow(table)))
@@ -888,11 +898,11 @@ standardize_ancombc2_contrast_results <- function(table,
     lfc_col <- ancombc2_col(table, "lfc", coefficient)
     se_col <- ancombc2_col(table, "se", coefficient)
     w_col <- ancombc2_col(table, "W", coefficient)
-    p_col <- ancombc2_col(table, "p", coefficient)
-    q_col <- ancombc2_col(table, "q", coefficient)
-    diff_col <- ancombc2_col(table, "diff", coefficient)
+    p_col <- ancombc2_metric_col(table, c("p", "p_val"), coefficient)
+    q_col <- ancombc2_metric_col(table, c("q", "q_val", "padj"), coefficient)
+    diff_col <- ancombc2_metric_col(table, c("diff", "diff_abn"), coefficient)
     passed_col <- ancombc2_col(table, "passed_ss", coefficient)
-    robust_col <- ancombc2_col(table, "diff_robust", coefficient)
+    robust_col <- ancombc2_metric_col(table, c("diff_robust", "diff_robust_abn"), coefficient)
 
     out <- data.frame(
       taxon = table$taxon,
@@ -933,6 +943,24 @@ standardize_ancombc2_contrast_results <- function(table,
   })
 
   do.call(rbind, rows)
+}
+
+da_volcano_p_value <- function(results_df) {
+  padj <- if ("padj" %in% names(results_df)) suppressWarnings(as.numeric(results_df$padj)) else rep(NA_real_, nrow(results_df))
+  p <- if ("p" %in% names(results_df)) suppressWarnings(as.numeric(results_df$p)) else rep(NA_real_, nrow(results_df))
+  y_value <- ifelse(!is.na(padj) & is.finite(padj), padj, p)
+  y_value[!is.na(y_value) & y_value <= 0] <- .Machine$double.xmin
+  y_value
+}
+
+da_volcano_highlight_mask <- function(results_df, lfc_cutoff) {
+  y_value <- da_volcano_p_value(results_df)
+  !is.na(results_df$significance) &
+    results_df$significance == "Sig" &
+    !is.na(results_df$log2FoldChange) &
+    abs(results_df$log2FoldChange) > lfc_cutoff &
+    !is.na(y_value) &
+    is.finite(y_value)
 }
 
 standardize_ancombc2_omnibus_results <- function(table,
