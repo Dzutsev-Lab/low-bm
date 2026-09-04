@@ -1251,6 +1251,10 @@ build_ancombc2_trend_control <- function(spec, global_config) {
   trend_control
 }
 
+ancombc2_run_global_test <- function(spec) {
+  "global" %in% spec$tests || "trend" %in% spec$tests
+}
+
 ancombc2_arg <- function(spec, global_config, name, default = NULL) {
   spec[[name, exact = TRUE]] %||% global_config[[name, exact = TRUE]] %||% default
 }
@@ -1299,7 +1303,7 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
     alpha = alpha,
     n_cl = as.integer(ancombc2_arg(spec, global_config, "n_cl", 1)),
     verbose = as.logical(ancombc2_arg(spec, global_config, "verbose", TRUE)),
-    global = "global" %in% spec$tests,
+    global = ancombc2_run_global_test(spec),
     pairwise = "pairwise" %in% spec$tests,
     dunnet = "dunnet" %in% spec$tests,
     trend = "trend" %in% spec$tests,

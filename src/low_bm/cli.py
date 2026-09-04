@@ -248,6 +248,12 @@ META_STEP_REGISTRY: dict[str, AnalysisStepSpec] = {
         required_section="meta_decontamination",
         env_file=MICROCLEAN_ENV,
     ),
+    "annotate-phyloseq": AnalysisStepSpec(
+        name="annotate-phyloseq",
+        argv_template=("Rscript", "scripts/PhyloseqAnnotation.R", "--analysis-config", "{analysis_config}"),
+        required_section="meta_annotation",
+        env_file=R_TOOLS_ENV,
+    ),
     "differential-abundance": AnalysisStepSpec(
         name="differential-abundance",
         argv_template=("Rscript", "scripts/DiffAbundMetaAnalysis.R", "--analysis-config", "{analysis_config}"),
@@ -374,6 +380,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_meta_step_arguments(meta_decontam_parser)
     meta_decontam_parser.set_defaults(func=meta_decontaminate_phyloseq_command)
+
+    meta_annotate_parser = meta_subparsers.add_parser(
+        "annotate-phyloseq",
+        help="Annotate one phyloseq endpoint with values from a TSV.",
+    )
+    add_meta_step_arguments(meta_annotate_parser)
+    meta_annotate_parser.set_defaults(func=meta_annotate_phyloseq_command)
 
     meta_da_parser = meta_subparsers.add_parser(
         "differential-abundance",
@@ -1551,6 +1564,11 @@ def meta_compile_phyloseq_command(args: argparse.Namespace) -> int:
 def meta_decontaminate_phyloseq_command(args: argparse.Namespace) -> int:
     """Run optional micRoclean decontamination on one phyloseq endpoint."""
     return execute_meta_step(args, "decontaminate-phyloseq")
+
+
+def meta_annotate_phyloseq_command(args: argparse.Namespace) -> int:
+    """Annotate one phyloseq endpoint with values from a TSV."""
+    return execute_meta_step(args, "annotate-phyloseq")
 
 
 def meta_differential_abundance_command(args: argparse.Namespace) -> int:

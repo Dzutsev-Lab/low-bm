@@ -38,6 +38,24 @@ meta_decontamination:
   control_name: "Control"
   blocklist: ["FakeBlockedTaxa"]
 
+meta_annotation:
+  # Explicit endpoint enrichment from a TSV. The annotator left-joins from
+  # phyloseq sample_data, so all input samples are retained and unmatched
+  # samples receive NA in the added annotation column(s).
+  input_physeq: "Exp_Output/<trialID>_<trial_descript>/CompPhyseq.RData"
+  annotation_table: "Exp_Output/<trialID>_<trial_descript>/annotations.tsv"
+  level: "PatientID"
+  # Defaults to level; for .sample_name/sample_names it defaults to SampleName.
+  annotation_key: null
+  # Optional allowlist. If null, all non-key annotation table columns are added.
+  columns: null
+  # Prefix is pasted directly onto selected annotation column names.
+  prefix: null
+  # Options: error, replace.
+  overwrite: "error"
+  output_physeq: "AnnotatedPhyseq.RData"
+  output_report: "PhyseqAnnotationReport.tsv"
+
 meta_differential_abundance:
   # Legacy two-result-table meta-analysis. Batch names are processing output
   # directory names such as <trialID>_<trial_descript>.

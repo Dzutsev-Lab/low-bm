@@ -2,6 +2,7 @@ library(phyloseq)
 
 source(file.path("scripts", "Rhelpers", "MetadataSchema.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqIO.R"))
+source(file.path("scripts", "Rhelpers", "PhyloseqAnnotation.R"))
 source(file.path("scripts", "Rhelpers", "ASVFasta.R"))
 source(file.path("scripts", "Rhelpers", "PhyloseqTransforms.R"))
 source(file.path("scripts", "Rhelpers", "KrakenTaxonomy.R"))
@@ -249,6 +250,124 @@ stopifnot(all(annotated_meta$SourceTrialName == "010126.1_BatchOne"))
 stopifnot(all(annotated_meta$SourceTrialID == "010126.1"))
 stopifnot(all(annotated_meta$SourcePhyseqPath == tmp_file))
 stopifnot(all(annotated_meta$SourceOrder == 1))
+
+patient_annotation <- data.frame(
+  PatientID = c("P1", "P3", "P_missing"),
+  risk_score = c(0.42, -0.21, 1.7),
+  risk_group = c("high", "low", "high"),
+  stringsAsFactors = FALSE
+)
+patient_annotation_result <- annotate_physeq_sample_data(
+  physeq,
+  patient_annotation,
+  level = "PatientID"
+)
+patient_annotated_meta <- as(sample_data(patient_annotation_result$physeq), "data.frame")
+stopifnot(nsamples(patient_annotation_result$physeq) == nsamples(physeq))
+stopifnot(patient_annotated_meta["SampleA_rep1", "risk_score"] == 0.42)
+stopifnot(patient_annotated_meta["SampleA_rep2", "risk_score"] == 0.42)
+stopifnot(patient_annotated_meta["SampleC", "risk_group"] == "low")
+stopifnot(is.na(patient_annotated_meta["SampleB", "risk_score"]))
+stopifnot(any(
+  patient_annotation_result$audit$status == "unmatched_physeq_key" &
+    patient_annotation_result$audit$key == "P2"
+))
+stopifnot(any(
+  patient_annotation_result$audit$status == "unmatched_annotation_key" &
+    patient_annotation_result$audit$key == "P_missing"
+))
+
+sampleid_annotation <- data.frame(
+  sample_id_key = c("SampleA", "SampleB"),
+  sample_label = c("replicate_patient", "singleton_patient"),
+  stringsAsFactors = FALSE
+)
+sampleid_annotation_result <- annotate_physeq_sample_data(
+  physeq,
+  sampleid_annotation,
+  level = "SampleID",
+  annotation_key = "sample_id_key"
+)
+sampleid_annotated_meta <- as(sample_data(sampleid_annotation_result$physeq), "data.frame")
+stopifnot(all(sampleid_annotated_meta[c("SampleA_rep1", "SampleA_rep2"), "sample_label"] == "replicate_patient"))
+stopifnot(sampleid_annotated_meta["SampleB", "sample_label"] == "singleton_patient")
+stopifnot(is.na(sampleid_annotated_meta["SampleC", "sample_label"]))
+
+sample_name_annotation <- data.frame(
+  SampleName = c("SampleA_rep1", "SampleB"),
+  model_probability = c(0.9, 0.1),
+  stringsAsFactors = FALSE
+)
+sample_name_annotation_result <- annotate_physeq_sample_data(
+  physeq,
+  sample_name_annotation,
+  level = ".sample_name"
+)
+sample_name_annotated_meta <- as(sample_data(sample_name_annotation_result$physeq), "data.frame")
+stopifnot(sample_name_annotated_meta["SampleA_rep1", "model_probability"] == 0.9)
+stopifnot(sample_name_annotated_meta["SampleB", "model_probability"] == 0.1)
+stopifnot(is.na(sample_name_annotated_meta["SampleA_rep2", "model_probability"]))
+
+expect_error(
+  annotate_physeq_sample_data(
+    physeq,
+    patient_annotation,
+    level = "MissingLevel"
+  ),
+  "Available annotation levels"
+)
+
+duplicate_annotation <- data.frame(
+  PatientID = c("P1", "P1"),
+  risk_score = c(0.1, 0.2),
+  stringsAsFactors = FALSE
+)
+expect_error(
+  annotate_physeq_sample_data(
+    physeq,
+    duplicate_annotation,
+    level = "PatientID"
+  ),
+  "duplicate annotation key"
+)
+
+identical_duplicate_annotation <- data.frame(
+  PatientID = c("P1", "P1"),
+  risk_score = c(0.1, 0.1),
+  stringsAsFactors = FALSE
+)
+identical_duplicate_result <- annotate_physeq_sample_data(
+  physeq,
+  identical_duplicate_annotation,
+  level = "PatientID"
+)
+identical_duplicate_meta <- as(sample_data(identical_duplicate_result$physeq), "data.frame")
+stopifnot(identical_duplicate_meta["SampleA_rep1", "risk_score"] == 0.1)
+
+existing_column_annotation <- data.frame(
+  PatientID = c("P1", "P2"),
+  SampleType = c("AnnotatedTumor", "AnnotatedNontumor"),
+  stringsAsFactors = FALSE
+)
+expect_error(
+  annotate_physeq_sample_data(
+    physeq,
+    existing_column_annotation,
+    level = "PatientID"
+  ),
+  "already exist"
+)
+overwrite_result <- annotate_physeq_sample_data(
+  physeq,
+  existing_column_annotation,
+  level = "PatientID",
+  overwrite = "replace"
+)
+overwrite_meta <- as(sample_data(overwrite_result$physeq), "data.frame")
+stopifnot(overwrite_meta["SampleA_rep1", "SampleType"] == "AnnotatedTumor")
+stopifnot(overwrite_meta["SampleB", "SampleType"] == "AnnotatedNontumor")
+stopifnot(is.na(overwrite_meta["SampleC", "SampleType"]))
+stopifnot(any(overwrite_result$audit$overwritten_columns == "SampleType"))
 
 asv_test_dir <- tempfile("asv_fasta_paths_")
 dir.create(asv_test_dir, recursive = TRUE)
@@ -554,6 +673,8 @@ trend_resolved <- resolve_ancombc_comparison_spec(
 trend_control <- build_ancombc2_trend_control(trend_resolved$spec, list())
 stopifnot(length(trend_control$contrast) == 2)
 stopifnot(identical(as.integer(unlist(trend_control$node)), c(2L, 2L)))
+stopifnot(isTRUE(ancombc2_run_global_test(trend_resolved$spec)))
+stopifnot(!isTRUE(ancombc2_run_global_test(modifyList(trend_resolved$spec, list(tests = "primary")))))
 bad_trend_spec <- three_level_da_spec
 bad_trend_spec$tests <- "trend"
 expect_error(

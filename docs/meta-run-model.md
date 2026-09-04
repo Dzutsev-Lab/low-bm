@@ -85,6 +85,37 @@ For explicit HPC prefixes, provide the micRoclean environment separately:
   --microclean-env-prefix /data/taylorng/conda/envs/low-bm-microclean
 ```
 
+## Annotate A Phyloseq Endpoint
+
+```bash
+./low-bm meta annotate-phyloseq --analysis-config config/local/meta.yaml
+```
+
+This step enriches one existing phyloseq endpoint with columns from a TSV. Set
+`meta_annotation.input_physeq`, `meta_annotation.annotation_table`, and
+`meta_annotation.level`. The level can be any column already present in
+`sample_data(physeq)`, such as `PatientID`, `SampleID`, `SampleType`, or
+`ProcessingBatch`. To join by phyloseq sample names, use `.sample_name` or
+`sample_names`.
+
+The join is a left join from the phyloseq metadata: every input sample is kept,
+matched annotations are added to `sample_data`, and unmatched samples receive
+`NA` in the new annotation columns. The original input RData is not modified;
+the step writes a new endpoint plus an audit report.
+
+```yaml
+meta_annotation:
+  input_physeq: "Exp_Output/<compiled_trial_name>/CompPhyseq.RData"
+  annotation_table: "Exp_Output/<compiled_trial_name>/CodaRiskScores.tsv"
+  level: "PatientID"
+  annotation_key: "PatientID"
+  columns: ["risk_score", "risk_group_median"]
+  prefix: "coda_"
+  overwrite: "error"
+  output_physeq: "AnnotatedPhyseq.RData"
+  output_report: "PhyseqAnnotationReport.tsv"
+```
+
 ## Differential-Abundance Meta-Analysis
 
 ```bash
