@@ -1286,6 +1286,13 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
   resolved <- resolve_ancombc_comparison_spec(physeq, spec)
   physeq <- resolved$physeq
   spec <- resolved$spec
+  lme_control <- if (!is.null(spec$lme_control) || !is.null(global_config$lme_control)) {
+    ancombc2_arg(spec, global_config, "lme_control", NULL)
+  } else if (is_missing_da_value(spec$rand_formula)) {
+    NULL
+  } else {
+    lme4::lmerControl()
+  }
 
   ancombc_output <- ANCOMBC::ancombc2(
     data = physeq,
@@ -1309,7 +1316,7 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
     trend = "trend" %in% spec$tests,
     iter_control = ancombc2_arg(spec, global_config, "iter_control", list(tol = 1e-2, max_iter = 20, verbose = FALSE)),
     em_control = ancombc2_arg(spec, global_config, "em_control", list(tol = 1e-5, max_iter = 100)),
-    lme_control = ancombc2_arg(spec, global_config, "lme_control", NULL),
+    lme_control = lme_control,
     mdfdr_control = ancombc2_arg(spec, global_config, "mdfdr_control", list(fwer_ctrl_method = "holm", B = 100)),
     trend_control = build_ancombc2_trend_control(spec, global_config)
   )

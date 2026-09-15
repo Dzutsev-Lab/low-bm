@@ -675,6 +675,25 @@ stopifnot(length(trend_control$contrast) == 2)
 stopifnot(identical(as.integer(unlist(trend_control$node)), c(2L, 2L)))
 stopifnot(isTRUE(ancombc2_run_global_test(trend_resolved$spec)))
 stopifnot(!isTRUE(ancombc2_run_global_test(modifyList(trend_resolved$spec, list(tests = "primary")))))
+if (requireNamespace("lme4", quietly = TRUE)) {
+  missing_mixed_lme_control <- ancombc2_arg(
+    list(rand_formula = "(1 | PatientID)"),
+    list(),
+    "lme_control",
+    lme4::lmerControl()
+  )
+  explicit_lme_control <- list(check.nobs.vs.nlev = "ignore")
+  stopifnot(inherits(missing_mixed_lme_control, "lmerControl"))
+  stopifnot(identical(
+    ancombc2_arg(
+      list(lme_control = explicit_lme_control),
+      list(),
+      "lme_control",
+      lme4::lmerControl()
+    ),
+    explicit_lme_control
+  ))
+}
 bad_trend_spec <- three_level_da_spec
 bad_trend_spec$tests <- "trend"
 expect_error(
