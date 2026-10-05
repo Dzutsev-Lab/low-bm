@@ -123,6 +123,14 @@ process that manifest internally. This keeps filename/pairing failures in one
 readable validation report and avoids noisy array fallback behavior for short
 prep tasks.
 
+Large read-level and alignment intermediates are declared as Snakemake temporary
+outputs. Normalized, UMI-selected, UMI-deduplicated, and DADA2 filtered FASTQs,
+along with intermediate SAM files, are removed after their final downstream
+consumer completes. Manifests, count tables, taxonomy outputs, ASV metadata,
+reports, completion markers, and logs remain persistent for troubleshooting.
+Missing temporary inputs are regenerated automatically when a downstream target
+is rebuilt.
+
 ## Baseline Files Worth Comparing
 
 Review these files in `OpenOmics/baseline` for the closest structural analogs:

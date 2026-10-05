@@ -40,9 +40,20 @@ Start with these docs before changing related behavior:
   change analysis formulas, `factor_levels`, `ordered_levels`, decontamination
   defaults, reference selection, or taxonomy behavior unless the task asks for
   that scientific change.
-- Do not launch real SLURM jobs, build large reference indexes, run full
-  biological workflows, or remove Snakemake/conda locks unless explicitly asked.
-  Prefer dry-runs and diagnostics while developing.
+- Treat this checkout as a tool-development environment only. Do not run real
+  biological analyses, production processing, meta-analysis, reference builds,
+  or other data-bearing workflows locally, even when explicitly requested.
+  Local validation must use unit tests, dry-runs, command/configuration checks,
+  mocks, fixtures, or synthetic non-sensitive data only. Do not access, copy,
+  persist, or export real sample-level data, patient data, credentials, or
+  analysis outputs here. Full analyses and validation involving real data must
+  be performed in a separate execution environment after changes are pushed to
+  the shared remote repository. If requested validation requires real data or
+  a substantive analysis, stop and report that boundary instead of running it.
+- Do not launch real SLURM jobs, build large reference indexes, or run full
+  biological workflows locally. Do not remove Snakemake/conda locks unless
+  explicitly asked and the documented unlock conditions are satisfied. Prefer
+  dry-runs and diagnostics while developing.
 - Do not use `--nolock` as a routine fix. Follow the documented unlock flow and
   confirm related jobs are stopped before unlocking.
 - Never commit secrets, personal absolute paths, HPC credentials, patient data,
@@ -60,8 +71,9 @@ Start with these docs before changing related behavior:
   the required R packages are available.
 - Shell wrapper changes: run the targeted Python tests when present, such as
   `python -m unittest tests/test_blast_wrapper.py`.
-- Workflow/config changes: prefer a `./low-bm ... --dry-run` path with local
-  configs before any real processing run.
+- Workflow/config changes: use a `./low-bm ... --dry-run` path with local
+  configuration and synthetic or fixture inputs only. Do not execute real
+  biological workflows or analyses in this development checkout.
 - Runner/environment changes: use `./low-bm doctor runner --mode local`; add
   `--mode slurm` or `--rule-env-smoke-test` only when relevant and available.
 - Documentation-only changes normally need review of the diff and linked docs;
@@ -77,5 +89,6 @@ Start with these docs before changing related behavior:
 - Flag scientific changes that lack an explicit rationale, especially comparison
   ordering, ANCOM-BC2 settings, decontamination controls, host/reference
   selection, ASV filtering, taxonomy reconciliation, or metadata joins.
-- Flag real execution commands in docs or tests when a dry-run, mocked command,
-  or small-batch validation path would be safer.
+- Flag real-data execution, substantive analysis commands, or analysis outputs
+  in this checkout; prefer dry-runs, mocks, fixtures, synthetic data, and
+  isolated tests.

@@ -1396,6 +1396,39 @@ class ProfileConfigurationTests(unittest.TestCase):
         self.assertIn("count_summary_done = count_summary_done()", text)
         self.assertIn("sample_prep_done = sample_prep_done()", text)
 
+    def test_snakefile_cleans_large_intermediates_but_keeps_diagnostics(self) -> None:
+        text = (REPO_ROOT / "Snakefile").read_text()
+
+        for expression in (
+            "r1_norm = temp(NORM_R1_READS)",
+            "r2_norm = temp(NORM_R2_READS)",
+            "sel_umi_r1 = temp(UMI_SELECTED_R1S)",
+            "umi_dedup_reads = temp(UMI_DEDUP_READS)",
+            "filtered_reads = temp(expand(",
+            "sam = temp(f\"{NEG_ALIGNMENT_DIR}/{{tag}}.ASV.sam\")",
+            "bacterial_alignment = temp(f\"{POS_ALIGNMENT_DIR}/bacterial.ASV.sam\")",
+        ):
+            self.assertIn(expression, text)
+
+        for expression in (
+            "manifest = FASTQ_MANIFEST",
+            "sample_names = SAMPLE_NAMES",
+            "count_summaries = UMI_COUNT_SUMMARIES",
+            "seq_table = f\"{DADA_DENOISE_DIR}/SeqTable.tsv\"",
+            "filter_stage_counts = f\"{DADA_DENOISE_DIR}/dada_read_counts.tsv\"",
+            "kraken_report_file = f\"{KRAKEN_TAX_DIR}/bacterial.ASV.{KRAKEN_DB}.k2report\"",
+        ):
+            self.assertIn(expression, text)
+
+    def test_snakefile_declares_consumers_of_temporary_fastqs(self) -> None:
+        text = (REPO_ROOT / "Snakefile").read_text()
+
+        self.assertIn("norm_r1 = NORM_R1_READS", text)
+        self.assertIn("norm_r2 = NORM_R2_READS", text)
+        self.assertIn("selected_umi_r1 = UMI_SELECTED_R1S", text)
+        self.assertIn("dada_reads = dada_input_reads()", text)
+        self.assertIn("--fqs {input.dada_reads}", text)
+
 
 class RunnerSetupTests(unittest.TestCase):
     def test_build_runner_create_command_uses_manager_specific_syntax(self) -> None:

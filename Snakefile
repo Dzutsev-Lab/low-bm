@@ -229,8 +229,8 @@ rule norm_fastq:
         manifest = FASTQ_MANIFEST,
         validation_ok = FASTQ_VALIDATION_OK,
     output:
-        r1_norm = NORM_R1_READS,
-        r2_norm = NORM_R2_READS,
+        r1_norm = temp(NORM_R1_READS),
+        r2_norm = temp(NORM_R2_READS),
         done = NORM_FASTQ_DONE
     threads: 4
     log: f"{LOG_DIR}/00_norm/00_norm.log"
@@ -255,8 +255,10 @@ if PROCESS_UMIS:
         input:
             manifest = FASTQ_MANIFEST,
             norm_done = NORM_FASTQ_DONE,
+            norm_r1 = NORM_R1_READS,
+            norm_r2 = NORM_R2_READS,
         output:
-            sel_umi_r1 = UMI_SELECTED_R1S,
+            sel_umi_r1 = temp(UMI_SELECTED_R1S),
             count_summaries = UMI_COUNT_SUMMARIES,
             done = UMI_SELECTION_DONE
         params:
@@ -295,8 +297,9 @@ if PROCESS_UMIS:
         input:
             manifest = FASTQ_MANIFEST,
             umi_selection_done = UMI_SELECTION_DONE,
+            selected_umi_r1 = UMI_SELECTED_R1S,
         output:
-            umi_dedup_reads = UMI_DEDUP_READS,
+            umi_dedup_reads = temp(UMI_DEDUP_READS),
             done = UMI_DEDUP_DONE
         params:
             AmpUMI_regex = "^" + ("I" * UMI_LEN),
@@ -323,6 +326,7 @@ else:
         input:
             manifest = FASTQ_MANIFEST,
             norm_done = NORM_FASTQ_DONE,
+            norm_r1 = NORM_R1_READS,
         output:
             count_summaries = UMI_COUNT_SUMMARIES,
             done = NO_UMI_COUNT_DONE
@@ -348,6 +352,7 @@ else:
 rule dada_denoising:
     input: 
         sample_names = SAMPLE_NAMES,
+        dada_reads = dada_input_reads(),
         sample_prep_done = sample_prep_done()
     output:
         filtered_reads = temp(expand(f"{DADA_DENOISE_DIR}/filteredAndTrimmed/filtered.{{s}}.fastq", s=SAMPLES)),
@@ -366,7 +371,6 @@ rule dada_denoising:
         maxEE = MAX_EE,
         truncQ = TRUNC_Q,
         filtered_reads_dir = f"{DADA_DENOISE_DIR}/filteredAndTrimmed",
-        dada_reads = dada_input_reads(),
     threads: 16
     log:    f"{LOG_DIR}/03_dada.log"
     conda: conda_env("R-tools-env")
@@ -378,7 +382,7 @@ rule dada_denoising:
 
         cd "{REPO_ROOT}"
         Rscript "{SCRIPTS}/DadaASVFilter.R" \
-            --fqs {params.dada_reads} \
+            --fqs {input.dada_reads} \
             --sample-names {input.sample_names} \
             --filtered-fqs {output.filtered_reads} \
             --err-plt {output.seq_err_plot} \
@@ -404,7 +408,7 @@ rule host_viral_alignment:
         reference_fasta = lambda wc: {"host": HOST_REF, "viral": VIRAL_REF}[wc.tag],
         reference_indexes = lambda wc: bwa_index_files({"host": HOST_REF, "viral": VIRAL_REF}[wc.tag])
     output:
-        sam = f"{NEG_ALIGNMENT_DIR}/{{tag}}.ASV.sam",
+        sam = temp(f"{NEG_ALIGNMENT_DIR}/{{tag}}.ASV.sam"),
         unmapped_names = f"{NEG_ALIGNMENT_DIR}/unmapped.{{tag}}.ASV.names"
     threads: 8
     log:    f"{LOG_DIR}/04_alignment/04_alignment_{{tag}}.log"
@@ -450,7 +454,7 @@ rule bacterial_alignment:
         reference_fasta = BACT16S_REF,
         reference_indexes = bwa_index_files(BACT16S_REF)
     output:
-        bacterial_alignment = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.sam",
+        bacterial_alignment = temp(f"{POS_ALIGNMENT_DIR}/bacterial.ASV.sam"),
         bacterial_names = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.names",
         bacterial_ASVs = f"{POS_ALIGNMENT_DIR}/bacterial.ASV.fasta"
     threads: 8
@@ -585,6 +589,7 @@ rule read_counts:
     input:
         sample_names = SAMPLE_NAMES,
         count_summary_done = count_summary_done(),
+        count_summaries = UMI_COUNT_SUMMARIES,
         dada_read_counts = f"{DADA_DENOISE_DIR}/dada_read_counts.tsv",
         seq_table = f"{DADA_DENOISE_DIR}/SeqTable.tsv",
         
