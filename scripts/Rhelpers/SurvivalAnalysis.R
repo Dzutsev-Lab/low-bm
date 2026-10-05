@@ -137,6 +137,105 @@ normalize_coda_options <- function(options = list()) {
   options
 }
 
+normalize_kaplan_meier_cutoff <- function(cutoff = NULL,
+                                          feature_type,
+                                          context) {
+  if (identical(feature_type, "categorical")) {
+    if (!is.null(cutoff)) {
+      stop(context, ".cutoff is only valid for continuous features.", call. = FALSE)
+    }
+    return(list(method = "none", value = NULL))
+  }
+
+  if (is.null(cutoff)) {
+    cutoff <- list(method = "median")
+  } else if (is.character(cutoff) && length(cutoff) == 1) {
+    cutoff <- list(method = cutoff[[1]])
+  }
+  if (!is.list(cutoff)) {
+    stop(context, ".cutoff must be 'median' or a mapping with method/value.", call. = FALSE)
+  }
+
+  method <- cutoff$method %||% "median"
+  method <- tolower(trimws(as.character(method[[1]])))
+  if (!method %in% c("median", "value")) {
+    stop(context, ".cutoff.method must be one of: median, value.", call. = FALSE)
+  }
+
+  value <- NULL
+  if (identical(method, "value")) {
+    value <- suppressWarnings(as.numeric(cutoff$value[[1]]))
+    if (length(value) == 0 || is.na(value) || !is.finite(value)) {
+      stop(context, ".cutoff.value must be a finite numeric value.", call. = FALSE)
+    }
+  }
+
+  list(method = method, value = value)
+}
+
+normalize_kaplan_meier_specs <- function(specs = NULL,
+                                         survival_config = list()) {
+  if (is.null(specs) || length(specs) == 0) {
+    return(list())
+  }
+  if (!is.list(specs)) {
+    stop("survival_analysis.kaplan_meier must be a list of mappings.", call. = FALSE)
+  }
+
+  lapply(seq_along(specs), function(i) {
+    spec <- specs[[i]] %||% list()
+    context <- paste0("survival_analysis.kaplan_meier[", i, "]")
+    name <- spec$name
+    if (is.null(name) || length(name) == 0 || is.na(name[[1]]) || !nzchar(trimws(as.character(name[[1]])))) {
+      stop(context, ".name must be a non-empty value.", call. = FALSE)
+    }
+    feature <- spec$feature
+    if (is.null(feature) || length(feature) == 0 || is.na(feature[[1]]) || !nzchar(trimws(as.character(feature[[1]])))) {
+      stop(context, ".feature must be a non-empty metadata column name.", call. = FALSE)
+    }
+    feature_type <- spec$type
+    if (is.null(feature_type) || length(feature_type) == 0 || is.na(feature_type[[1]])) {
+      stop(context, ".type must be explicitly set to categorical or continuous.", call. = FALSE)
+    }
+    feature_type <- tolower(trimws(as.character(feature_type[[1]])))
+    if (!feature_type %in% c("categorical", "continuous")) {
+      stop(context, ".type must be one of: categorical, continuous.", call. = FALSE)
+    }
+
+    spec$name <- as.character(name[[1]])
+    spec$feature <- as.character(feature[[1]])
+    spec$type <- feature_type
+    spec$sample_filter <- spec$sample_filter %||% list()
+    spec$patient_duplicate_policy <- normalize_patient_duplicate_policy(
+      spec$patient_duplicate_policy %||% survival_config$patient_duplicate_policy,
+      default_action = survival_config$patient_duplicate_policy$action %||% "collapse",
+      allowed_actions = c("collapse", "drop", "error"),
+      context = paste0(context, ".patient_duplicate_policy")
+    )
+    spec$cutoff <- normalize_kaplan_meier_cutoff(
+      spec$cutoff,
+      feature_type = feature_type,
+      context = context
+    )
+    spec$plot_title <- as.character(spec$plot_title %||% paste0(spec$feature, " survival"))[[1]]
+    spec$xlab <- as.character(spec$xlab %||% survival_config$time_col)[[1]]
+    spec$ylab <- as.character(spec$ylab %||% "Survival probability")[[1]]
+    spec$plot_width <- as.numeric(spec$plot_width %||% 8)[[1]]
+    spec$plot_height <- as.numeric(spec$plot_height %||% 6)[[1]]
+    spec$plot_dpi <- as.numeric(spec$plot_dpi %||% 300)[[1]]
+    if (!is.finite(spec$plot_width) || spec$plot_width <= 0) {
+      stop(context, ".plot_width must be positive.", call. = FALSE)
+    }
+    if (!is.finite(spec$plot_height) || spec$plot_height <= 0) {
+      stop(context, ".plot_height must be positive.", call. = FALSE)
+    }
+    if (!is.finite(spec$plot_dpi) || spec$plot_dpi <= 0) {
+      stop(context, ".plot_dpi must be positive.", call. = FALSE)
+    }
+    spec
+  })
+}
+
 normalize_survival_config <- function(config = list(), project_config = list()) {
   config <- config %||% list()
   if (is.null(config$time_col)) config$time_col <- "SurvivalDays"
@@ -158,9 +257,16 @@ normalize_survival_config <- function(config = list(), project_config = list()) 
   )
   config$methods <- normalize_survival_methods(config$methods)
   config$coda4microbiome <- normalize_coda_options(config$coda4microbiome)
+  config$kaplan_meier <- normalize_kaplan_meier_specs(
+    config$kaplan_meier,
+    survival_config = config
+  )
 
-  if (is.null(config$analyses) || length(config$analyses) == 0) {
-    stop("survival_analysis must define at least one analysis.", call. = FALSE)
+  if (is.null(config$analyses)) {
+    config$analyses <- list()
+  }
+  if (length(config$analyses) == 0 && length(config$kaplan_meier) == 0) {
+    stop("survival_analysis must define at least one analysis or kaplan_meier spec.", call. = FALSE)
   }
 
   config$analyses <- lapply(config$analyses, function(spec) {
@@ -259,6 +365,323 @@ prepare_survival_metadata <- function(metadata_df,
   )
 
   metadata_df
+}
+
+apply_kaplan_meier_patient_duplicate_policy <- function(sample_physeq,
+                                                        spec,
+                                                        survival_config,
+                                                        context = NULL) {
+  analysis_name <- spec$name %||% "Kaplan-Meier analysis"
+  if (is.null(context)) {
+    context <- paste0("Kaplan-Meier analysis '", as.character(analysis_name)[[1]], "'")
+  }
+  apply_patient_duplicate_policy_physeq(
+    sample_physeq,
+    policy = spec$patient_duplicate_policy,
+    patient_id_col = survival_config$patient_id_col,
+    unit_cols = character(0),
+    default_action = "collapse",
+    allowed_actions = c("collapse", "drop", "error"),
+    context = context
+  )
+}
+
+first_nonmissing_survival_value <- function(x) {
+  keep <- !is.na(x) & !is_metadata_missing_like(x)
+  if (!any(keep)) {
+    return(NA)
+  }
+  x[[which(keep)[[1]]]]
+}
+
+kaplan_meier_feature_values <- function(x, feature_type, feature, context) {
+  if (identical(feature_type, "continuous")) {
+    return(coerce_survival_numeric(x, feature, allow_missing = TRUE))
+  }
+  x <- standardize_metadata_missing(x)
+  as.character(x)
+}
+
+kaplan_meier_patient_metadata <- function(metadata_df,
+                                          spec,
+                                          survival_config) {
+  metadata_df <- as.data.frame(metadata_df, stringsAsFactors = FALSE, check.names = FALSE)
+  required <- c(
+    survival_config$patient_id_col,
+    survival_config$time_col,
+    survival_config$status_col,
+    spec$feature
+  )
+  fail_missing_columns(names(metadata_df), required, paste0("Kaplan-Meier analysis '", spec$name, "'"))
+
+  prepared <- prepare_survival_metadata(
+    metadata_df,
+    time_col = survival_config$time_col,
+    status_col = survival_config$status_col,
+    patient_id_col = survival_config$patient_id_col,
+    event_code = survival_config$event_code,
+    censor_code = survival_config$censor_code
+  )
+  feature_values <- kaplan_meier_feature_values(
+    prepared[[spec$feature]],
+    feature_type = spec$type,
+    feature = spec$feature,
+    context = paste0("Kaplan-Meier analysis '", spec$name, "'")
+  )
+  patient_values <- as.character(prepared[[survival_config$patient_id_col]])
+  sample_names <- rownames(prepared)
+  if (is.null(sample_names) || any(is.na(sample_names)) || any(!nzchar(sample_names))) {
+    sample_names <- as.character(seq_len(nrow(prepared)))
+  }
+  patient_ids <- unique(patient_values)
+
+  rows <- lapply(patient_ids, function(patient_id) {
+    sample_rows <- which(patient_values == patient_id)
+    observed_feature <- feature_values[sample_rows]
+    observed_feature <- observed_feature[!is.na(observed_feature) & !is_metadata_missing_like(observed_feature)]
+    unique_feature <- unique(observed_feature)
+    if (length(unique_feature) > 1) {
+      stop(
+        "Kaplan-Meier analysis '", spec$name,
+        "' has conflicting values in metadata feature '", spec$feature,
+        "' for patient '", patient_id, "'.",
+        call. = FALSE
+      )
+    }
+
+    time_value <- first_nonmissing_survival_value(prepared$.survival_time[sample_rows])
+    status_value <- first_nonmissing_survival_value(prepared$.survival_status[sample_rows])
+    feature_value <- if (length(unique_feature) == 0) NA else unique_feature[[1]]
+    data.frame(
+      PatientID = patient_id,
+      .survival_time = as.numeric(time_value),
+      .survival_status = as.numeric(status_value),
+      .feature_value = feature_value,
+      n_samples = length(sample_rows),
+      sample_names = paste(sample_names[sample_rows], collapse = ","),
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+  })
+  patient_df <- do.call(rbind, rows)
+  rownames(patient_df) <- NULL
+  patient_df
+}
+
+kaplan_meier_group_data <- function(patient_df, spec) {
+  patient_df <- as.data.frame(patient_df, stringsAsFactors = FALSE, check.names = FALSE)
+  feature_missing <- is.na(patient_df$.feature_value) | is_metadata_missing_like(patient_df$.feature_value)
+  if (identical(spec$type, "continuous")) {
+    feature_values <- as.numeric(patient_df$.feature_value)
+    nonmissing <- feature_values[!is.na(feature_values) & is.finite(feature_values)]
+    if (length(nonmissing) == 0) {
+      stop("Kaplan-Meier feature '", spec$feature, "' has no finite non-missing values.", call. = FALSE)
+    }
+    cutoff <- if (identical(spec$cutoff$method, "median")) {
+      stats::median(nonmissing)
+    } else {
+      as.numeric(spec$cutoff$value)
+    }
+    if (length(cutoff) == 0 || is.na(cutoff) || !is.finite(cutoff)) {
+      stop("Kaplan-Meier feature '", spec$feature, "' has an invalid cutoff.", call. = FALSE)
+    }
+    patient_df$.feature_value <- feature_values
+    patient_df$group <- ifelse(
+      feature_missing,
+      NA_character_,
+      ifelse(feature_values < cutoff, "low", "high")
+    )
+    group_levels <- c("low", "high")
+    cutoff_method <- spec$cutoff$method
+    cutoff_value <- cutoff
+  } else {
+    patient_df$.feature_value <- as.character(standardize_metadata_missing(patient_df$.feature_value))
+    patient_df$group <- patient_df$.feature_value
+    group_levels <- unique(patient_df$group[!is.na(patient_df$group) & nzchar(patient_df$group)])
+    cutoff_method <- "none"
+    cutoff_value <- NA_real_
+  }
+
+  patient_df$group <- as.character(patient_df$group)
+  patient_df$group[patient_df$group == ""] <- NA_character_
+  complete <- !is.na(patient_df$.survival_time) &
+    !is.na(patient_df$.survival_status) &
+    !is.na(patient_df$group)
+  patient_df$include <- complete
+  patient_df$exclusion_reason <- ""
+  patient_df$exclusion_reason[is.na(patient_df$.survival_time)] <- "missing_survival_time"
+  patient_df$exclusion_reason[!is.na(patient_df$.survival_time) & is.na(patient_df$.survival_status)] <- "missing_survival_status"
+  patient_df$exclusion_reason[
+    !is.na(patient_df$.survival_time) &
+      !is.na(patient_df$.survival_status) &
+      is.na(patient_df$group)
+  ] <- "missing_feature"
+  patient_df$exclusion_reason[complete] <- "included"
+
+  analysis_df <- patient_df[complete, , drop = FALSE]
+  if (nrow(analysis_df) == 0) {
+    stop("Kaplan-Meier analysis '", spec$name, "' has no complete patient records.", call. = FALSE)
+  }
+  observed_groups <- unique(analysis_df$group)
+  if (length(observed_groups) < 2) {
+    stop(
+      "Kaplan-Meier analysis '", spec$name,
+      "' produces fewer than two observed groups after filtering.",
+      call. = FALSE
+    )
+  }
+  if (identical(spec$type, "categorical")) {
+    group_levels <- group_levels[group_levels %in% observed_groups]
+  }
+  analysis_df$group <- factor(analysis_df$group, levels = group_levels)
+  patient_df$group <- factor(patient_df$group, levels = group_levels)
+
+  audit <- patient_df[, c(
+    "PatientID", "n_samples", "sample_names", ".feature_value", "group",
+    ".survival_time", ".survival_status", "include", "exclusion_reason"
+  ), drop = FALSE]
+  names(audit)[names(audit) == ".feature_value"] <- "feature_value"
+  names(audit)[names(audit) == ".survival_time"] <- "survival_time"
+  names(audit)[names(audit) == ".survival_status"] <- "survival_status"
+  audit$analysis <- spec$name
+  audit$feature <- spec$feature
+  audit$type <- spec$type
+  audit$cutoff_method <- cutoff_method
+  audit$cutoff_value <- cutoff_value
+  audit <- audit[, c(
+    "analysis", "feature", "type", "cutoff_method", "cutoff_value",
+    "PatientID", "n_samples", "sample_names", "feature_value", "group",
+    "survival_time", "survival_status", "include", "exclusion_reason"
+  ), drop = FALSE]
+
+  list(
+    data = analysis_df,
+    audit = audit,
+    cutoff_method = cutoff_method,
+    cutoff_value = cutoff_value,
+    group_levels = group_levels
+  )
+}
+
+fit_kaplan_meier <- function(group_data, spec) {
+  analysis_df <- group_data$data
+  fit <- survival::survfit(
+    survival::Surv(.survival_time, .survival_status) ~ group,
+    data = analysis_df
+  )
+
+  fit_table <- summary(fit)$table
+  if (is.null(dim(fit_table))) {
+    fit_table <- matrix(fit_table, nrow = 1)
+    rownames(fit_table) <- group_data$group_levels[[1]]
+  }
+  fit_table <- as.data.frame(fit_table, stringsAsFactors = FALSE, check.names = FALSE)
+  group_count <- table(factor(analysis_df$group, levels = group_data$group_levels))
+  group_events <- tapply(
+    analysis_df$.survival_status,
+    factor(analysis_df$group, levels = group_data$group_levels),
+    sum
+  )
+  group_events <- as.numeric(group_events[group_data$group_levels])
+  summary_df <- data.frame(
+    analysis = spec$name,
+    feature = spec$feature,
+    type = spec$type,
+    cutoff_method = group_data$cutoff_method,
+    cutoff_value = group_data$cutoff_value,
+    group = group_data$group_levels,
+    n_total = as.integer(group_count[group_data$group_levels]),
+    n_events = group_events,
+    n_censored = as.integer(group_count[group_data$group_levels]) - group_events,
+    median_survival = as.numeric(fit_table$median),
+    conf_low = as.numeric(fit_table$`0.95LCL`),
+    conf_high = as.numeric(fit_table$`0.95UCL`),
+    stringsAsFactors = FALSE
+  )
+
+  logrank <- tryCatch(
+    survival::survdiff(
+      survival::Surv(.survival_time, .survival_status) ~ group,
+      data = analysis_df
+    ),
+    error = function(e) e
+  )
+  if (inherits(logrank, "error")) {
+    test <- data.frame(
+      analysis = spec$name,
+      feature = spec$feature,
+      type = spec$type,
+      cutoff_method = group_data$cutoff_method,
+      cutoff_value = group_data$cutoff_value,
+      test = "log_rank",
+      statistic = NA_real_,
+      df = length(group_data$group_levels) - 1,
+      p = NA_real_,
+      n_total = nrow(analysis_df),
+      events_used = sum(analysis_df$.survival_status == 1),
+      dropped_missing = sum(!group_data$audit$include),
+      status = "failed",
+      reason = conditionMessage(logrank),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    test <- data.frame(
+      analysis = spec$name,
+      feature = spec$feature,
+      type = spec$type,
+      cutoff_method = group_data$cutoff_method,
+      cutoff_value = group_data$cutoff_value,
+      test = "log_rank",
+      statistic = as.numeric(logrank$chisq),
+      df = length(group_data$group_levels) - 1,
+      p = stats::pchisq(logrank$chisq, df = length(group_data$group_levels) - 1, lower.tail = FALSE),
+      n_total = nrow(analysis_df),
+      events_used = sum(analysis_df$.survival_status == 1),
+      dropped_missing = sum(!group_data$audit$include),
+      status = "ok",
+      reason = NA_character_,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  list(
+    fit = fit,
+    data = analysis_df,
+    summary = summary_df,
+    test = test
+  )
+}
+
+save_kaplan_meier_plot <- function(result, path, spec) {
+  if (!requireNamespace("survminer", quietly = TRUE)) {
+    stop("The R package 'survminer' is required for Kaplan-Meier plots.", call. = FALSE)
+  }
+  if (!requireNamespace("ggplot2", quietly = TRUE)) {
+    stop("The R package 'ggplot2' is required for Kaplan-Meier plots.", call. = FALSE)
+  }
+
+  plot_object <- survminer::ggsurvplot(
+    result$fit,
+    data = result$data,
+    conf.int = TRUE,
+    censor = TRUE,
+    pval = TRUE,
+    risk.table = TRUE,
+    title = spec$plot_title,
+    xlab = spec$xlab,
+    ylab = spec$ylab,
+    ggtheme = ggplot2::theme_minimal()
+  )
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  grDevices::png(
+    filename = path,
+    width = round(spec$plot_width * spec$plot_dpi),
+    height = round(spec$plot_height * spec$plot_dpi),
+    res = spec$plot_dpi
+  )
+  on.exit(grDevices::dev.off(), add = TRUE)
+  print(plot_object)
+  path
 }
 
 collapse_metadata_value <- function(x) {

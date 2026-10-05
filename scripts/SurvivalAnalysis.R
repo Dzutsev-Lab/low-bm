@@ -95,6 +95,81 @@ write_tsv <- function(df, path, columns = NULL) {
   path
 }
 
+run_kaplan_meier_analysis <- function(comp_physeq, spec) {
+  analysis_name <- as.character(spec$name)
+  safe_name <- sanitize_survival_path_component(analysis_name)
+  analysis_dir <- file.path(out_dir, "Survival", safe_name)
+  dir.create(analysis_dir, recursive = TRUE, showWarnings = FALSE)
+
+  message("Running Kaplan-Meier analysis: ", analysis_name)
+  analysis_physeq <- apply_sample_filter(comp_physeq, spec$sample_filter)
+  duplicate_policy <- apply_kaplan_meier_patient_duplicate_policy(
+    analysis_physeq,
+    spec = spec,
+    survival_config = survival_config
+  )
+  analysis_physeq <- duplicate_policy$physeq
+  duplicate_policy_file <- write_tsv(
+    duplicate_policy$audit,
+    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_PatientDuplicatePolicy.tsv")),
+    columns = names(duplicate_policy$audit)
+  )
+  message("Wrote Kaplan-Meier patient duplicate policy audit: ", duplicate_policy_file)
+
+  patient_metadata <- kaplan_meier_patient_metadata(
+    as.data.frame(phyloseq::sample_data(analysis_physeq), stringsAsFactors = FALSE),
+    spec = spec,
+    survival_config = survival_config
+  )
+  group_data <- kaplan_meier_group_data(patient_metadata, spec)
+  result <- fit_kaplan_meier(group_data, spec)
+
+  audit_file <- write_tsv(
+    group_data$audit,
+    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_KaplanMeierAudit.tsv")),
+    columns = c(
+      "analysis", "feature", "type", "cutoff_method", "cutoff_value",
+      "PatientID", "n_samples", "sample_names", "feature_value", "group",
+      "survival_time", "survival_status", "include", "exclusion_reason"
+    )
+  )
+  summary_file <- write_tsv(
+    result$summary,
+    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_KaplanMeierSummary.tsv")),
+    columns = c(
+      "analysis", "feature", "type", "cutoff_method", "cutoff_value", "group",
+      "n_total", "n_events", "n_censored", "median_survival", "conf_low", "conf_high"
+    )
+  )
+  test_file <- write_tsv(
+    result$test,
+    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_KaplanMeierLogRank.tsv")),
+    columns = c(
+      "analysis", "feature", "type", "cutoff_method", "cutoff_value", "test",
+      "statistic", "df", "p", "n_total", "events_used", "dropped_missing",
+      "status", "reason"
+    )
+  )
+  plot_file <- save_kaplan_meier_plot(
+    result,
+    file.path(analysis_dir, paste0(trial_id, "_", safe_name, "_KaplanMeier.png")),
+    spec
+  )
+
+  message("Wrote Kaplan-Meier audit: ", audit_file)
+  message("Wrote Kaplan-Meier summary: ", summary_file)
+  message("Wrote Kaplan-Meier log-rank result: ", test_file)
+  message("Wrote Kaplan-Meier plot: ", plot_file)
+
+  invisible(list(
+    fit = result$fit,
+    summary = result$summary,
+    test = result$test,
+    audit = group_data$audit,
+    plot = plot_file
+  ))
+}
+
 run_survival_analysis <- function(comp_physeq, spec) {
   analysis_name <- as.character(spec$name)
   safe_name <- sanitize_survival_path_component(analysis_name)
@@ -300,4 +375,7 @@ run_survival_analysis <- function(comp_physeq, spec) {
 CompPhyseq <- load_input_physeq()
 for (spec in survival_config$analyses) {
   run_survival_analysis(CompPhyseq, spec)
+}
+for (spec in survival_config$kaplan_meier) {
+  run_kaplan_meier_analysis(CompPhyseq, spec)
 }

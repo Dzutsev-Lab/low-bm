@@ -205,4 +205,25 @@ survival_analysis:
     assumption_checks: true
     plot_width: 8
     plot_height: 6
+  # Kaplan-Meier curves use metadata columns from the configured phyloseq
+  # endpoint. Annotate the endpoint first with `low-bm meta annotate-phyloseq`
+  # when the grouping feature is not already present.
+  kaplan_meier: []
+  # Example Kaplan-Meier specs:
+  # kaplan_meier:
+  #   - name: "RiskGroup"
+  #     feature: "risk_group"
+  #     type: "categorical"
+  #     sample_filter:
+  #       SampleType: ["Tumor"]
+  #     plot_title: "Survival by risk group"
+  #   - name: "AgeMedian"
+  #     feature: "Age"
+  #     type: "continuous"
+  #     cutoff:
+  #       method: "median"
+  #   # For an explicit threshold, use:
+  #   # cutoff:
+  #   #   method: "value"
+  #   #   value: 65
   analyses: []

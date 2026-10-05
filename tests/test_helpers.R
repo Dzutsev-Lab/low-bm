@@ -1018,6 +1018,132 @@ stopifnot(isTRUE(all.equal(
 stopifnot(identical(survival_config$patient_duplicate_policy$action, "collapse"))
 stopifnot(identical(survival_spec$patient_duplicate_policy$action, "collapse"))
 
+km_meta <- as(sample_data(physeq), "data.frame")
+km_meta$RiskGroup <- c("low", "low", "high", "high", "control")
+km_physeq <- physeq
+sample_data(km_physeq) <- sample_data(km_meta)
+km_config <- normalize_survival_config(
+  list(
+    kaplan_meier = list(
+      list(
+        name = "RiskGroupKM",
+        feature = "RiskGroup",
+        type = "categorical",
+        sample_filter = list(SampleType = c("Tumor", "Nontumor"))
+      ),
+      list(
+        name = "AgeMedianKM",
+        feature = "Age",
+        type = "continuous",
+        sample_filter = list(SampleType = c("Tumor", "Nontumor")),
+        cutoff = list(method = "median")
+      ),
+      list(
+        name = "AgeValueKM",
+        feature = "Age",
+        type = "continuous",
+        sample_filter = list(SampleType = c("Tumor", "Nontumor")),
+        cutoff = list(method = "value", value = 65)
+      )
+    ),
+    analyses = list()
+  )
+)
+stopifnot(length(km_config$analyses) == 0)
+stopifnot(length(km_config$kaplan_meier) == 3)
+km_risk_spec <- km_config$kaplan_meier[[1]]
+km_filtered <- apply_sample_filter(km_physeq, km_risk_spec$sample_filter)
+km_patient_meta <- kaplan_meier_patient_metadata(
+  as(sample_data(km_filtered), "data.frame"),
+  km_risk_spec,
+  km_config
+)
+km_risk_groups <- kaplan_meier_group_data(km_patient_meta, km_risk_spec)
+stopifnot(identical(km_risk_groups$group_levels, c("low", "high")))
+stopifnot(identical(as.integer(table(km_risk_groups$data$group)), c(1L, 2L)))
+km_risk_fit <- fit_kaplan_meier(km_risk_groups, km_risk_spec)
+stopifnot(nrow(km_risk_fit$summary) == 2)
+stopifnot(nrow(km_risk_fit$test) == 1)
+stopifnot(identical(km_risk_fit$test$status[[1]], "ok"))
+stopifnot(km_risk_fit$test$events_used[[1]] == 2)
+
+km_age_spec <- km_config$kaplan_meier[[2]]
+km_age_filtered <- apply_sample_filter(km_physeq, km_age_spec$sample_filter)
+km_age_patient_meta <- kaplan_meier_patient_metadata(
+  as(sample_data(km_age_filtered), "data.frame"),
+  km_age_spec,
+  km_config
+)
+km_age_groups <- kaplan_meier_group_data(km_age_patient_meta, km_age_spec)
+stopifnot(identical(km_age_groups$cutoff_method, "median"))
+stopifnot(km_age_groups$cutoff_value[[1]] == 65)
+stopifnot(identical(as.character(km_age_groups$data$group), c("low", "high", "high")))
+
+km_age_value_spec <- km_config$kaplan_meier[[3]]
+km_age_value_groups <- kaplan_meier_group_data(km_age_patient_meta, km_age_value_spec)
+stopifnot(identical(km_age_value_groups$cutoff_method, "value"))
+stopifnot(km_age_value_groups$cutoff_value[[1]] == 65)
+stopifnot(identical(as.character(km_age_value_groups$data$group), c("low", "high", "high")))
+
+km_missing_meta <- km_age_patient_meta
+km_missing_meta$.feature_value[km_missing_meta$PatientID == "P2"] <- NA
+km_missing_groups <- km_age_groups
+km_missing_groups <- kaplan_meier_group_data(km_missing_meta, km_age_spec)
+stopifnot(sum(!km_missing_groups$audit$include) == 1)
+stopifnot(any(km_missing_groups$audit$exclusion_reason == "missing_feature"))
+
+km_conflict_meta <- km_meta
+km_conflict_meta$RiskGroup[[2]] <- "high"
+km_conflict_physeq <- km_physeq
+sample_data(km_conflict_physeq) <- sample_data(km_conflict_meta)
+km_conflict_filtered <- apply_sample_filter(km_conflict_physeq, km_risk_spec$sample_filter)
+expect_error(
+  kaplan_meier_patient_metadata(
+    as(sample_data(km_conflict_filtered), "data.frame"),
+    km_risk_spec,
+    km_config
+  ),
+  "conflicting values"
+)
+
+expect_error(
+  normalize_survival_config(
+    list(kaplan_meier = list(list(name = "MissingType", feature = "Age")), analyses = list())
+  ),
+  "type must be explicitly"
+)
+expect_error(
+  normalize_survival_config(
+    list(
+      kaplan_meier = list(list(name = "BadCutoff", feature = "Age", type = "continuous", cutoff = list(method = "value"))),
+      analyses = list()
+    )
+  ),
+  "cutoff.value must be"
+)
+expect_error(
+  normalize_survival_config(
+    list(
+      kaplan_meier = list(list(name = "BadType", feature = "Age", type = "numeric")),
+      analyses = list()
+    )
+  ),
+  "type must be one of"
+)
+single_group_spec <- km_risk_spec
+single_group_spec$name <- "SingleGroup"
+single_group_spec$sample_filter <- list(SampleType = "Tumor")
+single_group_filtered <- apply_sample_filter(km_physeq, single_group_spec$sample_filter)
+single_group_meta <- kaplan_meier_patient_metadata(
+  as(sample_data(single_group_filtered), "data.frame"),
+  single_group_spec,
+  km_config
+)
+expect_error(
+  kaplan_meier_group_data(single_group_meta, single_group_spec),
+  "fewer than two observed groups"
+)
+
 survival_drop_config <- normalize_survival_config(
   list(
     patient_duplicate_policy = list(action = "drop"),

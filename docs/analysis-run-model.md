@@ -293,6 +293,49 @@ duplicate units are `PatientID + sample_strata_col` when strata are enabled, or
 units before modeling, or `error` to stop and review the metadata. Each run
 writes a `PatientDuplicatePolicy.tsv` audit file beside the analysis outputs.
 
+### Kaplan-Meier Curves
+
+Kaplan-Meier curves are configured under `survival_analysis.kaplan_meier` and
+run with the existing survival command. The `feature` must be a metadata column
+in the configured phyloseq endpoint. Use the metadata annotation step first when
+the feature comes from a patient- or sample-level annotation table, then point
+`project.compiled_physeq` at the annotated endpoint.
+
+```yaml
+survival_analysis:
+  kaplan_meier:
+    - name: "RiskGroup"
+      feature: "risk_group"
+      type: "categorical"
+      sample_filter:
+        SampleType: ["Tumor"]
+      plot_title: "Survival by risk group"
+
+    - name: "AgeMedian"
+      feature: "Age"
+      type: "continuous"
+      cutoff:
+        method: "median"
+
+    - name: "Age65"
+      feature: "Age"
+      type: "continuous"
+      cutoff:
+        method: "value"
+        value: 65
+```
+
+Categorical features produce one curve per observed level. Continuous features
+produce `low` (`< cutoff`) and `high` (`>= cutoff`) groups. A continuous cutoff
+defaults to the median when omitted. Each filtered patient must have one
+consistent non-missing grouping value across its samples; conflicting values
+stop the analysis. Existing survival patient duplicate policies still apply.
+
+Each curve writes a PNG plot with confidence bands, censor marks, a risk table,
+and a log-rank p-value, plus `KaplanMeierSummary.tsv`,
+`KaplanMeierLogRank.tsv`, and `KaplanMeierAudit.tsv` under its
+`Survival/<analysis-name>/` directory.
+
 Config-driven XGBoost classification:
 
 ```bash
