@@ -123,7 +123,15 @@ sanitize_path_component <- function(x, fallback = "taxon") {
 
 normalize_da_method <- function(method) {
   method <- toupper(as.character(method))
-  method[method == "ANCOMBC"] <- "ANCOMBC2"
+  unsupported <- setdiff(method, c("ANCOMBC", "ANCOMBC2"))
+  if (length(unsupported) > 0) {
+    stop(
+      "Unsupported differential-abundance method(s): ",
+      paste(unsupported, collapse = ", "),
+      ". Supported methods: ANCOMBC, ANCOMBC2.",
+      call. = FALSE
+    )
+  }
   method
 }
 
@@ -153,14 +161,6 @@ da_results_file_candidates <- function(io_dir, DA_method, trialID, comparison) {
     comparison,
     paste0(trialID, "_", comparison, "_", method, "Results.tsv")
   ))
-  if (identical(method, "ANCOMBC2")) {
-    candidates <- c(candidates, file.path(
-      io_dir,
-      "ANCOMBC",
-      comparison,
-      paste0(trialID, "_", comparison, "_ANCOMBCResults.tsv")
-    ))
-  }
   candidates
 }
 

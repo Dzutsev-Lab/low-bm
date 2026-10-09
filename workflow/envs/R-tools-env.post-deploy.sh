@@ -22,7 +22,7 @@ git -C "${ancombc_dir}" checkout --detach "${ANCOMBC_GIT_REF}"
 echo "Installing upstream ANCOMBC with quadprog trend optimization..."
 R CMD INSTALL --no-test-load "${ancombc_dir}"
 
-Rscript --no-environ -e 'stopifnot(length(find.package("ANCOMBC", quiet = TRUE)) == 1); stopifnot(requireNamespace("microbiome", quietly = TRUE)); stopifnot(requireNamespace("quadprog", quietly = TRUE)); stopifnot(utils::packageVersion("ANCOMBC") >= "2.13.2"); stopifnot(!"CVXR" %in% names(getNamespaceImports("ANCOMBC")))'
+Rscript --no-environ -e 'stopifnot(length(find.package("ANCOMBC", quiet = TRUE)) == 1); stopifnot(exists("ancombc", envir = asNamespace("ANCOMBC"), inherits = FALSE)); stopifnot(exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE)); stopifnot(requireNamespace("microbiome", quietly = TRUE)); stopifnot(requireNamespace("quadprog", quietly = TRUE)); stopifnot(utils::packageVersion("ANCOMBC") >= "2.13.2"); stopifnot(!"CVXR" %in% names(getNamespaceImports("ANCOMBC")))'
 
 echo "Installing coda4microbiome ${CODA4MICROBIOME_VERSION} from CRAN..."
 Rscript --no-environ - "${CODA4MICROBIOME_VERSION}" "${CODA4MICROBIOME_REPOS}" <<'RSCRIPT'

@@ -1585,6 +1585,8 @@ class RunnerSetupTests(unittest.TestCase):
         self.assertIn('"coda4microbiome"', script)
         self.assertIn('ANCOMBC_GIT_REF="${ANCOMBC_GIT_REF:-4595750750e354dfa61645f4a3f1f6c53645f683}"', script)
         self.assertIn("Installing upstream ANCOMBC with quadprog trend optimization", script)
+        self.assertIn('exists("ancombc", envir = asNamespace("ANCOMBC"), inherits = FALSE)', script)
+        self.assertIn('exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE)', script)
         self.assertIn('requireNamespace("microbiome", quietly = TRUE)', script)
         self.assertIn('requireNamespace("quadprog", quietly = TRUE)', script)
         self.assertIn('!"CVXR" %in% names(getNamespaceImports("ANCOMBC"))', script)

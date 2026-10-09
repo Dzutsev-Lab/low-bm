@@ -620,6 +620,38 @@ stopifnot(identical(direction_labels$legend_title, "SampleType"))
 stopifnot(identical(direction_labels$legend_labels[["neg"]], "Negative: Nontumor"))
 stopifnot(identical(direction_labels$legend_labels[["pos"]], "Positive: Tumor"))
 
+method_config <- normalize_da_config(list(
+  methods = c("ANCOMBC", "ANCOMBC2"),
+  comparisons = list(list(
+    name = "BinaryMethodSelection",
+    fix_formula = "SampleType",
+    group = "SampleType",
+    factor_levels = list(SampleType = c("Nontumor", "Tumor")),
+    tests = "primary"
+  ))
+))
+stopifnot(identical(normalize_da_method("ANCOMBC"), "ANCOMBC"))
+stopifnot(identical(normalize_da_method("ANCOMBC2"), "ANCOMBC2"))
+stopifnot(identical(method_config$methods, c("ANCOMBC", "ANCOMBC2")))
+stopifnot(identical(
+  da_methods_for_spec(method_config, method_config$comparisons[[1]]),
+  c("ANCOMBC", "ANCOMBC2")
+))
+validate_ancombc_legacy_spec(method_config$comparisons[[1]], "ANCOMBC")
+expect_error(
+  normalize_da_config(list(
+    methods = "not_a_method",
+    comparisons = list(list(name = "BadMethod"))
+  )),
+  "Supported methods: ANCOMBC, ANCOMBC2"
+)
+legacy_multilevel <- method_config$comparisons[[1]]
+legacy_multilevel$factor_levels <- list(SampleType = c("NegativeControl", "Nontumor", "Tumor"))
+expect_error(
+  validate_ancombc_legacy_spec(legacy_multilevel, "ANCOMBC"),
+  "requires exactly two factor levels"
+)
+
 matching_legacy_spec <- inferred_spec
 matching_legacy_spec$factor_levels <- list(SampleType = c("Nontumor", "Tumor"))
 matching_legacy_spec$coefficient <- "SampleTypeTumor"
@@ -795,6 +827,8 @@ stopifnot(length(sample_folds) == 2)
 stopifnot(all(unlist(sample_folds) <= sum(sample_cv_train_idx)))
 
 direction_spec <- list(
+  group = "SampleType",
+  factor_levels = list(SampleType = c("Nontumor", "Tumor")),
   coefficient = "SampleTypeTumor",
   structural_zero_groups = c(
     "structural_zero (SampleType = Nontumor)",
@@ -834,6 +868,10 @@ stopifnot(direction_results$direction[match("none", direction_results$taxon)] ==
 stopifnot(direction_results$direction[match("struc_neg", direction_results$taxon)] == "neg")
 stopifnot(direction_results$direction[match("struc_pos", direction_results$taxon)] == "pos")
 stopifnot(direction_results$significance[match("neg", direction_results$taxon)] == "Sig")
+stopifnot(all(c("test", "contrast", "coefficient", "reference_level", "target_level") %in% names(direction_results)))
+stopifnot(direction_results$test[[1]] == "primary")
+stopifnot(direction_results$contrast[[1]] == "Tumor vs Nontumor")
+stopifnot(isTRUE(all.equal(direction_results$log2FoldChange[match("pos", direction_results$taxon)], 0.5 / log(2))))
 
 fake_levels_spec <- trend_resolved$spec
 fake_levels_spec$tests <- c("global", "pairwise", "dunnet", "trend")
@@ -1671,10 +1709,11 @@ stopifnot(identical(batch_df$trialID[[1]], "051926.1"))
 stopifnot(identical(batch_row_to_label(batch_df[1, , drop = FALSE]), "051926.1_TIGER062822_PrelimAnalysis"))
 
 if (requireNamespace("ANCOMBC", quietly = TRUE)) {
+  stopifnot(exists("ancombc", envir = asNamespace("ANCOMBC"), inherits = FALSE))
   stopifnot(exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE))
-  message("ANCOMBC with ancombc2() is available; full model smoke tests can be added for project fixtures.")
+  message("ANCOMBC with ancombc() and ancombc2() is available; full model smoke tests can be added for project fixtures.")
 } else {
-  message("Skipping ANCOM-BC2 model smoke test because ANCOMBC is not installed.")
+  message("Skipping ANCOM-BC/ANCOM-BC2 model smoke test because ANCOMBC is not installed.")
 }
 
 if (requireNamespace("lefser", quietly = TRUE)) {

@@ -117,8 +117,56 @@ build_legacy_da_config <- function(trial_id,
 
 normalize_da_method <- function(method) {
   method <- toupper(as.character(method))
-  method[method == "ANCOMBC"] <- "ANCOMBC2"
+  unsupported <- setdiff(method, c("ANCOMBC", "ANCOMBC2"))
+  if (length(unsupported) > 0) {
+    stop(
+      "Unsupported differential-abundance method(s): ",
+      paste(unsupported, collapse = ", "),
+      ". Supported methods: ANCOMBC, ANCOMBC2.",
+      call. = FALSE
+    )
+  }
   method
+}
+
+da_methods_for_spec <- function(global_config, spec) {
+  methods <- global_config$methods
+  if (!is.null(spec$method) && length(spec$method) > 0) {
+    method <- normalize_da_method(spec$method)
+    if (length(method) != 1 || !method %in% methods) {
+      stop(
+        "Comparison-level method must select exactly one method from differential_abundance.methods: ",
+        paste(method, collapse = ", "),
+        call. = FALSE
+      )
+    }
+    return(method)
+  }
+  methods
+}
+
+validate_ancombc_legacy_spec <- function(spec, methods) {
+  if (!"ANCOMBC" %in% methods) {
+    return(invisible(TRUE))
+  }
+  levels <- spec$factor_levels[[spec$group]]
+  if (is.null(levels) || length(levels) != 2) {
+    stop(
+      "Legacy ANCOM-BC comparison '", spec$name,
+      "' requires exactly two factor levels; use ANCOM-BC2 for multi-level comparisons.",
+      call. = FALSE
+    )
+  }
+  unsupported_tests <- setdiff(spec$tests, "primary")
+  if (length(unsupported_tests) > 0) {
+    stop(
+      "Legacy ANCOM-BC comparison '", spec$name,
+      "' does not support test(s): ", paste(unsupported_tests, collapse = ", "),
+      ". Use ANCOM-BC2 for global, pairwise, Dunnett, or trend tests.",
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
 }
 
 normalize_ancombc2_tests <- function(tests = NULL) {
@@ -185,27 +233,19 @@ normalize_da_config <- function(config) {
     stop("DA config must define at least one comparison.", call. = FALSE)
   }
 
-  unsupported <- setdiff(config$methods, "ANCOMBC2")
-  if (length(unsupported) > 0) {
-    stop(
-      "Only ANCOMBC2 is supported by the config-driven DA interface. Unsupported method(s): ",
-      paste(unsupported, collapse = ", "),
-      call. = FALSE
-    )
-  }
-
   config$comparisons <- lapply(config$comparisons, function(spec) {
     spec <- spec %||% list()
     spec_name <- if (!is.null(spec$name) && length(spec$name) > 0) as.character(spec$name)[[1]] else "comparison"
-    spec$method <- normalize_da_method(spec$method %||% config$methods[[1]])
-    if (!identical(spec$method, "ANCOMBC2")) {
-      stop(
-        "Only ANCOMBC2 is supported for DA comparison '",
-        spec_name,
-        "'. Unsupported method: ",
-        spec$method,
-        call. = FALSE
-      )
+    if (!is.null(spec$method)) {
+      spec$method <- normalize_da_method(spec$method)
+      if (length(spec$method) != 1 || !spec$method %in% config$methods) {
+        stop(
+          "Comparison-level method for '", spec_name,
+          "' must select exactly one method from differential_abundance.methods: ",
+          paste(config$methods, collapse = ", "),
+          call. = FALSE
+        )
+      }
     }
     if (is.null(spec$fix_formula) && !is.null(spec$formula)) {
       spec$fix_formula <- spec$formula
@@ -1143,6 +1183,8 @@ standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff)
   results$p <- as.numeric(results$p)
   results$padj <- as.numeric(results$padj)
   results$se <- as.numeric(results$se)
+  results$log2FoldChange <- results$log2FoldChange / log(2)
+  results$se <- results$se / log(2)
   results$significance <- ifelse(
     !is.na(results$padj) &
       results$padj < alpha &
@@ -1152,7 +1194,25 @@ standardize_ancombc_results <- function(ancombc_output, spec, alpha, lfc_cutoff)
   )
   results$direction <- assign_da_direction(results$log2FoldChange, results$struc0)
 
-  results[, c("taxon", "log2FoldChange", "p", "padj", "struc0", "se", "significance", "direction")]
+  results$test <- "primary"
+  results$coefficient <- as.character(spec$coefficient %||% NA_character_)
+  levels <- ancombc2_group_levels(spec)
+  results$contrast <- if (length(levels) == 2) {
+    paste0(levels[[2]], " vs ", levels[[1]])
+  } else {
+    NA_character_
+  }
+  results$reference_level <- if (length(levels) >= 1) levels[[1]] else NA_character_
+  results$target_level <- if (length(levels) == 2) levels[[2]] else NA_character_
+  results$W <- NA_real_
+  results$diff_abn <- NA
+  results$passed_ss <- NA
+  results$diff_robust <- NA
+  results[, c(
+    "taxon", "test", "contrast", "coefficient", "reference_level", "target_level",
+    "log2FoldChange", "p", "padj", "struc0", "se", "W",
+    "diff_abn", "passed_ss", "diff_robust", "significance", "direction"
+  )]
 }
 
 default_ancombc2_trend_matrix <- function(pattern, n_coef) {
@@ -1259,25 +1319,60 @@ ancombc2_arg <- function(spec, global_config, name, default = NULL) {
   spec[[name, exact = TRUE]] %||% global_config[[name, exact = TRUE]] %||% default
 }
 
-run_ancombc_comparison <- function(physeq, spec, global_config) {
+load_ancombc_namespace <- function(method) {
   ancombc_load_error <- tryCatch({
     loadNamespace("ANCOMBC")
     NULL
   }, error = function(e) e)
   if (!is.null(ancombc_load_error)) {
     stop(
-      "The R package 'ANCOMBC' is required for ANCOM-BC2 differential abundance ",
+      "The R package 'ANCOMBC' is required for ", method, " differential abundance ",
       "but could not be loaded: ",
       conditionMessage(ancombc_load_error),
       call. = FALSE
     )
   }
-  if (!exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE)) {
+  required_function <- if (identical(method, "ANCOMBC")) "ancombc" else "ancombc2"
+  if (!exists(required_function, envir = asNamespace("ANCOMBC"), inherits = FALSE)) {
     stop(
-      "The installed R package 'ANCOMBC' does not export ancombc2(). ",
-      "Install a current ANCOMBC release before running differential abundance.",
+      "The installed R package 'ANCOMBC' does not export ", required_function,
+      "(); install a compatible ANCOMBC release before running ", method, ".",
       call. = FALSE
     )
+  }
+  invisible(TRUE)
+}
+
+run_ancombc_legacy_comparison <- function(physeq, spec, global_config) {
+  load_ancombc_namespace("ANCOMBC")
+  resolved <- resolve_ancombc_comparison_spec(physeq, spec)
+  physeq <- resolved$physeq
+  spec <- resolved$spec
+  validate_ancombc_legacy_spec(spec, "ANCOMBC")
+
+  tax_agg_level <- if (!is.null(spec$tax_agg_level)) spec$tax_agg_level else global_config$tax_agg_level
+  alpha <- if (!is.null(spec$alpha)) spec$alpha else global_config$alpha
+  ancombc_output <- ANCOMBC::ancombc(
+    data = physeq,
+    tax_level = tax_agg_level,
+    formula = spec$fix_formula,
+    p_adj_method = ancombc2_arg(spec, global_config, "p_adj_method", "holm"),
+    prv_cut = as.numeric(ancombc2_arg(spec, global_config, "prv_cut", 0.10)),
+    lib_cut = as.numeric(ancombc2_arg(spec, global_config, "lib_cut", 1000)),
+    group = spec$group,
+    struc_zero = as.logical(ancombc2_arg(spec, global_config, "struc_zero", TRUE)),
+    neg_lb = as.logical(ancombc2_arg(spec, global_config, "neg_lb", TRUE)),
+    alpha = alpha,
+    n_cl = as.integer(ancombc2_arg(spec, global_config, "n_cl", 1)),
+    verbose = as.logical(ancombc2_arg(spec, global_config, "verbose", TRUE))
+  )
+  standardize_ancombc_results(ancombc_output, spec, alpha, spec$lfc_cutoff %||% global_config$lfc_cutoff)
+}
+
+run_ancombc2_comparison <- function(physeq, spec, global_config) {
+  load_ancombc_namespace("ANCOMBC2")
+  if (!exists("ancombc2", envir = asNamespace("ANCOMBC"), inherits = FALSE)) {
+    stop("The installed R package 'ANCOMBC' does not export ancombc2().", call. = FALSE)
   }
 
   tax_agg_level <- if (!is.null(spec$tax_agg_level)) spec$tax_agg_level else global_config$tax_agg_level
@@ -1323,6 +1418,8 @@ run_ancombc_comparison <- function(physeq, spec, global_config) {
 
   standardize_ancombc2_results(ancombc_output, spec, alpha, lfc_cutoff)
 }
+
+run_ancombc_comparison <- run_ancombc2_comparison
 
 write_da_results <- function(results_df, out_dir, trial_id, method, comparison_name) {
   comparison_dir <- file.path(out_dir, method, comparison_name)

@@ -24,7 +24,7 @@ parser$add_argument("--batch2-Name",
 parser$add_argument("--DA-method",
                     type = "character",
                     default = "ANCOMBC2",
-                    help = "The tool used to generate differential abundance results (Options: LIMMA_VOOM, ANCOMBC2)")
+                    help = "The tool used to generate differential abundance results (Options: ANCOMBC, ANCOMBC2, LIMMA_VOOM)")
 parser$add_argument("--comparison",
                     type = "character",
                     help = "Comparison used for differential abundance (Options: CellLineControltoTumor, CellLineControltoNontumor, NegativeControl, PatientSample)")
@@ -58,7 +58,15 @@ args$batch1_Name <- args$batch1_Name %||% meta_config$batch1_name %||% meta_conf
 args$batch2_Name <- args$batch2_Name %||% meta_config$batch2_name %||% meta_config$batch2_Name
 normalize_da_method <- function(method) {
     method <- toupper(as.character(method))
-    method[method == "ANCOMBC"] <- "ANCOMBC2"
+    unsupported <- setdiff(method, c("ANCOMBC", "ANCOMBC2", "LIMMA_VOOM"))
+    if (length(unsupported) > 0) {
+        stop(
+            "Unsupported differential-abundance method(s): ",
+            paste(unsupported, collapse = ", "),
+            ". Supported methods: ANCOMBC, ANCOMBC2, LIMMA_VOOM.",
+            call. = FALSE
+        )
+    }
     method
 }
 
@@ -102,15 +110,6 @@ da_results_file_candidates <- function(base_dir, batch_name, DA_method, comparis
         comparison,
         paste0(batch_name, "_", comparison, "_", method, "Results.tsv")
     ))
-    if (identical(method, "ANCOMBC2")) {
-        candidates <- c(candidates, file.path(
-            base_dir,
-            batch_name,
-            "ANCOMBC",
-            comparison,
-            paste0(batch_name, "_", comparison, "_ANCOMBCResults.tsv")
-        ))
-    }
     candidates
 }
 
@@ -226,7 +225,7 @@ B2_DA_results <- readin_DA(
                         direction_b2 = direction
                     )
 
-if (args$DA_method == "ANCOMBC2") {
+if ("struc0" %in% names(B1_DA_results)) {
     B1_DA_results <- B1_DA_results |>
                         rename(struc0_b1 = struc0)
     B2_DA_results <- B2_DA_results |>

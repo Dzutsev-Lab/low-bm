@@ -61,6 +61,7 @@ meta_differential_abundance:
   # directory names such as <trialID>_<trial_descript>.
   batch1_name: "<batch1_trialID>_<batch1_trial_descript>"
   batch2_name: "<batch2_trialID>_<batch2_trial_descript>"
+  # Supported result sources: ANCOMBC (legacy) and ANCOMBC2.
   DA_method: "ANCOMBC2"
   comparison: "ExampleComparison"
   # Meta-analysis requires one contrast-level ANCOM-BC2 result. Use primary,

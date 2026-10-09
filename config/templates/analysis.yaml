@@ -42,6 +42,9 @@ abundance_barplots:
       top_n: 20
 
 differential_abundance:
+  # Run every selected method for every comparison. ANCOMBC is legacy
+  # ANCOM-BC and supports binary comparisons; ANCOMBC2 supports multi-level
+  # tests such as global, pairwise, Dunnett, and trend.
   methods: ["ANCOMBC2"]
   tax_label_level: "Genus"
   alpha: 0.05

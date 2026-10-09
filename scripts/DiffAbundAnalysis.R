@@ -51,7 +51,7 @@ parser$add_argument("--DA-methods",
                     type = "character",
                     nargs = "+",
                     default = NULL,
-                    help = "Legacy method list; config-driven DA uses ANCOMBC2")
+                    help = "Method list: ANCOMBC, ANCOMBC2, or both")
 parser$add_argument("--DA-comparisons",
                     type = "character",
                     nargs = "+",
@@ -210,7 +210,7 @@ add_result_labels <- function(results_df, grouped_physeq, tax_label_level, tax_a
   results_df
 }
 
-plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_id) {
+plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_id, method) {
   if ("test" %in% names(results_df)) {
     plot_df <- results_df |>
       filter(test %in% c("primary", "pairwise", "dunnet", "trend"), !is.na(log2FoldChange), is.na(struc0))
@@ -281,7 +281,7 @@ plot_da_volcano <- function(results_df, spec, alpha, lfc_cutoff, out_dir, trial_
     suffix <- gsub("[^A-Za-z0-9._-]+", "_", paste(na.omit(c(test_label, contrast_label)), collapse = "_"))
     suffix <- gsub("_+", "_", suffix)
     ggsave(
-      filename = file.path(out_dir, "ANCOMBC2", spec$name, paste0(trial_id, "_", spec$name, "_", suffix, "_ANCOMBC2Volcano.png")),
+      filename = file.path(out_dir, method, spec$name, paste0(trial_id, "_", spec$name, "_", suffix, "_", method, "Volcano.png")),
       plot = volcano,
       width = 14,
       height = 12,
@@ -298,7 +298,8 @@ plot_da_heatmap <- function(grouped_physeq,
                             spec,
                             da_config,
                             out_dir,
-                            trial_id) {
+                            trial_id,
+                            method) {
   sig_taxa <- results_df$taxon[results_df$significance == "Sig"]
   sig_taxa <- intersect(sig_taxa, taxa_names(grouped_physeq))
   if (length(sig_taxa) == 0) {
@@ -341,7 +342,7 @@ plot_da_heatmap <- function(grouped_physeq,
   }
 
   ggsave(
-    filename = file.path(out_dir, "ANCOMBC2", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBC2Heatmap.png")),
+    filename = file.path(out_dir, method, spec$name, paste0(trial_id, "_", spec$name, "_", method, "Heatmap.png")),
     plot = heatmap,
     width = 14,
     height = 12,
@@ -350,7 +351,7 @@ plot_da_heatmap <- function(grouped_physeq,
   )
 }
 
-plot_ancombc2_result_heatmap <- function(results_df, spec, out_dir, trial_id) {
+plot_da_result_heatmap <- function(results_df, spec, out_dir, trial_id, method) {
   if (!all(c("test", "contrast", "log2FoldChange", "significance") %in% names(results_df))) {
     return(invisible(NULL))
   }
@@ -373,7 +374,7 @@ plot_ancombc2_result_heatmap <- function(results_df, spec, out_dir, trial_id) {
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
   ggsave(
-    filename = file.path(out_dir, "ANCOMBC2", spec$name, paste0(trial_id, "_", spec$name, "_ANCOMBC2ResultHeatmap.png")),
+    filename = file.path(out_dir, method, spec$name, paste0(trial_id, "_", spec$name, "_", method, "ResultHeatmap.png")),
     plot = plot,
     width = 12,
     height = max(4, min(14, 0.3 * length(unique(plot_df$taxon)) + 3)),
@@ -386,7 +387,6 @@ select_taxa <- read_select_taxa(args$select_taxa_names)
 CompPhyseq <- load_input_physeq()
 
 for (spec in da_config$comparisons) {
-  message("Running ANCOMBC2 comparison: ", spec$name)
   comparison_physeq <- prepare_da_physeq(
     physeq = CompPhyseq,
     spec = spec,
@@ -397,34 +397,54 @@ for (spec in da_config$comparisons) {
   if (is.null(resolved_spec)) {
     resolved_spec <- spec
   }
-  duplicate_policy_file <- write_patient_duplicate_policy_audit(
-    attr(comparison_physeq, "patient_duplicate_policy_audit"),
-    out_dir = out_dir,
-    trial_id = trial_id,
-    method = "ANCOMBC2",
-    comparison_name = resolved_spec$name
-  )
-  message("Wrote patient duplicate policy audit: ", duplicate_policy_file)
+  selected_methods <- da_methods_for_spec(da_config, resolved_spec)
+  validate_ancombc_legacy_spec(resolved_spec, selected_methods)
+  for (method in selected_methods) {
+    message("Running ", method, " comparison: ", resolved_spec$name)
+    duplicate_policy_file <- write_patient_duplicate_policy_audit(
+      attr(comparison_physeq, "patient_duplicate_policy_audit"),
+      out_dir = out_dir,
+      trial_id = trial_id,
+      method = method,
+      comparison_name = resolved_spec$name
+    )
+    message("Wrote patient duplicate policy audit: ", duplicate_policy_file)
+    alpha <- resolved_spec$alpha %||% da_config$alpha
+    lfc_cutoff <- resolved_spec$lfc_cutoff %||% da_config$lfc_cutoff
+    results_df <- if (identical(method, "ANCOMBC")) {
+      run_ancombc_legacy_comparison(comparison_physeq, resolved_spec, da_config)
+    } else {
+      run_ancombc2_comparison(comparison_physeq, resolved_spec, da_config)
+    }
+    results_for_plots <- add_result_labels(
+      results_df,
+      comparison_physeq,
+      resolved_spec$tax_label_level %||% da_config$tax_label_level,
+      resolved_spec$tax_agg_level %||% da_config$tax_agg_level
+    )
 
-  alpha <- resolved_spec$alpha %||% da_config$alpha
-  lfc_cutoff <- resolved_spec$lfc_cutoff %||% da_config$lfc_cutoff
-  results_df <- run_ancombc_comparison(comparison_physeq, resolved_spec, da_config)
-  results_for_plots <- add_result_labels(
-    results_df,
-    comparison_physeq,
-    resolved_spec$tax_label_level %||% da_config$tax_label_level,
-    resolved_spec$tax_agg_level %||% da_config$tax_agg_level
-  )
+    result_files <- if (identical(method, "ANCOMBC2")) {
+      write_ancombc2_results(
+        results_df,
+        out_dir = out_dir,
+        trial_id = trial_id,
+        comparison_name = resolved_spec$name
+      )
+    } else {
+      write_da_results(
+        results_df,
+        out_dir = out_dir,
+        trial_id = trial_id,
+        method = method,
+        comparison_name = resolved_spec$name
+      )
+    }
+    message("Wrote ", method, " DA results: ", paste(result_files, collapse = ", "))
 
-  result_files <- write_ancombc2_results(
-    results_df,
-    out_dir = out_dir,
-    trial_id = trial_id,
-    comparison_name = resolved_spec$name
-  )
-  message("Wrote DA results: ", paste(result_files, collapse = ", "))
-
-  plot_da_volcano(results_for_plots, resolved_spec, alpha, lfc_cutoff, out_dir, trial_id)
-  plot_ancombc2_result_heatmap(results_for_plots, resolved_spec, out_dir, trial_id)
-  plot_da_heatmap(comparison_physeq, results_for_plots, resolved_spec, da_config, out_dir, trial_id)
+    plot_da_volcano(results_for_plots, resolved_spec, alpha, lfc_cutoff, out_dir, trial_id, method)
+    if (identical(method, "ANCOMBC2")) {
+      plot_da_result_heatmap(results_for_plots, resolved_spec, out_dir, trial_id, method)
+    }
+    plot_da_heatmap(comparison_physeq, results_for_plots, resolved_spec, da_config, out_dir, trial_id, method)
+  }
 }

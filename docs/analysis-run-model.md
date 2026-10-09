@@ -131,12 +131,25 @@ Differential abundance followed by confirmatory BLAST:
   --analysis-config config/local/analysis.yaml
 ```
 
-## ANCOM-BC2 Differential Abundance
+## Config-Driven Differential Abundance
 
-The config-driven differential-abundance step now uses ANCOM-BC2 exclusively.
-Set `methods: ["ANCOMBC2"]` in new configs. Existing `ANCOMBC` values are
-accepted as a migration alias, but new output directories and filenames use
-`ANCOMBC2`.
+The config-driven differential-abundance step supports both the legacy
+ANCOM-BC method and ANCOM-BC2. `methods` is a selector, and every selected
+method runs for every comparison unless a comparison-level `method` narrows
+that comparison:
+
+```yaml
+differential_abundance:
+  methods: ["ANCOMBC2"]
+  # Or compare both methods for each compatible comparison:
+  # methods: ["ANCOMBC", "ANCOMBC2"]
+```
+
+`ANCOMBC` calls the legacy `ANCOMBC::ancombc()` API and is limited to binary
+comparisons with the `primary` test. `ANCOMBC2` calls
+`ANCOMBC::ancombc2()` and supports multi-level, global, pairwise, Dunnett,
+and trend tests. Unsupported combinations fail before model execution.
+Results and plots remain separated under `ANCOMBC/` and `ANCOMBC2/`.
 
 ANCOM-BC2 differs from the old project wrapper in three practical ways:
 
@@ -226,6 +239,12 @@ The main result file is:
 <output_dir>/ANCOMBC2/<comparison>/<trialID>_<comparison>_ANCOMBC2Results.tsv
 ```
 
+Legacy ANCOM-BC writes the shared-schema equivalent under:
+
+```text
+<output_dir>/ANCOMBC/<comparison>/<trialID>_<comparison>_ANCOMBCResults.tsv
+```
+
 It is a long table with `test` and `contrast` columns. Per-family files are also
 written beside it: `ANCOMBC2Primary.tsv`, `ANCOMBC2Global.tsv`,
 `ANCOMBC2Pairwise.tsv`, `ANCOMBC2Dunnett.tsv`, and `ANCOMBC2Trend.tsv` when the
@@ -233,7 +252,7 @@ corresponding output exists.
 
 Important result fields:
 
-- `log2FoldChange`: ANCOM-BC2 log fold changes converted to log2 scale for
+- `log2FoldChange`: method log fold changes converted to log2 scale for
   compatibility with existing plots and thresholds.
 - `diff_abn`: ANCOM-BC2 differential-abundance call before sensitivity filtering.
 - `passed_ss`: whether the taxon passed pseudo-count sensitivity analysis.
@@ -265,13 +284,15 @@ single batch-level effect size.
 Migration guide:
 
 ```text
-Old field/output                 ANCOM-BC2 replacement
-methods: ["ANCOMBC"]             methods: ["ANCOMBC2"]  # old value still accepted
+Old field/output                 Current replacement
+methods: ["ANCOMBC"]             methods: ["ANCOMBC"]     # runs legacy ANCOM-BC
+methods: ["ANCOMBC2"]            methods: ["ANCOMBC2"]
 formula                          fix_formula
 coefficient                      inferred from group levels; no longer needed
 structural_zero_groups           inferred from group levels; no longer needed
 exactly two group levels          two or more group levels supported
-ANCOMBC/<comparison>/...          ANCOMBC2/<comparison>/...
+ANCOMBC/<comparison>/...          legacy ANCOM-BC output
+ANCOMBC2/<comparison>/...         ANCOM-BC2 output
 ```
 
 Patient duplicate handling for inferential analyses:
